@@ -1,4 +1,6 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, test } from 'vitest';
 import { JobCard } from './JobCard';
 import { baseJob } from './jobFixtures';
@@ -33,8 +35,8 @@ describe('JobCard', () => {
   });
 
   test('shows match score or not-scored label, and status', () => {
-    const { rerender } = render(<JobCard job={{ ...baseJob, matchScore: 82, status: 'cv_ready' }} />);
-    expect(screen.getByText('82%')).toBeInTheDocument();
+    const { rerender } = render(<JobCard job={{ ...baseJob, matchScore: 82, scoreStatus: 'done', status: 'cv_ready' }} />);
+    expect(screen.getByText('82% match')).toBeInTheDocument();
     expect(screen.getByText('CV ready')).toBeInTheDocument();
     rerender(<JobCard job={baseJob} />);
     expect(screen.getByText('Not scored yet')).toBeInTheDocument();
@@ -72,5 +74,59 @@ describe('JobCard', () => {
   test('shows short description', () => {
     render(<JobCard job={{ ...baseJob, shortDescription: 'Build things.' }} />);
     expect(screen.getByText('Build things.')).toBeInTheDocument();
+  });
+
+  test('why this score toggles the explanation and lists', async () => {
+    render(
+      <JobCard
+        job={{
+          ...baseJob,
+          matchScore: 82,
+          scoreStatus: 'done',
+          matchExplanation: 'Strong Apex fit.',
+          matchBreakdown: { matched: ['Apex', 'LWC'], missing: ['CPQ'], notes: [] },
+        }}
+      />,
+    );
+    expect(screen.queryByText('Strong Apex fit.')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Why this score?' }));
+    expect(screen.getByText('Strong Apex fit.')).toBeInTheDocument();
+    expect(screen.getByText('Matched:')).toBeInTheDocument();
+    expect(screen.getByText('Apex')).toBeInTheDocument();
+    expect(screen.getByText('Missing:')).toBeInTheDocument();
+    expect(screen.getByText('CPQ')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Why this score?' }));
+    expect(screen.queryByText('Strong Apex fit.')).not.toBeInTheDocument();
+  });
+
+  test('score is decided by scoreStatus done, not just the number', () => {
+    render(<JobCard job={{ ...baseJob, matchScore: 55, scoreStatus: 'pending' }} />);
+    expect(screen.queryByText('55% match')).not.toBeInTheDocument();
+  });
+
+  test('shows scoring and failed states', () => {
+    const { rerender } = render(<JobCard job={{ ...baseJob, scoreStatus: 'pending' }} />);
+    expect(screen.getByText('Scoring…')).toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, scoreStatus: 'in_progress' }} />);
+    expect(screen.getByText('Scoring…')).toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, scoreStatus: 'pending', extractionStatus: 'pending' }} />);
+    expect(screen.queryByText('Scoring…')).not.toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, scoreStatus: 'failed' }} />);
+    expect(screen.getByText("Couldn't score this job")).toBeInTheDocument();
+  });
+
+  test('shows add-a-CV hint linking to documents', () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <JobCard job={baseJob} noReadyCv />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('link', { name: 'Add a base CV to get match scores' })).toHaveAttribute('href', '/documents');
+    rerender(
+      <MemoryRouter>
+        <JobCard job={{ ...baseJob, matchScore: 80, scoreStatus: 'done' }} noReadyCv />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText('Add a base CV to get match scores')).not.toBeInTheDocument();
   });
 });

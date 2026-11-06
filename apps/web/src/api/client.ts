@@ -1,4 +1,4 @@
-import type { JobSummary } from './types';
+import type { DocumentKind, DocumentsResponse, JobSummary } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -33,4 +33,41 @@ export async function fetchJobs(): Promise<JobSummary[]> {
   const body = await getJson<{ jobs?: unknown } | null>('/api/jobs');
   if (!body || !Array.isArray(body.jobs)) throw new ApiError(502, 'GET /api/jobs returned an unexpected shape');
   return body.jobs as JobSummary[];
+}
+
+export async function fetchDocuments(): Promise<DocumentsResponse> {
+  const body = await getJson<Partial<DocumentsResponse> | null>('/api/documents');
+  if (!body || !('cv' in body) || !('coverLetter' in body) || !Array.isArray(body.ignored)) {
+    throw new ApiError(502, 'GET /api/documents returned an unexpected shape');
+  }
+  return body as DocumentsResponse;
+}
+
+async function send(method: string, path: string, body?: FormData): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetch(path, { method, body, headers: { Accept: 'application/json', ...JOBHUNTER_HEADERS } });
+  } catch (err) {
+    throw new ApiError(0, `${method} ${path} failed: ${err instanceof Error ? err.message : 'network error'}`);
+  }
+  if (!res.ok) throw new ApiError(res.status, `${method} ${path} failed with ${res.status}`);
+  return res;
+}
+
+export async function uploadDocument(kind: DocumentKind, file: File): Promise<{ sourceRef: string }> {
+  const form = new FormData();
+  form.append('file', file);
+  const path = `/api/documents/upload?kind=${kind}`;
+  const res = await send('POST', path, form);
+  try {
+    const body = (await res.json()) as { sourceRef?: unknown } | null;
+    if (body && typeof body.sourceRef === 'string') return { sourceRef: body.sourceRef };
+  } catch {
+    // fall through
+  }
+  throw new ApiError(502, `POST ${path} returned an unexpected shape`);
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  await send('DELETE', `/api/documents?id=${encodeURIComponent(id)}`);
 }

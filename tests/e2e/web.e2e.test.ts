@@ -11,3 +11,9 @@ test('web proxies /api/jobs to n8n', async () => {
   expect(page.status).toBe(200);
   expect(await page.text()).toContain('<div id="root">');
 });
+
+test('web serves the app on /documents (SPA fallback)', async () => {
+  const page = await fetch(`${WEB_URL}/documents`);
+  expect(page.status).toBe(200);
+  expect(await page.text()).toContain('<div id="root">');
+});

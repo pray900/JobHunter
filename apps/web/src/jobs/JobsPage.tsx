@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fetchJobs } from '../api/client';
+import { fetchDocuments, fetchJobs } from '../api/client';
 import type { JobStatus, JobSummary } from '../api/types';
 import { JobCard } from './JobCard';
 import { filterJobs, sortJobs } from './filterJobs';
@@ -10,6 +10,8 @@ const REFRESH_MS = 15_000;
 export function JobsPage() {
   const [jobs, setJobs] = useState<JobSummary[] | null>(null);
   const [failed, setFailed] = useState(false);
+  // False until the documents API says there is no ready CV, so the hint never flashes wrongly.
+  const [noReadyCv, setNoReadyCv] = useState(false);
   const [status, setStatus] = useState<JobStatus | 'all'>('all');
   const [query, setQuery] = useState('');
 
@@ -23,6 +25,12 @@ export function JobsPage() {
       setFailed(false);
     } catch {
       setFailed(true);
+    }
+    try {
+      const docs = await fetchDocuments();
+      setNoReadyCv(docs.cv?.analysisStatus !== 'done');
+    } catch {
+      setNoReadyCv(false);
     } finally {
       inFlight.current = false;
     }
@@ -84,7 +92,7 @@ export function JobsPage() {
 
       <div className="grid">
         {visible.map((j) => (
-          <JobCard key={j.id} job={j} />
+          <JobCard key={j.id} job={j} noReadyCv={noReadyCv} />
         ))}
       </div>
     </main>
