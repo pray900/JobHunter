@@ -1,0 +1,5 @@
+{
+  "name": "jobhunter",
+  "private": true,
+  "workspaces": ["services/worker", "apps/web", "tests/e2e"]
+}

@@ -1,0 +1,60 @@
+name: jobhunter-test
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: jobhunter
+      POSTGRES_USER: jobhunter
+      POSTGRES_PASSWORD: test
+    ports:
+      - "55433:5432"
+    volumes:
+      - pg_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobhunter -d jobhunter"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    environment:
+      DATABASE_URL: postgres://jobhunter:test@postgres:5432/jobhunter
+      JOBLISTING_DIR: /data/joblisting
+    volumes:
+      - ./.tmp/e2e-joblisting:/data/joblisting
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  n8n:
+    image: n8nio/n8n:2.46.6
+    ports:
+      - "55678:5678"
+    environment:
+      N8N_ENCRYPTION_KEY: test-encryption-key-0123456789ab
+      ANTHROPIC_BASE_URL: http://anthropic-stub:8080
+      EXTRACT_MODEL: claude-haiku-5-5
+      WORKER_URL: http://worker:3001
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      GENERIC_TIMEZONE: Australia/Sydney
+      JOBHUNTER_SCHEDULE_ENABLED: "false"
+    volumes:
+      - n8n_test_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+    depends_on:
+      - worker
+
+volumes:
+  pg_test_data:
+  n8n_test_data:

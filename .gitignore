@@ -15,3 +15,6 @@ output/
 # Dependencies and builds
 node_modules/
 dist/
+
+# Test scratch
+.tmp/
