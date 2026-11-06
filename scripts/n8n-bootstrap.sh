@@ -125,19 +125,31 @@ for (const f of fs.readdirSync("/workflows").filter((f) => f.endsWith(".json")).
 # set counts as in flight: an unknown status keeps the wait waiting (fails closed).
 # Reads n8n's SQLite database (the n8n default; this stack sets no DB_TYPE) read-only.
 # Query errors (e.g. a transient SQLITE_BUSY) are retried. Fails closed (exit 1) after
-# JOBHUNTER_PUBLISH_WAIT_S seconds (default 120), naming the last error.
+# JOBHUNTER_PUBLISH_WAIT_S seconds (a whole number >= 1, default 120; anything else exits
+# 1 at once), naming the last error and the stuck row's status and age.
 wait_publication() {
+  local wait_s="${JOBHUNTER_PUBLISH_WAIT_S:-120}"
+  if ! [[ $wait_s =~ ^[1-9][0-9]*$ ]]; then
+    echo "JOBHUNTER_PUBLISH_WAIT_S must be a whole number of seconds (1 or more), got: $wait_s" >&2
+    return 1
+  fi
   n8n_exec node -e '
 const { DatabaseSync } = require("node:sqlite");
 const [mode, waitS, ...ids] = process.argv.slice(1);
 if (mode !== "drained" && mode !== "published") { console.error("wait_publication: unknown mode " + mode); process.exit(2); }
 if ((process.env.DB_TYPE || "sqlite") !== "sqlite") { console.error("wait_publication: only the SQLite database is supported"); process.exit(1); }
 const file = (process.env.N8N_USER_FOLDER || "/home/node") + "/.n8n/database.sqlite";
-let db;
+const ago = (s) => (s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : s < 172800 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d");
+let db, detail;
 const pending = (id) => {
+  detail = "";
   db ??= new DatabaseSync(file, { readOnly: true });
-  const q = db.prepare("select count(*) as n from workflow_publication_outbox where workflowId = ? and status not in (\x27completed\x27, \x27partial_success\x27, \x27failed\x27)");
-  if (q.get(id).n > 0) return "publication still queued";
+  // Oldest unprocessed row: its status and age show e.g. a leftover from a crashed run.
+  const row = db.prepare("select status, (julianday(\x27now\x27) - julianday(createdAt)) * 86400 as age from workflow_publication_outbox where workflowId = ? and status not in (\x27completed\x27, \x27partial_success\x27, \x27failed\x27) order by id limit 1").get(id);
+  if (row) {
+    detail = " (status " + row.status + ", queued " + (row.age == null ? "at an unknown time" : ago(Math.max(0, row.age)) + " ago") + ")";
+    return "publication still queued";
+  }
   if (mode !== "published") return null;
   const v = db.prepare("select w.versionId as current, w.activeVersionId as active, p.publishedVersionId as published from workflow_entity w left join workflow_published_version p on p.workflowId = w.id where w.id = ?").get(id);
   return v && v.active === v.current && v.published === v.current ? null : "published version is not the imported one";
@@ -147,13 +159,13 @@ const pending = (id) => {
   for (const id of ids) {
     for (;;) {
       let why;
-      try { why = pending(id); } catch (e) { why = "cannot read " + file + ": " + e.message; db = undefined; }
+      try { why = pending(id); } catch (e) { why = "cannot read " + file + ": " + e.message; detail = ""; db = undefined; }
       if (!why) break;
-      if (Date.now() > deadline) { console.error(id + ": " + why + " after " + waitS + "s"); process.exit(1); }
+      if (Date.now() > deadline) { console.error(id + ": " + why + " after " + waitS + "s" + detail); process.exit(1); }
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
-})();' "$1" "${JOBHUNTER_PUBLISH_WAIT_S:-120}" "${@:2}"
+})();' "$1" "$wait_s" "${@:2}"
 }
 
 remove_temp_credentials() { n8n_exec rm -f /tmp/jh-credentials.json >/dev/null 2>&1 || true; }

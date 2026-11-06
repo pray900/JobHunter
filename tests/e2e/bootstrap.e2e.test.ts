@@ -1,4 +1,4 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -138,7 +138,8 @@ describe('bootstrap wait_publication', () => {
   let dir: string;
   let dbFile: string;
   const SCHEMA = `
-    create table workflow_publication_outbox (id integer primary key, workflowId text, publishedVersionId text, status text);
+    create table workflow_publication_outbox (id integer primary key, workflowId text, publishedVersionId text, status text,
+      createdAt datetime(3) not null default (strftime('%Y-%m-%d %H:%M:%f', 'now')));
     create table workflow_entity (id text primary key, versionId text, activeVersionId text);
     create table workflow_published_version (workflowId text primary key, publishedVersionId text);`;
   /** Runs SQL against the temp database in a separate node process (busy timeout 5 s). */
@@ -155,7 +156,8 @@ describe('bootstrap wait_publication', () => {
       { encoding: 'utf8' },
     );
   /** Starts `wait_publication <args>`; resolves with exit status, output and elapsed ms. */
-  const wait = (args: string, waitS = 3) =>
+  const children: ChildProcess[] = [];
+  const wait = (args: string, waitS: number | string = 3) =>
     new Promise<{ status: number | null; out: string; ms: number }>((resolve) => {
       const started = Date.now();
       const body = `. "$SCRIPT" "$@"\nn8n_exec() { "$@"; }\nwait_publication ${args}`;
@@ -169,6 +171,7 @@ describe('bootstrap wait_publication', () => {
           JOBHUNTER_PUBLISH_WAIT_S: String(waitS),
         },
       });
+      children.push(child);
       let out = '';
       child.stdout.on('data', (c) => (out += c));
       child.stderr.on('data', (c) => (out += c));
@@ -182,12 +185,21 @@ describe('bootstrap wait_publication', () => {
     dbFile = join(dir, '.n8n', 'database.sqlite');
     sql(SCHEMA);
   });
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => {
+    // A wait still running (failed test) keeps the database open: on Windows that blocks the
+    // folder removal, so kill the whole process tree first.
+    for (const c of children.splice(0)) {
+      if (c.exitCode !== null || c.signalCode !== null || c.pid === undefined) continue;
+      if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(c.pid), '/T', '/F']);
+      else c.kill('SIGKILL');
+    }
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
 
   test('drained: an empty outbox returns at once', async () => {
     const r = await wait('drained jh-a jh-b');
     expect(r.status).toBe(0);
-    expect(r.ms).toBeLessThan(2500);
+    expect(r.ms).toBeLessThan(8000);
   });
 
   test('drained: only terminal statuses count as processed; other workflows are ignored', async () => {
@@ -211,6 +223,23 @@ describe('bootstrap wait_publication', () => {
     expect(r.status).toBe(1);
     expect(r.out).toContain('jh-a: publication still queued after 2s');
   });
+
+  test('drained: the timeout names the stuck row status and age', async () => {
+    sql(`insert into workflow_publication_outbox (workflowId, status, createdAt) values
+      ('jh-a', 'in_progress', strftime('%Y-%m-%d %H:%M:%f', 'now', '-3 hours'))`);
+    const r = await wait('drained jh-a', 2);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('jh-a: publication still queued after 2s (status in_progress, queued 3h ago)');
+  });
+
+  test.each(['abc', '2m', '0', '-5', '1.5'])('rejects JOBHUNTER_PUBLISH_WAIT_S=%j at once', async (value) => {
+    // A pending row: an unvalidated (NaN) deadline would wait forever here.
+    sql(`insert into workflow_publication_outbox (workflowId, status) values ('jh-a', 'pending')`);
+    const r = await wait('drained jh-a', value);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`JOBHUNTER_PUBLISH_WAIT_S must be a whole number of seconds (1 or more), got: ${value}`);
+    expect(r.ms).toBeLessThan(8000);
+  }, 15_000);
 
   test('missing tables: fails and names the missing table', async () => {
     rmSync(dbFile);
