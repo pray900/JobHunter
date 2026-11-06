@@ -157,3 +157,27 @@ export const api = {
     return fetch(`${WEB_URL}/${path.replace(/^\//, '')}`);
   },
 };
+
+/** Lists the base documents through the web proxy. */
+export async function listDocuments(): Promise<any> {
+  const res = await api.get('/api/documents');
+  if (!res.ok) throw new Error(`list documents failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** Uploads a document (multipart field `file`) through the web proxy. `headers` replaces the default X-JobHunter header. */
+export async function uploadDocument(
+  kind: string,
+  name: string,
+  bytes: Buffer,
+  headers: Record<string, string> = SYNC_HEADERS,
+): Promise<Response> {
+  const form = new FormData();
+  form.append('file', new Blob([new Uint8Array(bytes)]), name);
+  return fetch(`${WEB_URL}/api/documents/upload?kind=${kind}`, { method: 'POST', headers, body: form });
+}
+
+/** Deletes a document by id through the web proxy. */
+export async function deleteDocument(id: string, headers: Record<string, string> = SYNC_HEADERS): Promise<Response> {
+  return fetch(`${WEB_URL}/api/documents?id=${encodeURIComponent(id)}`, { method: 'DELETE', headers });
+}

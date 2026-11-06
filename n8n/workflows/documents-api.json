@@ -1,0 +1,1192 @@
+{
+  "id": "jh-documents-api",
+  "name": "Documents API",
+  "active": false,
+  "nodes": [
+    {
+      "id": "f68a0545-5b1c-59cd-a82a-170cfa390f62",
+      "name": "Sticky Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -140
+      ],
+      "parameters": {
+        "content": "## Start\nThree endpoints for the user's ONE base CV and ONE base cover letter. Every webhook allows only the web app's origins.\n- **GET /webhook/api/documents** (row 1) lists them.\n- **POST /webhook/api/documents/upload?kind=cv|cover_letter** (row 2) uploads a file; it REPLACES the current document of that kind.\n- **DELETE /webhook/api/documents?id=<uuid>** (row 3) deletes one.\n\nThe two state-changing webhooks refuse requests without `X-JobHunter: 1` (`403`). CORS blocks reading an answer, not sending a plain cross-site POST/DELETE, and these endpoints write to and delete files in the user's real folders.\n\nOnly the worker touches the folders (`WORKER_URL`); this workflow never reads or writes them itself.",
+        "height": 380,
+        "width": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "bbe5014d-8029-5da2-ab1c-fa04cb66e67e",
+      "name": "GET api/documents",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "api/documents",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "6d1e7a42-0c5b-4e61-9a30-2b1f8c4d7e01"
+    },
+    {
+      "id": "659f47bf-9b72-580f-a2c1-ebea3e1b2f3d",
+      "name": "Sticky Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        480,
+        -140
+      ],
+      "parameters": {
+        "content": "## 1. List documents\nOne query returns **one row**: `cv` and `coverLetter` are the ACTIVE documents (see *Base documents sync*: the newest readable file per kind), `ignored` is every other file still in the folders (extra files that are not used). Files already removed are not listed. `BaseDocumentSummary` = id, kind, sourceRef, analysisStatus, analysisError, warnings, updatedAt. Aggregated in SQL so an empty table still answers `{ cv: null, coverLetter: null, ignored: [] }`.",
+        "height": 300,
+        "width": 520,
+        "color": 4
+      }
+    },
+    {
+      "id": "b635f88f-9bed-5c13-a7cf-ac84d313c593",
+      "name": "List documents",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        560,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\nwith docs as (\n  select kind, active, source_ref,\n         json_build_object(\n           'id',             id,\n           'kind',           kind,\n           'sourceRef',      source_ref,\n           'analysisStatus', analysis_status,\n           'analysisError',  analysis_error,\n           'warnings',       warnings,\n           'updatedAt',      to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')\n         ) as j\n  from base_documents\n  where owner_id = $1 and not source_removed\n)\nselect\n  (select j from docs where kind = 'cv' and active limit 1) as cv,\n  (select j from docs where kind = 'cover_letter' and active limit 1) as \"coverLetter\",\n  coalesce((select json_agg(j order by kind, source_ref) from docs where not active), '[]'::json) as ignored;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      }
+    },
+    {
+      "id": "66ea21cf-588d-500e-ae9d-5a2523f52b97",
+      "name": "Respond with documents",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        820,
+        200
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { cv: $json.cv, coverLetter: $json.coverLetter, ignored: $json.ignored } }}"
+      }
+    },
+    {
+      "id": "3f1be7ab-2111-5dcb-88e4-d89a9e3eab96",
+      "name": "Sticky Note 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        360
+      ],
+      "parameters": {
+        "content": "## 2. Upload = replace\n**Has X-JobHunter header?** else `403 missing_jobhunter_header`, nothing runs.\n**Check upload**: `kind` must be `cv` or `cover_letter` and a multipart field `file` must be present, at most 5 MB (checked here before anything is forwarded; the worker enforces 5 MB too) -> else `400` / `413`. The worker does the file-name, extension and content checks.\n**Find current document**: the active, still-present document of that kind (looked up BEFORE writing, so a sync running in between cannot confuse it).",
+        "height": 420,
+        "width": 1280,
+        "color": 4
+      }
+    },
+    {
+      "id": "b448113c-da89-5e56-a305-2c519c3d5883",
+      "name": "POST api/documents/upload",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        620
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/documents/upload",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "6d1e7a42-0c5b-4e61-9a30-2b1f8c4d7e02"
+    },
+    {
+      "id": "7cbf2665-d714-57bb-8960-3497e7bde5f4",
+      "name": "Has X-JobHunter header? (upload)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        620
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "aa2d15c1-42bd-5d20-ad3d-c2b4dfce6ce0",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "1"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "231cc70b-ee74-5b95-9a07-00fb19a3fb44",
+      "name": "Respond: missing X-JobHunter header (upload)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        820
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 403
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"missing_jobhunter_header\" } }}"
+      }
+    },
+    {
+      "id": "ddfa7db1-6e44-5d32-a57c-78902d63af2b",
+      "name": "Check upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        620
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst kind = item.json.query?.kind;\nconst fail = (status, error) => [{ json: { valid: false, status, error } }];\nif (kind !== 'cv' && kind !== 'cover_letter') return fail(400, 'bad_kind');\nif (!item.binary?.file) return fail(400, 'bad_file');\nconst bytes = await this.helpers.getBinaryDataBuffer(0, 'file');\nif (bytes.length === 0) return fail(400, 'bad_file');\nif (bytes.length > 5 * 1024 * 1024) return fail(413, 'file_too_large');\nreturn [{ json: { valid: true, kind }, binary: { file: item.binary.file } }];"
+      }
+    },
+    {
+      "id": "8745d50b-fc52-5350-a2b0-50c56be55442",
+      "name": "Upload acceptable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        620
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "566a093a-311b-5094-b243-8a12e8b5885a",
+              "leftValue": "={{ $json.valid }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "8f0a4c78-18fd-545d-b7b0-d5199a54952e",
+      "name": "Respond: bad upload",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        820
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": "={{ $json.status }}"
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { error: $json.error } }}"
+      }
+    },
+    {
+      "id": "3fb8ebc0-53e0-51e4-b7bc-1c6c73fee99b",
+      "name": "Find current document",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        880,
+        620
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] kind\n-- The document of this kind that is in use (active) and whose file is still there.\nselect source_ref from base_documents\nwhere owner_id = $1 and kind = $2 and active and not source_removed\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $('Check upload').first().json.kind ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "c9878d22-8fa0-5db3-acee-af85c9443d6b",
+      "name": "Prepare upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        620
+      ],
+      "parameters": {
+        "jsCode": "// The database lookup dropped the file from the item: bring it back from \"Check upload\".\nconst checked = $('Check upload').first();\nreturn [{\n  json: { kind: checked.json.kind, previousRef: $input.first().json.source_ref ?? null },\n  binary: { file: checked.binary.file },\n}];"
+      }
+    },
+    {
+      "id": "249170e6-b534-549d-b6b9-676d05d0a2da",
+      "name": "Sticky Note 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        360
+      ],
+      "parameters": {
+        "content": "## 3. Write the new file first\nThe worker saves the file with `replace=false`: if the name is already taken it answers `409` and **nothing is deleted** (the user's current CV stays). `400 bad_file` (wrong type, not really a PDF/Word file, bad name) is passed on; any other worker failure becomes `502 upload_failed`.\nOnly after the write succeeded, and only if the previous active file has a **different name**, the previous file is deleted through the worker. If that delete fails the upload still succeeds (the new file is safe; the old one is simply ignored by the sync as an extra file).",
+        "height": 420,
+        "width": 860,
+        "color": 5
+      }
+    },
+    {
+      "id": "9bc294da-c865-5771-b4d8-f5afa038461a",
+      "name": "Write file via worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        620
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WORKER_URL }}/documents/{{ $json.kind }}?replace=false",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "autodetect"
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "file"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "88ec72de-3641-59db-b3b8-e0c39e82cac5",
+      "name": "Was the file written?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1560,
+        620
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "573904e4-da99-5c8d-83b8-4ddb24f35952",
+              "leftValue": "={{ $json.statusCode }}",
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              },
+              "rightValue": 201
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "78537ea2-9318-5dae-8681-2ca446ea5c0d",
+      "name": "Respond: worker refused the file",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1560,
+        820
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": "={{ $json.statusCode === 409 ? 409 : ($json.statusCode === 400 ? 400 : 502) }}"
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { error: $json.statusCode === 409 ? 'document_exists' : ($json.statusCode === 400 ? 'bad_file' : 'upload_failed') } }}"
+      }
+    },
+    {
+      "id": "3cdf68a0-ae5a-5ec2-a866-c22437eb7b3e",
+      "name": "Replacing a different file?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1780,
+        620
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e2f30c00-5218-5803-85a4-3e9249890831",
+              "leftValue": "={{ !!$('Prepare upload').first().json.previousRef && $('Prepare upload').first().json.previousRef !== $json.body.sourceRef }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "d7f22488-6426-5985-a08f-1b9cd4c0b436",
+      "name": "Delete previous file via worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        520
+      ],
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $env.WORKER_URL }}/documents/{{ $('Prepare upload').first().json.kind }}/{{ encodeURIComponent($('Prepare upload').first().json.previousRef) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "autodetect"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "2f86abd8-99c9-5690-8e39-dee9745e99b5",
+      "name": "Sticky Note 5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        360
+      ],
+      "parameters": {
+        "content": "## 4. Sync, then answer\n**Trigger documents sync** calls this n8n's own `POST api/documents/sync` (with the X-JobHunter header) so the new file is picked up, becomes the active document and starts its analysis; the old row is marked removed. It waits at most 25 seconds and carries on either way (a slow analysis keeps running and the scheduled sync would catch up anyway). Then `201 { sourceRef }`.",
+        "height": 420,
+        "width": 760,
+        "color": 6
+      }
+    },
+    {
+      "id": "430f5fdd-8f3f-51ca-b637-b9ade71b89cf",
+      "name": "Trigger documents sync (upload)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        620
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/api/documents/sync",
+        "options": {
+          "timeout": 25000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "autodetect"
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-JobHunter",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d15e3ade-fafd-5f2e-bad6-3414ae807df5",
+      "name": "Respond: uploaded",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2480,
+        620
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 201
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { sourceRef: $('Write file via worker').first().json.body.sourceRef } }}"
+      }
+    },
+    {
+      "id": "ff61ed5a-2396-5b84-b9c1-79565ac9251a",
+      "name": "Sticky Note 6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        940
+      ],
+      "parameters": {
+        "content": "## 5. Delete\n**Has X-JobHunter header?** else `403`. **Valid id?** the `id` query parameter must be a UUID, else `400` (it is also passed to SQL as a parameter only).\n**Find document**: looks up kind, file name and whether it is the active one, for a still-present document of the owner (the active CV / cover letter or an ignored extra file) -> none: `404 not_found`.\n**Delete file via worker**: `204` or `404` (the file was already gone) both count as deleted; any other answer -> `502 delete_failed` and the database is left alone.",
+        "height": 460,
+        "width": 1380,
+        "color": 4
+      }
+    },
+    {
+      "id": "9195141a-f7e5-583a-ac8c-b8975926212a",
+      "name": "DELETE api/documents",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1200
+      ],
+      "parameters": {
+        "httpMethod": "DELETE",
+        "path": "api/documents",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "6d1e7a42-0c5b-4e61-9a30-2b1f8c4d7e03"
+    },
+    {
+      "id": "811f907f-bc2d-54e4-837c-5b44dadb0313",
+      "name": "Has X-JobHunter header? (delete)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        1200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7a0776a3-6bfd-59d4-bf0d-ef842cced2a8",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "1"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "f4a37bf7-e638-5252-9d1a-cd6cea89240f",
+      "name": "Respond: missing X-JobHunter header (delete)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        1400
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 403
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"missing_jobhunter_header\" } }}"
+      }
+    },
+    {
+      "id": "cf69584e-638a-5dff-8971-527be36eeab0",
+      "name": "Valid id?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        1200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4a386046-39cd-5530-9323-17d30a1748f6",
+              "leftValue": "={{ /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test($json.query.id ?? '') }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "74f7756d-d3d9-5104-a66c-b3a7c9327cee",
+      "name": "Respond: bad id",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        1400
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 400
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"bad_id\" } }}"
+      }
+    },
+    {
+      "id": "2ce11efe-0ea7-5e5d-80fb-be493f1d25b9",
+      "name": "Find document",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        660,
+        1200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] document id\nselect id, kind, source_ref, active from base_documents\nwhere owner_id = $1 and id = $2 and not source_removed;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $('DELETE api/documents').first().json.query.id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "611fe053-cff6-5eea-83af-ddc5f16be8d8",
+      "name": "Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        1200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e3d4782c-fbee-5552-98f8-693e85f613ad",
+              "leftValue": "={{ $json.id }}",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "fe4e5272-b916-5244-b85d-18684e8080ab",
+      "name": "Respond: not found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        1400
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 404
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"not_found\" } }}"
+      }
+    },
+    {
+      "id": "7b3c85c2-c4b7-5acf-8756-2cf10ecc8af3",
+      "name": "Delete file via worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        1200
+      ],
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $env.WORKER_URL }}/documents/{{ $json.kind }}/{{ encodeURIComponent($json.source_ref) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "autodetect"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "94335c65-77ff-5da5-a3e2-c9e6687a0f55",
+      "name": "File deleted or already gone?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        1200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7419638b-a655-5b51-83db-14d09c86c123",
+              "leftValue": "={{ [204, 404].includes($json.statusCode) }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "0cbe04f2-fa52-5f50-945d-f59671ebd5ab",
+      "name": "Respond: delete failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        1400
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 502
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"delete_failed\" } }}"
+      }
+    },
+    {
+      "id": "a25e1616-476b-5dd0-8048-0d2641c96502",
+      "name": "Sticky Note 7",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        940
+      ],
+      "parameters": {
+        "content": "## 6. Mark removed, rescore, sync\n**Mark removed** sets `source_removed` (and clears `active`) on the row. If it was the active **CV**, every job's score belongs to a CV that is gone: jobs go back to `pending` with their score, explanation, breakdown and basis cleared (a job being scored right now, claimed less than 5 minutes ago, is left alone; its save is thrown away by *Job match scoring* because the basis changed). Ignored extra files do not affect scores.\n**Trigger documents sync** then lets the next file (if any) take over. Answers `204`.",
+        "height": 460,
+        "width": 800,
+        "color": 5
+      }
+    },
+    {
+      "id": "b5206158-d99e-53a3-83ba-edaa9f9762a8",
+      "name": "Mark removed and reset scores",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        1560,
+        1200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] document id, [3] true when the deleted document was the active CV\nwith marked as (\n  update base_documents\n  set source_removed = true, active = false, updated_at = now()\n  where owner_id = $1 and id = $2\n  returning id\n),\nreset as (\n  update jobs\n  set score_status = 'pending', score_attempts = 0, score_claimed_at = null,\n      match_score = null, match_explanation = null, match_breakdown = null, match_basis_hash = null,\n      updated_at = now()\n  where owner_id = $1 and $3::boolean\n    and not (score_status = 'in_progress' and score_claimed_at >= now() - interval '5 minutes')\n  returning id\n)\nselect (select count(*) from marked) as marked, (select count(*) from reset) as jobs_reset;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $('Find document').first().json.id, $('Find document').first().json.kind === 'cv' && $('Find document').first().json.active ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      }
+    },
+    {
+      "id": "caae1ead-0336-5a0a-9c9a-234a6c07157b",
+      "name": "Trigger documents sync (delete)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        1200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/api/documents/sync",
+        "options": {
+          "timeout": 25000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "autodetect"
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-JobHunter",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "a7c0d2ee-e3e5-53ae-96fe-5e37f79712a0",
+      "name": "Respond: deleted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2040,
+        1200
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 204
+        },
+        "respondWith": "noData"
+      }
+    }
+  ],
+  "connections": {
+    "GET api/documents": {
+      "main": [
+        [
+          {
+            "node": "List documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List documents": {
+      "main": [
+        [
+          {
+            "node": "Respond with documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST api/documents/upload": {
+      "main": [
+        [
+          {
+            "node": "Has X-JobHunter header? (upload)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header? (upload)": {
+      "main": [
+        [
+          {
+            "node": "Check upload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header (upload)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check upload": {
+      "main": [
+        [
+          {
+            "node": "Upload acceptable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload acceptable?": {
+      "main": [
+        [
+          {
+            "node": "Find current document",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: bad upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find current document": {
+      "main": [
+        [
+          {
+            "node": "Prepare upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare upload": {
+      "main": [
+        [
+          {
+            "node": "Write file via worker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write file via worker": {
+      "main": [
+        [
+          {
+            "node": "Was the file written?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Was the file written?": {
+      "main": [
+        [
+          {
+            "node": "Replacing a different file?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: worker refused the file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replacing a different file?": {
+      "main": [
+        [
+          {
+            "node": "Delete previous file via worker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Trigger documents sync (upload)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete previous file via worker": {
+      "main": [
+        [
+          {
+            "node": "Trigger documents sync (upload)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger documents sync (upload)": {
+      "main": [
+        [
+          {
+            "node": "Respond: uploaded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DELETE api/documents": {
+      "main": [
+        [
+          {
+            "node": "Has X-JobHunter header? (delete)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header? (delete)": {
+      "main": [
+        [
+          {
+            "node": "Valid id?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header (delete)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid id?": {
+      "main": [
+        [
+          {
+            "node": "Find document",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: bad id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find document": {
+      "main": [
+        [
+          {
+            "node": "Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Found?": {
+      "main": [
+        [
+          {
+            "node": "Delete file via worker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: not found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete file via worker": {
+      "main": [
+        [
+          {
+            "node": "File deleted or already gone?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File deleted or already gone?": {
+      "main": [
+        [
+          {
+            "node": "Mark removed and reset scores",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: delete failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark removed and reset scores": {
+      "main": [
+        [
+          {
+            "node": "Trigger documents sync (delete)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger documents sync (delete)": {
+      "main": [
+        [
+          {
+            "node": "Respond: deleted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "tags": []
+}
