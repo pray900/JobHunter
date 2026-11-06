@@ -80,9 +80,6 @@ Run the commands from the project folder.
 
 The test stack (`docker-compose.test.yml`, project `jobhunter-test`) uses host ports 55433 (postgres), 55678 (n8n), 58080 (web) and 58081 (fake Anthropic), and `./.tmp/e2e-joblisting` as the job folder. It never touches your real data or key.
 
-## Tests
-
-
 
 ### End-to-end details
 
