@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { makeDocx } from '../helpers/makeDocx';
@@ -14,6 +13,7 @@ import {
   removeDocument,
   resetState,
   stub,
+  touchDocument,
   triggerDocumentsSync,
   writeDocument,
 } from './lib';
@@ -21,17 +21,19 @@ import {
 const PDF = 'application/pdf';
 const normalise = (s: string) => s.replace(/\r\n/g, '\n').trim();
 const prompt = (name: string) => readFileSync(join(ROOT, 'n8n', 'prompts', name), 'utf8');
-const sha256 = (s: string | Buffer) => createHash('sha256').update(s).digest('hex');
-/** basis_hash = sha256 of the ready CVs' content hashes, sorted and joined with "\n". */
-const basisOf = (files: Buffer[]) => sha256(files.map((f) => sha256(f)).sort().join('\n'));
+const JAN = new Date('2026-01-01T00:00:00Z');
+const FEB = new Date('2026-02-01T00:00:00Z');
+const MAR = new Date('2026-03-01T00:00:00Z');
+const CV_IGNORED = { code: 'extra_file_ignored', detail: 'Only one CV is used; this file is ignored.' };
+const bigPdf = () => Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x20)]);
 
 const docRow = async (sourceRef: string) =>
   (await db.query(`select * from base_documents where source_ref=$1`, [sourceRef]))[0];
 const purposeOf = (body: any) => String(body.system ?? '').split(/\r?\n/)[0];
-const userText = (body: any) =>
+/** The document a recorded request carried, as text (test PDFs are plain text). */
+const sentText = (body: any): string =>
   body.messages[0].content
-    .filter((c: any) => c.type === 'text')
-    .map((c: any) => c.text)
+    .map((c: any) => (c.type === 'document' ? Buffer.from(c.source.data, 'base64').toString('latin1') : c.text))
     .join('\n');
 
 describe('base documents sync', () => {
@@ -51,22 +53,22 @@ describe('base documents sync', () => {
     expect(await stub.requests()).toEqual([]);
   });
 
-  test('new PDF CV is analysed, labelled and checked', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('CV A STUB_LABEL:LLM / QA'));
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 1, conflictsChecked: true });
+  test('new PDF CV is analysed, checked and active', async () => {
+    writeDocument('cv', 'a.pdf', makePdf('CV A'));
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 1 });
     const doc = await docRow('a.pdf');
     expect(doc).toMatchObject({
       kind: 'cv',
       media_type: PDF,
-      label: 'LLM / QA',
-      label_suggested: 'LLM / QA',
+      active: true,
       analysis_status: 'done',
       analysis_attempts: 1,
       analysis_error: null,
       source_removed: false,
     });
+    expect(doc).not.toHaveProperty('label');
+    expect(doc).not.toHaveProperty('label_suggested');
     expect(doc.structured.workRights).toBeNull();
-    expect(doc.structured).not.toHaveProperty('labelSuggestion');
     expect(doc.warnings).toContainEqual(expect.objectContaining({ code: 'missing_work_rights' }));
     const costs = await db.query(`select * from cost_log`);
     expect(costs).toHaveLength(1);
@@ -81,10 +83,26 @@ describe('base documents sync', () => {
     expect(Number(costs[0].cost_usd)).toBeCloseTo(0.006, 6); // 1000 x $4 + 100 x $20 per 1M
   });
 
+  test('cost is priced by the model that answered', async () => {
+    writeDocument('cv', 'a.pdf', makePdf('CV A STUB_MODEL:claude-sonnet-5-5'));
+    await triggerDocumentsSync();
+    const [cost] = await db.query(`select model, cost_usd from cost_log`);
+    expect(cost.model).toBe('claude-sonnet-5-5');
+    expect(Number(cost.cost_usd)).toBeCloseTo(0.003, 6); // 1000 x $2 + 100 x $10 per 1M
+  });
+
+  test('an answering model without a price is costed at the requested model price', async () => {
+    writeDocument('cover_letter', 'cl.pdf', makePdf('CL STUB_MODEL:claude-unpriced-1'));
+    await triggerDocumentsSync();
+    const [cost] = await db.query(`select model, cost_usd from cost_log`);
+    expect(cost.model).toBe('claude-unpriced-1');
+    expect(Number(cost.cost_usd)).toBeCloseTo(0.006, 6);
+  });
+
   test('unchanged document is not analysed again', async () => {
     writeDocument('cv', 'a.pdf', makePdf('CV A'));
     await triggerDocumentsSync();
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 0, conflictsChecked: false });
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 0 });
     expect(await stub.requests()).toHaveLength(1);
   });
 
@@ -95,41 +113,32 @@ describe('base documents sync', () => {
     expect(await db.query(`select id from base_documents`)).toHaveLength(1);
   });
 
-  test('relabel survives re-analysis', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('v1 STUB_LABEL:LLM / QA'));
+  test('changed file is analysed again', async () => {
+    writeDocument('cv', 'a.pdf', makePdf('v1'));
     await triggerDocumentsSync();
     const before = await docRow('a.pdf');
-    await db.query(`update base_documents set label='My own label' where id=$1`, [before.id]);
-    writeDocument('cv', 'a.pdf', makePdf('v2 STUB_LABEL:Data engineering'));
-    await triggerDocumentsSync();
+    writeDocument('cv', 'a.pdf', makePdf('v2'));
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 1 });
     const after = await docRow('a.pdf');
-    expect(after).toMatchObject({
-      id: before.id,
-      label: 'My own label',
-      label_suggested: 'Data engineering',
-      analysis_status: 'done',
-      analysis_attempts: 1,
-    });
+    expect(after).toMatchObject({ id: before.id, active: true, analysis_status: 'done', analysis_attempts: 1 });
     expect(after.content_hash).not.toBe(before.content_hash);
-    expect(await stub.requests()).toHaveLength(2);
+    expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('v1'), expect.stringContaining('v2')]);
   });
 
   test('cover letter uses cover-letter prompt', async () => {
     writeDocument('cover_letter', 'cl.docx', await makeDocx([{ text: 'Dear Ms Li,' }, { text: 'I would like to apply.' }]));
     await triggerDocumentsSync();
     const doc = await docRow('cl.docx');
-    expect(doc).toMatchObject({ kind: 'cover_letter', analysis_status: 'done', label_suggested: 'Stub cover letter' });
+    expect(doc).toMatchObject({ kind: 'cover_letter', active: true, analysis_status: 'done' });
     expect(doc.structured).toMatchObject({ previousTarget: { company: 'Stub Company' }, toneNotes: expect.any(String) });
     const reqs = await stub.requests();
-    expect(reqs).toHaveLength(1); // cover letters are not CVs: no conflict check
+    expect(reqs).toHaveLength(1);
     expect(purposeOf(reqs[0])).toBe('purpose: analyse_cover_letter');
     expect(normalise(reqs[0].system)).toBe(normalise(prompt('analyse-cover-letter.md')));
     // DOCX goes as extracted text inside <document> tags.
     expect(reqs[0].messages[0].content[0]).toEqual({ type: 'text', text: '<document>\nDear Ms Li,\nI would like to apply.\n</document>' });
-    expect([...reqs[0].output_config.format.schema.required].sort()).toEqual(
-      ['labelSuggestion', 'previousTarget', 'reusableParagraphs', 'toneNotes'],
-    );
-    expect((await db.query(`select purpose from cost_log`))).toEqual([{ purpose: 'analyse_cover_letter' }]);
+    expect([...reqs[0].output_config.format.schema.required].sort()).toEqual(['previousTarget', 'reusableParagraphs', 'toneNotes']);
+    expect(await db.query(`select purpose from cost_log`)).toEqual([{ purpose: 'analyse_cover_letter' }]);
   });
 
   test('request is a PDF document block and sends fallbacks for opus', async () => {
@@ -145,7 +154,7 @@ describe('base documents sync', () => {
     const schema = body.output_config.format.schema;
     expect(schema).toMatchObject({ type: 'object', additionalProperties: false });
     expect([...schema.required].sort()).toEqual(
-      ['contact', 'education', 'headline', 'labelSuggestion', 'metrics', 'projects', 'roles', 'skills', 'summary', 'workRights'],
+      ['contact', 'education', 'headline', 'metrics', 'projects', 'roles', 'skills', 'summary', 'workRights'],
     );
     for (const key of ['temperature', 'top_p', 'top_k', 'thinking']) expect(body).not.toHaveProperty(key);
     expect(purposeOf(body)).toBe('purpose: analyse_cv');
@@ -157,69 +166,126 @@ describe('base documents sync', () => {
     expect(body.messages[body.messages.length - 1].role).toBe('user'); // no prefill
   });
 
-  test('two CVs trigger one conflict check, unchanged basis does not repeat it', async () => {
-    const a = makePdf('CV A');
-    const b = makePdf('CV B');
-    writeDocument('cv', 'a.pdf', a);
-    writeDocument('cv', 'b.pdf', b);
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 2, conflictsChecked: true });
+  test('two CVs: only the newest is analysed, the other is ignored', async () => {
+    writeDocument('cv', 'old.pdf', makePdf('OLD CV'), JAN);
+    writeDocument('cv', 'new.pdf', makePdf('NEW CV'), FEB);
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 1 });
     const reqs = await stub.requests();
-    expect(reqs.map(purposeOf).sort()).toEqual(['purpose: analyse_cv', 'purpose: analyse_cv', 'purpose: check_cv_conflicts']);
-    const conflictReq = reqs.find((r) => purposeOf(r) === 'purpose: check_cv_conflicts');
-    expect(normalise(conflictReq.system)).toBe(normalise(prompt('check-cv-conflicts.md')));
-    expect(conflictReq).toMatchObject({ model: 'claude-opus-5-5', max_tokens: 16000, fallbacks: 'default' });
-    expect(userText(conflictReq)).toContain('"sourceRef":"a.pdf"');
-    expect(userText(conflictReq)).toContain('"sourceRef":"b.pdf"');
-    const checks = await db.query(`select basis_hash, conflicts from base_document_checks`);
-    expect(checks).toHaveLength(1);
-    expect(checks[0].basis_hash).toBe(basisOf([a, b]));
-    expect(checks[0].conflicts).toEqual([
-      {
-        fact: 'Team size',
-        values: [
-          { sourceRef: 'a.pdf', text: 'Led a team of 5' },
-          { sourceRef: 'b.pdf', text: 'for a 5-developer team' },
-        ],
-        suggestion: 'Worked in a 5-developer team',
-      },
-    ]);
-    const conflictCost = await db.query(`select base_document_id, purpose from cost_log where purpose='check_cv_conflicts'`);
-    expect(conflictCost).toEqual([{ base_document_id: null, purpose: 'check_cv_conflicts' }]);
-
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 0, conflictsChecked: false });
-    expect(await stub.requests()).toHaveLength(3);
-    expect(await db.query(`select id from base_document_checks`)).toHaveLength(1);
+    expect(reqs.map(purposeOf)).toEqual(['purpose: analyse_cv']);
+    expect(sentText(reqs[0])).toContain('NEW CV');
+    expect(await docRow('new.pdf')).toMatchObject({ active: true, analysis_status: 'done' });
+    expect(await docRow('old.pdf')).toMatchObject({
+      active: false,
+      analysis_status: 'skipped',
+      analysis_attempts: 0,
+      structured: null,
+      warnings: [CV_IGNORED],
+    });
+    // Nothing changed in the folders: nothing more is sent.
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 0 });
+    expect(await stub.requests()).toHaveLength(1);
   });
 
-  test('one CV gives conflicts [] with no Claude call', async () => {
-    const a = makePdf('CV A');
-    writeDocument('cv', 'a.pdf', a);
+  test('same modification time: the first name in order is used', async () => {
+    writeDocument('cv', 'b.pdf', makePdf('CV B'), JAN);
+    writeDocument('cv', 'a.pdf', makePdf('CV A'), JAN);
     await triggerDocumentsSync();
-    expect((await stub.requests()).map(purposeOf)).toEqual(['purpose: analyse_cv']);
-    expect(await db.query(`select basis_hash, conflicts from base_document_checks`)).toEqual([
-      { basis_hash: basisOf([a]), conflicts: [] },
+    expect((await docRow('a.pdf')).active).toBe(true);
+    expect((await docRow('b.pdf')).active).toBe(false);
+  });
+
+  test('newer CV takes over', async () => {
+    writeDocument('cv', 'first.pdf', makePdf('FIRST CV'), JAN);
+    writeDocument('cv', 'second.pdf', makePdf('SECOND CV'), FEB);
+    await triggerDocumentsSync();
+    expect((await docRow('second.pdf')).structured).not.toBeNull();
+    touchDocument('cv', 'first.pdf', MAR); // same content, now the newest file
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 1 });
+    const reqs = await stub.requests();
+    expect(reqs.map(sentText)).toEqual([expect.stringContaining('SECOND CV'), expect.stringContaining('FIRST CV')]);
+    expect(await docRow('first.pdf')).toMatchObject({
+      active: true,
+      analysis_status: 'done',
+      analysis_attempts: 1,
+      warnings: [expect.objectContaining({ code: 'missing_work_rights' })],
+    });
+    // The one no longer used keeps no analysis facts and no analysis warnings.
+    expect(await docRow('second.pdf')).toMatchObject({
+      active: false,
+      analysis_status: 'skipped',
+      structured: null,
+      warnings: [CV_IGNORED],
+    });
+  });
+
+  test('CV and cover letter are each picked on their own', async () => {
+    writeDocument('cv', 'cv-old.pdf', makePdf('CV OLD'), JAN);
+    writeDocument('cv', 'cv-new.pdf', makePdf('CV NEW'), FEB);
+    writeDocument('cover_letter', 'cl-new.pdf', makePdf('CL NEW'), MAR);
+    writeDocument('cover_letter', 'cl-old.pdf', makePdf('CL OLD'), JAN);
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 4, analysed: 2 });
+    const sent = (await stub.requests()).map(sentText).join('\n');
+    expect(sent).toContain('CV NEW');
+    expect(sent).toContain('CL NEW');
+    expect(sent).not.toContain('OLD');
+    expect(await db.query(`select source_ref from base_documents where active order by kind`)).toEqual([
+      { source_ref: 'cl-new.pdf' },
+      { source_ref: 'cv-new.pdf' },
+    ]);
+    expect((await docRow('cl-old.pdf')).warnings).toEqual([
+      { code: 'extra_file_ignored', detail: 'Only one cover letter is used; this file is ignored.' },
     ]);
   });
 
-  test('one failed document does not block others', async () => {
-    const a = makePdf('CV A');
-    const b = makePdf('CV B');
-    writeDocument('cv', 'a.pdf', a);
-    writeDocument('cv', 'b.pdf', b);
+  test('removing the active CV makes the remaining one active', async () => {
+    writeDocument('cv', 'old.pdf', makePdf('OLD CV'), JAN);
+    writeDocument('cv', 'new.pdf', makePdf('NEW CV'), FEB);
+    await triggerDocumentsSync();
+    removeDocument('cv', 'new.pdf');
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 1 });
+    expect(await docRow('new.pdf')).toMatchObject({ source_removed: true, active: false });
+    expect(await docRow('old.pdf')).toMatchObject({
+      active: true,
+      analysis_status: 'done',
+      warnings: [expect.objectContaining({ code: 'missing_work_rights' })],
+    });
+    expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('NEW CV'), expect.stringContaining('OLD CV')]);
+  });
+
+  test('an unreadable newest file is ignored and the readable one is used', async () => {
+    writeDocument('cv', 'big.pdf', bigPdf(), FEB);
+    writeDocument('cv', 'ok.pdf', makePdf('OK CV'), JAN);
+    await triggerDocumentsSync();
+    expect(await docRow('ok.pdf')).toMatchObject({ active: true, analysis_status: 'done' });
+    const big = await docRow('big.pdf');
+    expect(big).toMatchObject({ active: false, analysis_status: 'skipped', structured: null });
+    expect(big.warnings.map((w: any) => w.code)).toEqual(['unreadable_file', 'extra_file_ignored']);
+    expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('OK CV')]);
+  });
+
+  test('no conflict check is ever called', async () => {
+    writeDocument('cv', 'a.pdf', makePdf('CV A'), JAN);
+    writeDocument('cv', 'b.pdf', makePdf('CV B'), FEB);
+    await triggerDocumentsSync();
+    touchDocument('cv', 'a.pdf', MAR);
+    await triggerDocumentsSync();
+    await triggerDocumentsSync();
+    expect((await stub.requests()).map(purposeOf)).toEqual(['purpose: analyse_cv', 'purpose: analyse_cv']);
+    expect(await db.query(`select to_regclass('base_document_checks') as t`)).toEqual([{ t: null }]);
+  });
+
+  test('a failed CV does not block the cover letter', async () => {
     writeDocument('cv', 'bad.pdf', makePdf('STUB_FAIL please'));
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 3, analysed: 2, conflictsChecked: true });
+    writeDocument('cover_letter', 'cl.pdf', makePdf('CL'));
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 1 });
     expect(await docRow('bad.pdf')).toMatchObject({
+      active: true,
       analysis_status: 'failed',
       analysis_attempts: 1,
       analysis_error: expect.stringMatching(/HTTP 500/),
       structured: null,
-      label: null,
     });
-    expect((await docRow('a.pdf')).analysis_status).toBe('done');
-    expect((await docRow('b.pdf')).analysis_status).toBe('done');
-    const conflictReq = (await stub.requests()).find((r) => purposeOf(r) === 'purpose: check_cv_conflicts');
-    expect(userText(conflictReq)).not.toContain('bad.pdf');
-    expect(await db.query(`select basis_hash from base_document_checks`)).toEqual([{ basis_hash: basisOf([a, b]) }]);
+    expect((await docRow('cl.pdf')).analysis_status).toBe('done');
   });
 
   test('refusal counts as failure and its cost is logged', async () => {
@@ -245,10 +311,10 @@ describe('base documents sync', () => {
   });
 
   test('over-5 MB file is skipped without a Claude call', async () => {
-    const big = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x20)]);
-    writeDocument('cv', 'big.pdf', big);
+    writeDocument('cv', 'big.pdf', bigPdf());
     await triggerDocumentsSync();
     expect(await docRow('big.pdf')).toMatchObject({
+      active: false,
       analysis_status: 'skipped',
       warnings: [expect.objectContaining({ code: 'unreadable_file' })],
       analysis_error: expect.any(String),
@@ -257,32 +323,14 @@ describe('base documents sync', () => {
     expect(await stub.requests()).toEqual([]);
   });
 
-  test('removed file is marked removed and leaves the conflict basis', async () => {
-    const a = makePdf('CV A');
-    writeDocument('cv', 'a.pdf', a);
-    writeDocument('cv', 'b.pdf', makePdf('CV B'));
-    await triggerDocumentsSync();
-    await stub.reset();
-    removeDocument('cv', 'b.pdf');
-    await triggerDocumentsSync();
-    expect(await docRow('b.pdf')).toMatchObject({ source_removed: true, analysis_status: 'done' });
-    expect(await stub.requests()).toEqual([]); // one ready CV left: no Claude call
-    const basis = await db.query(`select conflicts from base_document_checks where basis_hash=$1`, [basisOf([a])]);
-    expect(basis).toEqual([{ conflicts: [] }]);
-  });
-
-  test('failed conflict check stores nothing and the next sync from the app retries it', async () => {
+  test('removed file is marked removed and is no longer active', async () => {
     writeDocument('cv', 'a.pdf', makePdf('CV A'));
-    writeDocument('cv', 'b.pdf', makePdf('CV B'));
-    await stub.failPurpose('check_cv_conflicts');
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 2, conflictsChecked: false });
-    expect(await db.query(`select id from base_document_checks`)).toEqual([]);
-    // A 500 has no usage, so only the two analyses are logged as cost.
-    expect(await db.query(`select purpose from cost_log order by purpose`)).toEqual([{ purpose: 'analyse_cv' }, { purpose: 'analyse_cv' }]);
+    await triggerDocumentsSync();
     await stub.reset();
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 0, conflictsChecked: true });
-    expect((await stub.requests()).map(purposeOf)).toEqual(['purpose: check_cv_conflicts']);
-    expect(await db.query(`select id from base_document_checks`)).toHaveLength(1);
+    removeDocument('cv', 'a.pdf');
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 0, analysed: 0 });
+    expect(await docRow('a.pdf')).toMatchObject({ source_removed: true, active: false, analysis_status: 'done' });
+    expect(await stub.requests()).toEqual([]);
   });
 
   describe('missing cv folder', () => {
@@ -326,7 +374,12 @@ describe('base documents sync', () => {
       const res = await fetch(`${N8N_URL}/webhook/api/documents/sync`, { method: 'POST', headers: SYNC_HEADERS });
       expect(res.status).toBe(502);
       expect(await res.json()).toEqual({ ok: false, error: 'scan_failed' });
-      expect(await docRow('a.pdf')).toMatchObject({ source_removed: false, analysis_status: 'pending', analysis_attempts: 1 });
+      expect(await docRow('a.pdf')).toMatchObject({
+        source_removed: false,
+        active: true,
+        analysis_status: 'pending',
+        analysis_attempts: 1,
+      });
       expect(await stub.requests()).toEqual([]);
     }, 180_000);
   });
@@ -349,6 +402,10 @@ describe('base documents sync', () => {
     };
     const runPriceLookup = (model: string) =>
       new Function('$env', nodeByName('Look up model price').parameters.jsCode)({ ANALYSE_MODEL: model });
+    const analysisValues = () =>
+      Object.fromEntries(
+        nodeByName('Analysis prompts and schemas').parameters.assignments.assignments.map((a: any) => [a.name, a.value]),
+      );
 
     test('stable id', () => {
       expect(wf.id).toBe('jh-base-documents-sync');
@@ -356,16 +413,57 @@ describe('base documents sync', () => {
 
     test('unknown model stops the run before any document is claimed or Claude is called', () => {
       expect(() => runPriceLookup('claude-unknown-9')).toThrow(/No price for model "claude-unknown-9"/);
-      expect(runPriceLookup('claude-opus-5-5')[0].json).toEqual({
+      expect(runPriceLookup('claude-opus-5-5')[0].json).toMatchObject({
         model: 'claude-opus-5-5', input_usd_per_mtok: 4, output_usd_per_mtok: 20, fallbacks: true,
       });
       expect(runPriceLookup('claude-sonnet-5-5')[0].json).toMatchObject({ input_usd_per_mtok: 2, output_usd_per_mtok: 10, fallbacks: true });
       expect(runPriceLookup('claude-haiku-5-5')[0].json).toMatchObject({ input_usd_per_mtok: 0.1, output_usd_per_mtok: 0.5, fallbacks: false });
       expect(parentsOf('Claim pending analyses')).toEqual(['Look up model price']);
-      for (const call of ['Ask Claude to analyse', 'Ask Claude about conflicts']) {
-        expect(ancestorsOf(call).has('Claim pending analyses')).toBe(true);
-      }
+      expect(ancestorsOf('Ask Claude to analyse').has('Claim pending analyses')).toBe(true);
       expect(ancestorsOf('Look up model price').has('Ask Claude to analyse')).toBe(false);
+    });
+
+    test('cost uses the answering model price, else the requested one', () => {
+      const workOut = (json: object) =>
+        new Function('$json', '$', nodeByName('Work out cost').parameters.jsCode)(json, () => ({
+          first: () => runPriceLookup('claude-opus-5-5')[0],
+        })).json;
+      const usage = { has_usage: true, input_tokens: 1000, output_tokens: 100 };
+      expect(workOut({ ...usage, model: 'claude-sonnet-5-5' }).cost_usd).toBeCloseTo(0.003, 9);
+      expect(workOut({ ...usage, model: 'claude-unpriced-1' }).cost_usd).toBeCloseTo(0.006, 9);
+      expect(workOut({ ...usage, model: 'claude-opus-5-5' }).cost_usd).toBeCloseTo(0.006, 9);
+      expect(workOut({ has_usage: false, model: 'claude-opus-5-5' }).cost_usd).toBeNull();
+    });
+
+    test('an analysis request may take up to 600 s', () => {
+      expect(nodeByName('Ask Claude to analyse').parameters.options.timeout).toBe(600_000);
+    });
+
+    test('active document rule: newest readable file per kind, ties by name', () => {
+      const pick = (documents: object[]) =>
+        new Function('$', nodeByName('Pick the active documents').parameters.jsCode)(() => ({
+          first: () => ({ json: { documents } }),
+        }))[0].json.active;
+      const doc = (kind: string, sourceRef: string, modifiedAt: string, warnings: string[] = []) => ({
+        kind, sourceRef, modifiedAt, warnings,
+      });
+      expect(
+        pick([
+          doc('cv', 'b.pdf', '2026-01-01T00:00:00.000Z'),
+          doc('cv', 'a.pdf', '2026-01-01T00:00:00.000Z'),
+          doc('cv', 'z.pdf', '2025-12-01T00:00:00.000Z'),
+          doc('cv', 'big.pdf', '2026-05-01T00:00:00.000Z', ['unreadable_file']),
+          doc('cover_letter', 'old.docx', '2026-01-01T00:00:00.000Z'),
+          doc('cover_letter', 'new.docx', '2026-04-01T00:00:00.000Z'),
+        ]),
+      ).toEqual([
+        { kind: 'cv', sourceRef: 'a.pdf' },
+        { kind: 'cover_letter', sourceRef: 'new.docx' },
+      ]);
+      expect(pick([doc('cv', 'big.pdf', '2026-05-01T00:00:00.000Z', ['unreadable_file'])])).toEqual([]);
+      expect(pick([])).toEqual([]);
+      // Only the active document is ever claimed for analysis.
+      expect(nodeByName('Claim pending analyses').parameters.query).toMatch(/and d\.active\b/);
     });
 
     test('saves only apply to the claim made by this run', () => {
@@ -376,31 +474,28 @@ describe('base documents sync', () => {
     });
 
     test('prompts in the workflow match n8n/prompts', () => {
-      const values = (name: string) =>
-        Object.fromEntries(nodeByName(name).parameters.assignments.assignments.map((a: any) => [a.name, a.value]));
-      const analysis = values('Analysis prompts and schemas');
-      expect(normalise(analysis.cv_prompt)).toBe(normalise(prompt('analyse-cv.md')));
-      expect(normalise(analysis.cover_letter_prompt)).toBe(normalise(prompt('analyse-cover-letter.md')));
-      expect(normalise(values('Conflict prompt and schema').system_prompt)).toBe(normalise(prompt('check-cv-conflicts.md')));
-      for (const file of ['analyse-cv.md', 'analyse-cover-letter.md', 'check-cv-conflicts.md']) {
+      const values = analysisValues();
+      expect(normalise(values.cv_prompt)).toBe(normalise(prompt('analyse-cv.md')));
+      expect(normalise(values.cover_letter_prompt)).toBe(normalise(prompt('analyse-cover-letter.md')));
+      for (const file of ['analyse-cv.md', 'analyse-cover-letter.md']) {
         expect(prompt(file).split(/\r?\n/)[0]).toBe(`purpose: ${file.replace('.md', '').replace(/-/g, '_')}`);
       }
     });
 
-    test('a schedule run that changed nothing does not retry a failed conflict check', () => {
-      const decide = (ready: object, executed: Record<string, object[]>) =>
-        new Function('$input', '$', nodeByName('Decide conflict check').parameters.jsCode)(
-          { first: () => ({ json: ready }) },
-          (name: string) => ({ isExecuted: name in executed, all: () => (executed[name] ?? []).map((json) => ({ json })) }),
-        )[0].json.action;
-      const twoCvs = { basis_hash: 'h', ready_count: 2, cvs: [], already_checked: false };
-      const nothingChanged = { 'Save analysis': [], 'Mark removed documents': [{ success: true }] };
-      expect(decide(twoCvs, nothingChanged)).toBe('wait');
-      expect(decide(twoCvs, { ...nothingChanged, 'POST api/documents/sync': [{}] })).toBe('ask_claude');
-      expect(decide(twoCvs, { ...nothingChanged, 'Save analysis': [{ id: 'x' }] })).toBe('ask_claude');
-      expect(decide(twoCvs, { ...nothingChanged, 'Mark removed documents': [{ id: 'x' }] })).toBe('ask_claude');
-      expect(decide({ ...twoCvs, ready_count: 1 }, nothingChanged)).toBe('none');
-      expect(decide({ ...twoCvs, already_checked: true }, { ...nothingChanged, 'POST api/documents/sync': [{}] })).toBe('skip');
+    test('analysis schema has no labelSuggestion', () => {
+      const values = analysisValues();
+      for (const key of ['cv_schema', 'cover_letter_schema']) {
+        const schema = JSON.parse(values[key]);
+        expect(schema.required).not.toContain('labelSuggestion');
+        expect(schema.properties).not.toHaveProperty('labelSuggestion');
+      }
+      for (const file of ['analyse-cv.md', 'analyse-cover-letter.md']) expect(prompt(file)).not.toMatch(/label/i);
+      expect(JSON.stringify(wf)).not.toMatch(/label_suggest|labelSuggestion/);
+    });
+
+    test('no conflict check stage, prompt or table is left', () => {
+      expect(JSON.stringify(wf)).not.toMatch(/check_cv_conflicts|conflict check|conflictsChecked|cross-CV|base_document_checks/i);
+      expect(existsSync(join(ROOT, 'n8n', 'prompts', 'check-cv-conflicts.md'))).toBe(false);
     });
 
     test('no SQL comment contains a dollar placeholder', () => {
@@ -411,5 +506,20 @@ describe('base documents sync', () => {
         }
       }
     });
+  });
+});
+
+describe('shipped workflows', () => {
+  const dir = join(ROOT, 'n8n', 'workflows');
+  const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+
+  test("shipped workflows don't save successful runs", () => {
+    expect(files.length).toBeGreaterThanOrEqual(3);
+    for (const file of files) {
+      const { settings } = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+      expect(settings, file).toMatchObject({ saveDataSuccessExecution: 'none', saveManualExecutions: false });
+      // Failed runs are still kept for debugging.
+      expect(settings.saveDataErrorExecution ?? 'all', file).toBe('all');
+    }
   });
 });

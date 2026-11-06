@@ -9,6 +9,8 @@ export interface DocumentFile {
   // null when the file is over MAX_DOCUMENT_BYTES (never read into memory).
   bytes: Buffer | null;
   contentHash: string;
+  // The file's last modification time (ISO). Picks the one document per kind that is used.
+  modifiedAt: string;
 }
 
 export type DocumentDirs = Record<DocumentKind, string>;
@@ -143,13 +145,15 @@ export function createDocumentFolders(dirs: DocumentDirs, log: DocumentLog = () 
         names.map(async (name): Promise<DocumentFile | null> => {
           const filePath = path.join(dir, name);
           try {
+            const stat = await fs.stat(filePath);
+            const modifiedAt = stat.mtime.toISOString();
             // Oversize files are hashed by streaming and never held in memory.
-            if ((await fs.stat(filePath)).size > MAX_DOCUMENT_BYTES) {
-              return { name, bytes: null, contentHash: await sha256File(filePath) };
+            if (stat.size > MAX_DOCUMENT_BYTES) {
+              return { name, bytes: null, contentHash: await sha256File(filePath), modifiedAt };
             }
             const bytes = await fs.readFile(filePath);
-            if (bytes.length > MAX_DOCUMENT_BYTES) return { name, bytes: null, contentHash: sha256(bytes) };
-            return { name, bytes, contentHash: sha256(bytes) };
+            if (bytes.length > MAX_DOCUMENT_BYTES) return { name, bytes: null, contentHash: sha256(bytes), modifiedAt };
+            return { name, bytes, contentHash: sha256(bytes), modifiedAt };
           } catch (err) {
             if (hasCode(err, 'ENOENT')) return null;
             throw new DocumentFileReadError(name, err as NodeJS.ErrnoException);

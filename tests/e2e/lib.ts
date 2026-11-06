@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -56,10 +56,19 @@ export function removeJobFile(name: string): void {
 export type DocumentKind = 'cv' | 'cover_letter';
 const documentDir = (kind: DocumentKind) => (kind === 'cv' ? CV_DIR : COVER_LETTER_DIR);
 
-/** Writes a base CV / cover letter into its e2e folder (never the real PersonalDetails* folders). */
-export function writeDocument(kind: DocumentKind, name: string, bytes: string | Buffer): void {
+/**
+ * Writes a base CV / cover letter into its e2e folder (never the real PersonalDetails* folders).
+ * `modifiedAt` sets the file's modification time: per kind only the newest file is used.
+ */
+export function writeDocument(kind: DocumentKind, name: string, bytes: string | Buffer, modifiedAt?: Date): void {
   mkdirSync(documentDir(kind), { recursive: true });
   writeFileSync(join(documentDir(kind), name), bytes);
+  if (modifiedAt) touchDocument(kind, name, modifiedAt);
+}
+
+/** Sets a document's modification time without changing its content. */
+export function touchDocument(kind: DocumentKind, name: string, modifiedAt: Date): void {
+  utimesSync(join(documentDir(kind), name), modifiedAt, modifiedAt);
 }
 
 export function removeDocument(kind: DocumentKind, name: string): void {
@@ -78,7 +87,7 @@ const emptyDir = (dir: string) => {
 
 /** Per-test reset: empty job and base-document tables, empty the e2e folders, clear the stub log. */
 export async function resetState(): Promise<void> {
-  await db.query('truncate jobs, job_status_history, cost_log, base_documents, base_document_checks');
+  await db.query('truncate jobs, job_status_history, cost_log, base_documents');
   emptyDir(JOB_DIR);
   emptyDir(CV_DIR);
   emptyDir(COVER_LETTER_DIR);
@@ -96,7 +105,7 @@ export async function triggerSync(): Promise<void> {
 }
 
 /** Runs the base documents sync workflow and returns its JSON summary. */
-export async function triggerDocumentsSync(): Promise<{ ok: boolean; scanned: number; analysed: number; conflictsChecked: boolean }> {
+export async function triggerDocumentsSync(): Promise<{ ok: boolean; scanned: number; analysed: number }> {
   const res = await fetch(`${N8N_URL}/webhook/api/documents/sync`, { method: 'POST', headers: SYNC_HEADERS });
   if (!res.ok) throw new Error(`documents sync failed: ${res.status} ${await res.text()}`);
   return res.json() as any;

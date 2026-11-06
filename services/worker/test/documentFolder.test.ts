@@ -112,3 +112,13 @@ test('listDocuments does not load oversize files but still hashes them', async (
   expect(file.bytes).toBeNull();
   expect(file.contentHash).toBe(createHash('sha256').update(big).digest('hex'));
 });
+
+test('listDocuments reports each file modification time as ISO', async () => {
+  await fs.writeFile(path.join(cv, 'a.pdf'), 'x');
+  await fs.writeFile(path.join(cv, 'big.pdf'), Buffer.alloc(5 * 1024 * 1024 + 1, 1));
+  const when = new Date('2026-03-04T05:06:07.000Z');
+  await fs.utimes(path.join(cv, 'a.pdf'), when, when);
+  await fs.utimes(path.join(cv, 'big.pdf'), when, when);
+  const list = await folders().listDocuments('cv');
+  expect(list.map((f) => f.modifiedAt)).toEqual([when.toISOString(), when.toISOString()]);
+});

@@ -23,25 +23,11 @@ const CANNED = {
     skills: ['TypeScript'],
     metrics: ['team of 5'],
     contact: { location: 'Sydney', email: null, phone: null, links: [] },
-    labelSuggestion: 'Stub CV',
   },
   analyse_cover_letter: {
     previousTarget: { company: 'Stub Company', addressee: null, role: 'Stub Role' },
     reusableParagraphs: ['Stub paragraph.'],
     toneNotes: 'Stub tone.',
-    labelSuggestion: 'Stub cover letter',
-  },
-  check_cv_conflicts: {
-    conflicts: [
-      {
-        fact: 'Team size',
-        values: [
-          { sourceRef: 'a.pdf', text: 'Led a team of 5' },
-          { sourceRef: 'b.pdf', text: 'for a 5-developer team' },
-        ],
-        suggestion: 'Worked in a 5-developer team',
-      },
-    ],
   },
   score_job: {
     score: 82,
@@ -124,13 +110,12 @@ createServer((req, res) => {
       const text = userText(body);
       if (text.includes('STUB_FAIL') || failPurposes.has(purpose))
         return send(res, 500, { type: 'error', error: { type: 'api_error', message: 'stub failure' } });
-      const base = { id: 'msg_stub', type: 'message', role: 'assistant', model: body.model ?? 'stub' };
+      // "STUB_MODEL:<id>" in a document makes the answer report that model (as a server-side fallback would).
+      const answeredModel = /STUB_MODEL:(\S+)/.exec(text)?.[1];
+      const base = { id: 'msg_stub', type: 'message', role: 'assistant', model: answeredModel ?? body.model ?? 'stub' };
       if (text.includes('STUB_REFUSE'))
         return send(res, 200, { ...base, content: [], stop_reason: 'refusal', usage: { input_tokens: 1000, output_tokens: 100 } });
-      const answer = { ...(CANNED[purpose] ?? CANNED.extract_job) };
-      // "STUB_LABEL:<text>" in a document sets the label suggestion (until the end of the line).
-      const label = /STUB_LABEL:([^\r\n]+)/.exec(text)?.[1]?.trim();
-      if (label && 'labelSuggestion' in answer) answer.labelSuggestion = label;
+      const answer = CANNED[purpose] ?? CANNED.extract_job;
       return send(res, 200, {
         ...base,
         content: [{ type: 'text', text: JSON.stringify(answer) }],

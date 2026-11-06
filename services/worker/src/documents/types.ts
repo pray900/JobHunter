@@ -9,6 +9,8 @@ export interface ScannedDocument {
   kind: DocumentKind;
   sourceRef: string;
   contentHash: string;
+  // ISO time the file was last modified. Per kind, the newest readable file is the one used.
+  modifiedAt: string;
   mediaType: typeof PDF_MEDIA_TYPE | typeof DOCX_MEDIA_TYPE;
   pdfBase64: string | null;
   text: string | null;
@@ -36,6 +38,9 @@ export interface BaseCoverLetterFacts {
 }
 
 export type DocWarningCode = 'missing_work_rights' | 'degree_status_unclear' | 'banned_phrase';
+
+// Set by the base documents sync (not the worker) on every file of a kind except the one used.
+export type IgnoredFileWarningCode = 'extra_file_ignored';
 
 export interface DocWarning {
   code: DocWarningCode;

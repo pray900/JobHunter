@@ -173,3 +173,24 @@ test('delete and replace work on a hand-placed name with odd characters', async 
   expect(await fs.readdir(cv)).toEqual([name]);
   expect((await fs.readFile(path.join(cv, name))).length).toBe(PDF.length + 1);
 });
+
+test('scan reports modifiedAt for every document', async () => {
+  await fs.writeFile(path.join(cv, 'old.pdf'), PDF);
+  await fs.writeFile(path.join(cv, 'new.pdf'), PDF);
+  await fs.writeFile(path.join(cl, 'broken.docx'), 'not a zip');
+  const older = new Date('2026-01-01T00:00:00.000Z');
+  const newer = new Date('2026-02-01T10:20:30.000Z');
+  await fs.utimes(path.join(cv, 'old.pdf'), older, older);
+  await fs.utimes(path.join(cv, 'new.pdf'), newer, newer);
+  await fs.utimes(path.join(cl, 'broken.docx'), older, older);
+  const a = app();
+  const res = await a.inject({ method: 'POST', url: '/documents/scan' });
+  await a.close();
+  const docs: ScannedDocument[] = res.json().documents;
+  const byRef = Object.fromEntries(docs.map((d) => [d.sourceRef, d.modifiedAt]));
+  expect(byRef).toEqual({
+    'old.pdf': older.toISOString(),
+    'new.pdf': newer.toISOString(),
+    'broken.docx': older.toISOString(),
+  });
+});

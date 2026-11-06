@@ -11,6 +11,7 @@ async function scanKind(folders: DocumentFolders, kind: DocumentKind): Promise<S
         kind,
         sourceRef: file.name,
         contentHash: file.contentHash,
+        modifiedAt: file.modifiedAt,
         mediaType: isPdf ? PDF_MEDIA_TYPE : DOCX_MEDIA_TYPE,
       } as const;
       // Over the size limit: reported as unreadable, hash kept so changes are still detected.

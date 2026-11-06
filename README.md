@@ -43,9 +43,9 @@ The folder must exist before `docker compose up`. The worker mount is declared w
 - If the folder is missing or cannot be read, the sync fails loudly and changes nothing. It never marks jobs as removed because of a broken scan.
 - `Joblisting/`, `PersonalDetailsCV/`, `PersonalDetailsCoverLetter/` and `.env` are git-ignored, so personal data is never committed.
 
-## Where to put your CV and cover letters
+## Where to put your CV and cover letter
 
-Put your base CVs in `PersonalDetailsCV/` and your base cover letters in `PersonalDetailsCoverLetter/` in the project root. To use other folders, set `CV_DIR` and `COVER_LETTER_DIR` in `.env` and run `docker compose up -d` again.
+Put your base CV in `PersonalDetailsCV/` and your base cover letter in `PersonalDetailsCoverLetter/` in the project root. JobHunter uses **one** CV and **one** cover letter: if a folder holds more than one accepted file, the most recently modified readable one is used and the others are marked "ignored" (never sent to Claude), so remove the ones you don't want. To use other folders, set `CV_DIR` and `COVER_LETTER_DIR` in `.env` and run `docker compose up -d` again.
 
 - Accepted files are `.pdf` and `.docx`, up to 5 MB each. Names starting with `~$` or `.` are ignored.
 - Unlike the job folder, the worker mounts these two folders read-write, because uploads and deletes write to them. The worker is the only code that does.
@@ -57,6 +57,8 @@ Put your base CVs in `PersonalDetailsCV/` and your base cover letters in `Person
 Go to http://localhost:5678. The login is in `.env`: `N8N_OWNER_EMAIL` and `N8N_OWNER_PASSWORD`. The web page is on port 8080; the worker and Postgres are only reachable inside the Docker network (use `docker compose exec postgres psql -U jobhunter` for the database).
 
 In the left menu click **Workflows**, then open one. Each workflow has coloured sticky notes (`## 1. ...`, `## 2. ...`) that group the nodes into stages. Read them left to right. To see what a run did, open **Executions** in the workflow and click a run; each node shows the data it received and produced.
+
+The shipped workflows **don't save successful runs** (workflow settings `saveDataSuccessExecution: none`, `saveManualExecutions: false`), so the execution list only shows failed runs and the database doesn't fill up with a run every 30 seconds. While learning, switch it on per workflow: open the workflow, **⋯ → Settings**, set **Save successful production executions** to *Save* (and **Save manual executions** to *Save*). Re-running the bootstrap resets it.
 
 ## Reading the workflows in n8n
 

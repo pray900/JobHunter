@@ -20,22 +20,55 @@ afterAll(async () => {
 });
 
 test('applies 001_init once and seeds the single user', async () => {
-  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['001_init.sql', '002_base_documents.sql']);
+  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual([
+    '001_init.sql',
+    '002_base_documents.sql',
+    '003_single_base_document.sql',
+  ]);
   expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual([]);
   const { rows } = await pool.query('select id, name from users');
   expect(rows).toEqual([{ id: USER_ID, name: 'Prayush' }]);
 });
 
+// Applies only the named migrations from the repo, so later ones can be tested on an older DB.
+async function migrateUpTo(files: string[]): Promise<string[]> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'jobhunter-mig-'));
+  try {
+    for (const f of files) await fs.copyFile(path.join(MIGRATIONS_DIR, f), path.join(dir, f));
+    return await runMigrations(pool, dir);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
 test('applies 002 after 001', async () => {
   await pool.query('drop schema public cascade; create schema public;');
-  const dir001 = await fs.mkdtemp(path.join(os.tmpdir(), 'jobhunter-mig-'));
-  try {
-    await fs.copyFile(path.join(MIGRATIONS_DIR, '001_init.sql'), path.join(dir001, '001_init.sql'));
-    expect(await runMigrations(pool, dir001)).toEqual(['001_init.sql']);
-  } finally {
-    await fs.rm(dir001, { recursive: true, force: true });
-  }
-  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['002_base_documents.sql']);
+  expect(await migrateUpTo(['001_init.sql'])).toEqual(['001_init.sql']);
+  expect(await migrateUpTo(['001_init.sql', '002_base_documents.sql'])).toEqual(['002_base_documents.sql']);
+});
+
+test('applies 003 after 002: no labels or conflict checks, one active document per kind', async () => {
+  await pool.query('drop schema public cascade; create schema public;');
+  await migrateUpTo(['001_init.sql', '002_base_documents.sql']);
+  await pool.query(
+    `insert into base_documents(owner_id, kind, source_ref, content_hash, media_type, label) values ($1,'cv','old.pdf','h','application/pdf','x')`,
+    [USER_ID],
+  );
+  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['003_single_base_document.sql']);
+  const { rows: cols } = await pool.query(
+    `select column_name from information_schema.columns where table_name = 'base_documents' and column_name in ('label','label_suggested','active')`,
+  );
+  expect(cols.map((c) => c.column_name)).toEqual(['active']);
+  const { rows: tables } = await pool.query(`select to_regclass('base_document_checks') as t`);
+  expect(tables).toEqual([{ t: null }]);
+  const { rows: existing } = await pool.query(`select active from base_documents where source_ref = 'old.pdf'`);
+  expect(existing).toEqual([{ active: false }]);
+
+  const insert = `insert into base_documents(owner_id, kind, source_ref, content_hash, media_type, active) values ($1,$2,$3,'h','application/pdf',$4)`;
+  await pool.query(insert, [USER_ID, 'cv', 'a.pdf', true]);
+  await pool.query(insert, [USER_ID, 'cv', 'b.pdf', false]);
+  await pool.query(insert, [USER_ID, 'cover_letter', 'c.pdf', true]);
+  await expect(pool.query(insert, [USER_ID, 'cv', 'd.pdf', true])).rejects.toThrow(/duplicate key/);
 });
 
 test('jobs are unique per owner/source/source_ref', async () => {
