@@ -266,6 +266,20 @@ describe('job intake sync', () => {
     expect(normalise(req.system)).toBe(normalise(prompt));
   });
 
+  test('extraction claims at most 10 jobs per run, oldest first; the rest wait for the next run', async () => {
+    const names = Array.from({ length: 12 }, (_, i) => `job${String(i).padStart(2, '0')}.docx`);
+    for (const n of names) await writeJobFile(n, [{ text: `https://x.io/${n}` }, { text: `Job ${n}` }]);
+    const extractRequests = async () =>
+      (await stub.requests()).filter((b) => String(b.messages?.[0]?.content ?? '').startsWith('<job_ad>'));
+    await stub.reset();
+    await triggerSync();
+    expect(await extractRequests()).toHaveLength(10);
+    expect((await db.query(`select count(*)::int as n from jobs where extraction_status='done'`))[0].n).toBe(10);
+    await triggerSync();
+    expect(await extractRequests()).toHaveLength(12);
+    expect((await db.query(`select count(*)::int as n from jobs where extraction_status='done'`))[0].n).toBe(12);
+  });
+
   // Checks on the workflow JSON itself, for behaviour the fixed test env cannot reach
   // (EXTRACT_MODEL is fixed per container) or races too narrow to trigger reliably.
   describe('workflow definition', () => {
@@ -281,6 +295,11 @@ describe('job intake sync', () => {
     };
     const runPriceLookup = (model: string) =>
       new Function('$env', nodeByName('Look up model price').parameters.jsCode)({ EXTRACT_MODEL: model });
+
+    test('the claim takes at most 10 jobs, oldest first, inside the locked subquery', () => {
+      const q: string = nodeByName('Claim pending extractions').parameters.query;
+      expect(q).toMatch(/order by created_at, id\s+limit 10\s+for update skip locked/);
+    });
 
     test('unknown model stops the run before any job is claimed or Claude is called', () => {
       expect(() => runPriceLookup('claude-unknown-9')).toThrow(/No price for model "claude-unknown-9"/);

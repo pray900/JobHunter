@@ -286,6 +286,22 @@ describe('job match scoring', () => {
     expect(sentCv(body)).toEqual(cv.structured);
   });
 
+  test('claims at most 10 jobs per run, oldest first; the rest wait for the next run', async () => {
+    await readyCv('v1');
+    const names = Array.from({ length: 12 }, (_, i) => `job${String(i).padStart(2, '0')}.docx`);
+    for (const n of names) await addJob(n, `Job ${n}`);
+    await stub.reset();
+    await triggerScoring();
+    expect(await scoreRequests()).toHaveLength(10);
+    const done = (await db.query(`select source_ref from jobs where score_status='done' order by created_at`)).map((r) => r.source_ref);
+    expect(done).toEqual(names.slice(0, 10));
+    await triggerScoring();
+    expect(await scoreRequests()).toHaveLength(12);
+    expect((await db.query(`select count(*)::int as n from jobs where score_status='done'`))[0].n).toBe(12);
+    // second run only sent the 2 jobs left over
+    expect((await jobRow(names[11])).score_attempts).toBe(1);
+  });
+
   // Checks on the workflow JSON itself, for behaviour the fixed test env cannot reach.
   describe('workflow definition', () => {
     const wf = JSON.parse(readFileSync(join(ROOT, 'n8n', 'workflows', 'job-match-scoring.json'), 'utf8'));
@@ -304,6 +320,11 @@ describe('job match scoring', () => {
     };
     const runPriceLookup = (model: string) =>
       new Function('$env', nodeByName('Look up model price').parameters.jsCode)({ SCORE_MODEL: model });
+
+    test('the claim takes at most 10 jobs, oldest first, inside the locked subquery', () => {
+      const q: string = nodeByName('Claim jobs to score').parameters.query;
+      expect(q).toMatch(/order by j\.created_at, j\.id\s+limit 10\s+for update of j skip locked/);
+    });
 
     test('stable id, webhook path, CORS origins and no saved successful runs', () => {
       expect(wf.id).toBe('jh-job-match-scoring');
