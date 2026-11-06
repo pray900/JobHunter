@@ -24,6 +24,8 @@ services:
     environment:
       DATABASE_URL: postgres://jobhunter:${POSTGRES_PASSWORD}@postgres:5432/jobhunter
       JOBLISTING_DIR: /data/joblisting
+      CV_DIR: /data/cv
+      COVER_LETTER_DIR: /data/cover-letter
     volumes:
       # Long syntax with create_host_path: false, so a missing job folder fails loudly
       # instead of Compose silently creating an empty one.
@@ -31,6 +33,17 @@ services:
         source: ${JOBLISTING_DIR:-./Joblisting}
         target: /data/joblisting
         read_only: true
+        bind:
+          create_host_path: false
+      # Read-write: the worker is the only code that uploads to and deletes from these folders.
+      - type: bind
+        source: ${CV_DIR:-./PersonalDetailsCV}
+        target: /data/cv
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${COVER_LETTER_DIR:-./PersonalDetailsCoverLetter}
+        target: /data/cover-letter
         bind:
           create_host_path: false
     expose:

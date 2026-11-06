@@ -1,9 +1,13 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { JobFileReadError, JobFolderMissingError, type ReadFile } from './storage/jobFolder.js';
 import { scanJobFolder } from './jobs/scan.js';
+import { registerDocumentRoutes } from './documents/routes.js';
+import { createDocumentFolders } from './storage/documentFolder.js';
 
 export interface ServerDeps {
   jobFolderDir: string;
+  cvDir?: string;
+  coverLetterDir?: string;
   // Logger config; omitted in tests so output stays quiet. main.ts enables it.
   logger?: FastifyServerOptions['logger'];
   // Test seam forwarded to the job folder reader.
@@ -33,6 +37,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return reply.code(500).send({ error: 'job_scan_failed' });
     }
   });
+
+  registerDocumentRoutes(
+    app,
+    createDocumentFolders({
+      cv: deps.cvDir ?? './PersonalDetailsCV',
+      cover_letter: deps.coverLetterDir ?? './PersonalDetailsCoverLetter',
+    }),
+  );
 
   return app;
 }

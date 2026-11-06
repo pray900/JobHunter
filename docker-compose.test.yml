@@ -24,10 +24,22 @@ services:
     environment:
       DATABASE_URL: postgres://jobhunter:test@postgres:5432/jobhunter
       JOBLISTING_DIR: /data/joblisting
+      CV_DIR: /data/cv
+      COVER_LETTER_DIR: /data/cover-letter
     volumes:
       - type: bind
         source: ./.tmp/e2e-joblisting
         target: /data/joblisting
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./.tmp/e2e-cv
+        target: /data/cv
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./.tmp/e2e-cover-letter
+        target: /data/cover-letter
         bind:
           create_host_path: false
     expose:

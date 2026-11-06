@@ -43,6 +43,15 @@ The folder must exist before `docker compose up`. The worker mount is declared w
 - If the folder is missing or cannot be read, the sync fails loudly and changes nothing. It never marks jobs as removed because of a broken scan.
 - `Joblisting/`, `PersonalDetailsCV/`, `PersonalDetailsCoverLetter/` and `.env` are git-ignored, so personal data is never committed.
 
+## Where to put your CV and cover letters
+
+Put your base CVs in `PersonalDetailsCV/` and your base cover letters in `PersonalDetailsCoverLetter/` in the project root. To use other folders, set `CV_DIR` and `COVER_LETTER_DIR` in `.env` and run `docker compose up -d` again.
+
+- Accepted files are `.pdf` and `.docx`, up to 5 MB each. Names starting with `~$` or `.` are ignored.
+- Unlike the job folder, the worker mounts these two folders read-write, because uploads and deletes write to them. The worker is the only code that does.
+- Uploaded file names are cleaned to letters, digits, space and `. _ ( ) -`. Uploading a name that already exists is refused unless you choose to replace it.
+- Both mounts use `create_host_path: false`, so create the folders before `docker compose up` (Docker Desktop on Windows may still create a missing one, so check the path).
+
 ## Open n8n
 
 Go to http://localhost:5678. The login is in `.env`: `N8N_OWNER_EMAIL` and `N8N_OWNER_PASSWORD`. The web page is on port 8080; the worker and Postgres are only reachable inside the Docker network (use `docker compose exec postgres psql -U jobhunter` for the database).

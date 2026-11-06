@@ -13,5 +13,10 @@ const migrationsDir = process.env.MIGRATIONS_DIR ?? path.resolve(here, '../../..
 const applied = await runMigrations(pool, migrationsDir);
 console.log(`migrations applied: ${applied.join(', ') || 'none'}`);
 
-const app = buildServer({ jobFolderDir: process.env.JOBLISTING_DIR ?? './Joblisting', logger: true });
+const app = buildServer({
+  jobFolderDir: process.env.JOBLISTING_DIR ?? './Joblisting',
+  cvDir: process.env.CV_DIR ?? './PersonalDetailsCV',
+  coverLetterDir: process.env.COVER_LETTER_DIR ?? './PersonalDetailsCoverLetter',
+  logger: true,
+});
 await app.listen({ host: '0.0.0.0', port: 3001 });
