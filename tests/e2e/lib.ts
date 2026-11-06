@@ -53,11 +53,35 @@ export function removeJobFile(name: string): void {
   rmSync(join(JOB_DIR, name), { force: true });
 }
 
-/** Per-test reset: empty job tables, empty job folder, clear stub request log. */
+export type DocumentKind = 'cv' | 'cover_letter';
+const documentDir = (kind: DocumentKind) => (kind === 'cv' ? CV_DIR : COVER_LETTER_DIR);
+
+/** Writes a base CV / cover letter into its e2e folder (never the real PersonalDetails* folders). */
+export function writeDocument(kind: DocumentKind, name: string, bytes: string | Buffer): void {
+  mkdirSync(documentDir(kind), { recursive: true });
+  writeFileSync(join(documentDir(kind), name), bytes);
+}
+
+export function removeDocument(kind: DocumentKind, name: string): void {
+  rmSync(join(documentDir(kind), name), { force: true });
+}
+
+/** A tiny file that starts with the PDF magic; the stub does not parse it, it only searches its text. */
+export function makePdf(text: string): Buffer {
+  return Buffer.from(`%PDF-1.4\n% ${text}\n%%EOF\n`, 'latin1');
+}
+
+const emptyDir = (dir: string) => {
+  mkdirSync(dir, { recursive: true });
+  for (const f of readdirSync(dir)) rmSync(join(dir, f), { recursive: true, force: true });
+};
+
+/** Per-test reset: empty job and base-document tables, empty the e2e folders, clear the stub log. */
 export async function resetState(): Promise<void> {
-  await db.query('truncate jobs, job_status_history, cost_log');
-  mkdirSync(JOB_DIR, { recursive: true });
-  for (const f of readdirSync(JOB_DIR)) rmSync(join(JOB_DIR, f), { recursive: true, force: true });
+  await db.query('truncate jobs, job_status_history, cost_log, base_documents, base_document_checks');
+  emptyDir(JOB_DIR);
+  emptyDir(CV_DIR);
+  emptyDir(COVER_LETTER_DIR);
   await stub.reset();
 }
 
@@ -69,6 +93,13 @@ export async function triggerSync(): Promise<void> {
   const res = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST', headers: SYNC_HEADERS });
   if (!res.ok) throw new Error(`sync failed: ${res.status} ${await res.text()}`);
   await res.arrayBuffer();
+}
+
+/** Runs the base documents sync workflow and returns its JSON summary. */
+export async function triggerDocumentsSync(): Promise<{ ok: boolean; scanned: number; analysed: number; conflictsChecked: boolean }> {
+  const res = await fetch(`${N8N_URL}/webhook/api/documents/sync`, { method: 'POST', headers: SYNC_HEADERS });
+  if (!res.ok) throw new Error(`documents sync failed: ${res.status} ${await res.text()}`);
+  return res.json() as any;
 }
 
 export const db = {
@@ -86,6 +117,14 @@ export const db = {
 export const stub = {
   async requests(): Promise<any[]> {
     return (await fetch(`${STUB_URL}/_requests`)).json() as Promise<any[]>;
+  },
+  /** Recorded requests with their headers: [{ headers, body }]. */
+  async requestLog(): Promise<{ headers: Record<string, string>; body: any }[]> {
+    return (await fetch(`${STUB_URL}/_request_log`)).json() as Promise<any[]>;
+  },
+  /** Every request whose system prompt starts with "purpose: <purpose>" answers 500 until reset. */
+  async failPurpose(purpose: string): Promise<void> {
+    await fetch(`${STUB_URL}/_fail_purpose`, { method: 'POST', body: JSON.stringify({ purpose }) });
   },
   async reset(): Promise<void> {
     await fetch(`${STUB_URL}/_reset`, { method: 'POST' });

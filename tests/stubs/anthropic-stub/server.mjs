@@ -1,14 +1,59 @@
 // Minimal Anthropic Messages API stub for e2e tests.
+// Answers by request purpose: the first line of the system prompt is "purpose: <name>".
+// A system prompt without that line is Plan 1's job extraction ("extract_job").
 import { createServer } from 'node:http';
 
 const PORT = Number(process.env.PORT ?? 8080);
+
 const CANNED = {
-  title: 'Stub Title',
-  employer: 'Stub Employer',
-  advertiser: null,
-  short_description: 'Stub description.',
+  extract_job: {
+    title: 'Stub Title',
+    employer: 'Stub Employer',
+    advertiser: null,
+    short_description: 'Stub description.',
+  },
+  // workRights is null so the worker's checks report missing_work_rights.
+  analyse_cv: {
+    headline: 'Stub Headline',
+    summary: 'Stub summary.',
+    workRights: null,
+    education: [{ qualification: 'Stub Degree', institution: 'Stub University', dates: '2020 – 2023', statusText: 'Completed' }],
+    roles: [{ title: 'Stub Engineer', employer: 'Stub Employer', dates: '2023 – 2024', bullets: ['Led a team of 5'] }],
+    projects: [{ name: 'Stub Project', bullets: ['Built a stub'] }],
+    skills: ['TypeScript'],
+    metrics: ['team of 5'],
+    contact: { location: 'Sydney', email: null, phone: null, links: [] },
+    labelSuggestion: 'Stub CV',
+  },
+  analyse_cover_letter: {
+    previousTarget: { company: 'Stub Company', addressee: null, role: 'Stub Role' },
+    reusableParagraphs: ['Stub paragraph.'],
+    toneNotes: 'Stub tone.',
+    labelSuggestion: 'Stub cover letter',
+  },
+  check_cv_conflicts: {
+    conflicts: [
+      {
+        fact: 'Team size',
+        values: [
+          { sourceRef: 'a.pdf', text: 'Led a team of 5' },
+          { sourceRef: 'b.pdf', text: 'for a 5-developer team' },
+        ],
+        suggestion: 'Worked in a 5-developer team',
+      },
+    ],
+  },
+  score_job: {
+    score: 82,
+    explanation: '82%: Stub match explanation.',
+    matched: ['TypeScript'],
+    missing: [],
+    notes: [],
+  },
 };
-let requests = [];
+
+let requests = []; // { headers, body }
+let failPurposes = new Set();
 
 const send = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -17,20 +62,41 @@ const send = (res, status, body) => {
 const err = (res, status, message) =>
   send(res, status, { type: 'error', error: { type: 'invalid_request_error', message } });
 
+// Text the test can steer the stub with: text blocks, plus the bytes of base64 documents
+// (test PDFs are plain text with a %PDF- header).
+const blockText = (c) => {
+  if (c?.type === 'document' && c.source?.type === 'base64') return Buffer.from(c.source.data ?? '', 'base64').toString('latin1');
+  return c?.text ?? '';
+};
 const userText = (body) =>
   (body?.messages ?? [])
     .filter((m) => m.role === 'user')
-    .map((m) => (typeof m.content === 'string' ? m.content : (m.content ?? []).map((c) => c.text ?? '').join('\n')))
+    .map((m) => (typeof m.content === 'string' ? m.content : (m.content ?? []).map(blockText).join('\n')))
     .join('\n');
+
+const systemText = (body) =>
+  typeof body?.system === 'string' ? body.system : (body?.system ?? []).map((b) => b.text ?? '').join('\n');
+const purposeOf = (body) => /^purpose: *([a-z_]+)/.exec(systemText(body))?.[1] ?? 'extract_job';
 
 createServer((req, res) => {
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     const url = req.url.split('?')[0];
-    if (req.method === 'GET' && url === '/_requests') return send(res, 200, requests);
+    if (req.method === 'GET' && url === '/_requests') return send(res, 200, requests.map((r) => r.body));
+    if (req.method === 'GET' && url === '/_request_log') return send(res, 200, requests);
     if (req.method === 'POST' && url === '/_reset') {
       requests = [];
+      failPurposes = new Set();
+      return send(res, 200, { ok: true });
+    }
+    // Test control: every request with this purpose answers 500 until /_reset.
+    if (req.method === 'POST' && url === '/_fail_purpose') {
+      try {
+        failPurposes.add(JSON.parse(Buffer.concat(chunks).toString('utf8')).purpose);
+      } catch {
+        return err(res, 400, 'invalid JSON');
+      }
       return send(res, 200, { ok: true });
     }
     if (req.method === 'GET' && url === '/health') return send(res, 200, { ok: true });
@@ -53,15 +119,21 @@ createServer((req, res) => {
       } catch {
         return err(res, 400, 'invalid JSON');
       }
-      requests.push(body);
+      requests.push({ headers: req.headers, body });
+      const purpose = purposeOf(body);
       const text = userText(body);
-      if (text.includes('STUB_FAIL')) return send(res, 500, { type: 'error', error: { type: 'api_error', message: 'stub failure' } });
+      if (text.includes('STUB_FAIL') || failPurposes.has(purpose))
+        return send(res, 500, { type: 'error', error: { type: 'api_error', message: 'stub failure' } });
       const base = { id: 'msg_stub', type: 'message', role: 'assistant', model: body.model ?? 'stub' };
       if (text.includes('STUB_REFUSE'))
         return send(res, 200, { ...base, content: [], stop_reason: 'refusal', usage: { input_tokens: 1000, output_tokens: 100 } });
+      const answer = { ...(CANNED[purpose] ?? CANNED.extract_job) };
+      // "STUB_LABEL:<text>" in a document sets the label suggestion (until the end of the line).
+      const label = /STUB_LABEL:([^\r\n]+)/.exec(text)?.[1]?.trim();
+      if (label && 'labelSuggestion' in answer) answer.labelSuggestion = label;
       return send(res, 200, {
         ...base,
-        content: [{ type: 'text', text: JSON.stringify(CANNED) }],
+        content: [{ type: 'text', text: JSON.stringify(answer) }],
         stop_reason: 'end_turn',
         usage: { input_tokens: 1000, output_tokens: 100 },
       });

@@ -55,7 +55,7 @@ describe('e2e infrastructure', () => {
 
     execFileSync('bash', [join(ROOT, 'scripts', 'n8n-bootstrap.sh'), composeFile], { cwd: ROOT, stdio: 'inherit' });
 
-    expect(activeIds()).toEqual(['jh-job-intake-sync', 'jh-jobs-api']);
+    expect(activeIds()).toEqual(['jh-base-documents-sync', 'jh-job-intake-sync', 'jh-jobs-api']);
     expect(n8n(['sh', '-c', 'test -e /tmp/jh-credentials.json && echo present || echo absent']).trim()).toBe('absent');
   }, 300_000);
 });
