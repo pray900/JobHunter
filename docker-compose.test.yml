@@ -37,6 +37,17 @@ services:
       postgres:
         condition: service_healthy
 
+  anthropic-stub:
+    build:
+      context: tests/stubs/anthropic-stub
+    ports:
+      - "58081:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   n8n:
     image: n8nio/n8n:2.46.6
     ports:
@@ -54,6 +65,7 @@ services:
       - ./n8n/workflows:/workflows:ro
     depends_on:
       - worker
+      - anthropic-stub
 
 volumes:
   pg_test_data:

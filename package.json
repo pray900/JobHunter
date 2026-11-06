@@ -1,5 +1,6 @@
 {
   "name": "jobhunter",
   "private": true,
+  "scripts": { "e2e": "vitest run --config tests/e2e/vitest.config.ts" },
   "workspaces": ["services/worker", "apps/web", "tests/e2e"]
 }
