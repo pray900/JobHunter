@@ -46,6 +46,12 @@ services:
         target: /data/cover-letter
         bind:
           create_host_path: false
+      - type: bind
+        source: ./config
+        target: /app/config
+        read_only: true
+        bind:
+          create_host_path: false
     expose:
       - "3001"
     healthcheck:

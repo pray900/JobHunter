@@ -12,6 +12,8 @@ export interface ServerDeps {
   logger?: FastifyServerOptions['logger'];
   // Test seam forwarded to the job folder reader.
   readFile?: ReadFile;
+  // One banned phrase per line. Defaults to BANNED_PHRASES_FILE or the container path.
+  bannedPhrasesFile?: string;
 }
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
@@ -47,6 +49,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       },
       (message, context) => app.log.warn(context, message),
     ),
+    deps.bannedPhrasesFile ??
+      process.env.BANNED_PHRASES_FILE ??
+      '/app/config/banned-phrases.txt',
   );
 
   return app;

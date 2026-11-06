@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import multipart from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
 import {
@@ -10,8 +11,14 @@ import {
   sanitiseDocumentName,
   type DocumentFolders,
 } from '../storage/documentFolder.js';
+import { checkBaseCoverLetter, checkBaseCv, parseBannedPhrases } from './checks.js';
 import { scanDocuments } from './scan.js';
-import { DOCUMENT_KINDS, type DocumentKind } from './types.js';
+import {
+  DOCUMENT_KINDS,
+  type BaseCoverLetterFacts,
+  type BaseCvFacts,
+  type DocumentKind,
+} from './types.js';
 
 const isKind = (s: string): s is DocumentKind => (DOCUMENT_KINDS as readonly string[]).includes(s);
 
@@ -23,7 +30,11 @@ function bytesMatchExtension(name: string, bytes: Buffer): boolean {
 }
 
 // Never logs document contents.
-export function registerDocumentRoutes(app: FastifyInstance, folders: DocumentFolders): void {
+export function registerDocumentRoutes(
+  app: FastifyInstance,
+  folders: DocumentFolders,
+  bannedPhrasesFile: string,
+): void {
   // preservePath keeps "a/b.pdf" intact so it is rejected instead of silently trimmed to "b.pdf".
   void app.register(multipart, {
     preservePath: true,
@@ -44,6 +55,25 @@ export function registerDocumentRoutes(app: FastifyInstance, folders: DocumentFo
         request.log.error({ err }, 'document scan failed');
       }
       return reply.code(500).send({ error: 'document_scan_failed' });
+    }
+  });
+
+  // Pure checks on analysed facts. The phrase list is read per request, so edits apply without a restart.
+  app.post<{ Body: { kind?: unknown; facts?: unknown } }>('/documents/checks', async (request, reply) => {
+    const { kind, facts } = request.body ?? {};
+    if (typeof kind !== 'string' || !isKind(kind) || !facts || typeof facts !== 'object') {
+      return reply.code(400).send({ error: 'bad_request' });
+    }
+    try {
+      const bannedPhrases = parseBannedPhrases(await fs.readFile(bannedPhrasesFile, 'utf8'));
+      const warnings =
+        kind === 'cv'
+          ? checkBaseCv(facts as BaseCvFacts, bannedPhrases)
+          : checkBaseCoverLetter(facts as BaseCoverLetterFacts, bannedPhrases);
+      return { warnings };
+    } catch (err) {
+      request.log.error({ kind, file: bannedPhrasesFile, err }, 'document checks failed');
+      return reply.code(500).send({ error: 'document_checks_failed' });
     }
   });
 

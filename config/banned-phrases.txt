@@ -1,0 +1,13 @@
+# Phrases that read as AI or cliche. One per line; case-insensitive, whole words.
+# Base documents only get an informational warning; generated output must avoid these.
+spearheaded
+leveraged
+leveraging
+results-driven
+passionate
+dynamic
+proven track record
+thrilled
+fast-paced
+synergies
+express my interest

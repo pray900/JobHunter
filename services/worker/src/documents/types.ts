@@ -14,3 +14,30 @@ export interface ScannedDocument {
   text: string | null;
   warnings: 'unreadable_file'[];
 }
+
+// Analysis output for a base CV. Task 4's JSON schema mirrors this shape.
+export interface BaseCvFacts {
+  headline: string | null;
+  summary: string | null;
+  workRights: string | null;
+  education: { qualification: string; institution: string; dates: string; statusText: string }[];
+  roles: { title: string; employer: string; dates: string; bullets: string[] }[];
+  projects: { name: string; bullets: string[] }[];
+  skills: string[];
+  metrics: string[];
+  contact: { location: string | null; email: string | null; phone: string | null; links: string[] };
+}
+
+// Analysis output for a base cover letter.
+export interface BaseCoverLetterFacts {
+  previousTarget: { company: string | null; addressee: string | null; role: string | null };
+  reusableParagraphs: string[];
+  toneNotes: string;
+}
+
+export type DocWarningCode = 'missing_work_rights' | 'degree_status_unclear' | 'banned_phrase';
+
+export interface DocWarning {
+  code: DocWarningCode;
+  detail: string;
+}
