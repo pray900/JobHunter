@@ -10,10 +10,14 @@ export class ApiError extends Error {
   }
 }
 
+// Sent on every request. The n8n sync webhook refuses POSTs without it, so another site
+// cannot trigger a sync with a "simple" cross-site form/text POST (CSRF guard).
+const JOBHUNTER_HEADERS = { 'X-JobHunter': '1' };
+
 async function getJson<T>(path: string): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, { headers: { Accept: 'application/json' } });
+    res = await fetch(path, { headers: { Accept: 'application/json', ...JOBHUNTER_HEADERS } });
   } catch (err) {
     throw new ApiError(0, `GET ${path} failed: ${err instanceof Error ? err.message : 'network error'}`);
   }

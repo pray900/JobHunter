@@ -28,3 +28,12 @@ test('fetchJobs throws ApiError on non-2xx', async () => {
   await expect(fetchJobs()).rejects.toMatchObject({ name: 'ApiError', status: 502 });
   await expect(fetchJobs()).rejects.toBeInstanceOf(ApiError);
 });
+
+test('every request sends the X-JobHunter: 1 header (CSRF guard on the n8n webhooks)', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ jobs: [] }), { status: 200 }));
+  vi.stubGlobal('fetch', fetchMock);
+  await fetchJobs();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(new Headers(init.headers).get('X-JobHunter')).toBe('1');
+});

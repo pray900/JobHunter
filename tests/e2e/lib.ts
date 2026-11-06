@@ -57,9 +57,12 @@ export async function resetState(): Promise<void> {
   await stub.reset();
 }
 
+/** The sync webhook refuses requests without this header (CSRF guard); the web app sends it too. */
+export const SYNC_HEADERS = { 'X-JobHunter': '1' };
+
 /** Runs the sync workflow and resolves once it responds (needs Task 5's webhook). */
 export async function triggerSync(): Promise<void> {
-  const res = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST' });
+  const res = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST', headers: SYNC_HEADERS });
   if (!res.ok) throw new Error(`sync failed: ${res.status} ${await res.text()}`);
   await res.arrayBuffer();
 }

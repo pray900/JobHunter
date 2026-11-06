@@ -13,8 +13,8 @@
         -100
       ],
       "parameters": {
-        "content": "## Start\nTwo ways to start a sync:\n- **Every 30 seconds** (only when env `JOBHUNTER_SCHEDULE_ENABLED` is not `false`; the e2e test stack turns it off).\n- **POST /webhook/api/jobs/sync** — the app and tests call this; it answers once the run has finished.",
-        "height": 520,
+        "content": "## Start\nTwo ways to start a sync:\n- **Every 30 seconds** (only when env `JOBHUNTER_SCHEDULE_ENABLED` is not `false`; the e2e test stack turns it off).\n- **POST /webhook/api/jobs/sync** — the app and tests call this; it answers once the run has finished.\n\n**Has X-JobHunter header?** The webhook only runs when the request carries `X-JobHunter: 1` (the web app sends it). Anything else gets `403 {\"error\":\"missing_jobhunter_header\"}` and nothing runs. This stops other websites triggering a sync with a cross-site POST (CSRF): CORS blocks reading the answer, not sending a plain `text/plain` POST. The schedule does not pass through this check.",
+        "height": 760,
         "width": 480,
         "color": 7
       }
@@ -798,6 +798,57 @@
         "respondWith": "firstIncomingItem",
         "options": {}
       }
+    },
+    {
+      "id": "02b4ddd2-1fe8-447b-ab9b-aa4918609ae0",
+      "name": "Has X-JobHunter header?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a647ae68-83fa-4885-b23a-425840a20f1c",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "rightValue": "1",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "4eac7d2b-447a-4874-a4ce-9800c9e745ac",
+      "name": "Respond: missing X-JobHunter header",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        520
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"missing_jobhunter_header\" } }}",
+        "options": {
+          "responseCode": 403
+        }
+      }
     }
   ],
   "connections": {
@@ -828,7 +879,7 @@
       "main": [
         [
           {
-            "node": "Scan job folder",
+            "node": "Has X-JobHunter header?",
             "type": "main",
             "index": 0
           }
@@ -1105,6 +1156,24 @@
         [
           {
             "node": "Respond with summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header?": {
+      "main": [
+        [
+          {
+            "node": "Scan job folder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header",
             "type": "main",
             "index": 0
           }

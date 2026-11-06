@@ -6,6 +6,7 @@ import {
   JOB_DIR,
   N8N_URL,
   ROOT,
+  SYNC_HEADERS,
   compose,
   db,
   removeJobFile,
@@ -56,10 +57,10 @@ describe('job intake sync', () => {
   test('webhook responds with scan and extraction counts', async () => {
     await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
     await writeJobFile('b.docx', [{ text: 'https://x.io/b' }, { text: 'Job B' }]);
-    const res = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST' });
+    const res = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST', headers: SYNC_HEADERS });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, scanned: 2, extracted: 2 });
-    const again = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST' });
+    const again = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST', headers: SYNC_HEADERS });
     expect(await again.json()).toEqual({ ok: true, scanned: 2, extracted: 0 });
   });
 
@@ -316,7 +317,7 @@ describe('job intake sync', () => {
     });
 
     const expectNothingChanged = async () => {
-      const res = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST' });
+      const res = await fetch(`${N8N_URL}/webhook/api/jobs/sync`, { method: 'POST', headers: SYNC_HEADERS });
       expect(res.status).toBe(502);
       expect(await res.json()).toEqual({ ok: false, error: 'scan_failed' });
       // Nothing marked removed and nothing claimed for extraction.

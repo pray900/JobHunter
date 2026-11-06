@@ -56,6 +56,7 @@ In the left menu click **Workflows**, then open one. Each workflow has coloured 
 Runs every 30 seconds and also when the web page or a test calls `POST /webhook/api/jobs/sync`.
 
 - **Start**: the "Every 30 seconds" schedule (switched off when `JOBHUNTER_SCHEDULE_ENABLED` is `false`, as in the test stack) or the webhook.
+- **Header check** (webhook only): `POST /webhook/api/jobs/sync` must send the header `X-JobHunter: 1` (the web app always does), otherwise it answers `403 {"error":"missing_jobhunter_header"}` and nothing runs. This stops other websites triggering a sync from your browser with a plain cross-site POST, which CORS alone does not block. Call it yourself with `curl -X POST -H 'X-JobHunter: 1' http://localhost:5678/webhook/api/jobs/sync`.
 - **1. Scan folder**: asks the worker to read every `.docx`. If the scan fails, the run answers 502 and stops with no changes.
 - **2. Upsert jobs**: one query per file. New file: insert the job and its first status. Known file: refresh the text and link, and only if the content changed reset the extraction. Unreadable or empty files are marked `skipped` and never sent to Claude.
 - **3. Mark removed files**: jobs whose file is gone get `source_removed = true`. The job itself is kept.
