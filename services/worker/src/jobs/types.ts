@@ -5,3 +5,12 @@ export interface ParsedJob {
   body: string;
   warnings: WarningCode[];
 }
+
+export interface ScannedJob {
+  source: 'folder';
+  sourceRef: string;
+  contentHash: string;
+  url: string | null;
+  body: string;
+  warnings: WarningCode[];
+}
