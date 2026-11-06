@@ -29,3 +29,20 @@ test('URL only → empty_description', async () => {
 test('corrupt file returns unreadable warning', async () => {
   expect(await parseJobDocx(Buffer.from('not a zip'))).toEqual({ url: null, body: '', warnings: ['unreadable_file'] });
 });
+test('nested list items are not duplicated', async () => {
+  const r = await parseJobDocx(await makeDocx([
+    { text: 'https://x.io' },
+    { listItem: { text: 'Apex', level: 0 } },
+    { listItem: { text: 'Triggers', level: 1 } },
+    { listItem: { text: 'LWC', level: 0 } },
+  ]));
+  expect(r.body).toBe('Apex\nTriggers\nLWC');
+});
+test('soft line breaks separate words', async () => {
+  const r = await parseJobDocx(await makeDocx([{ text: 'https://x.io' }, { lines: ['Apex', 'LWC'] }]));
+  expect(r.body).toBe('Apex\nLWC');
+});
+test('URL followed by a soft break keeps a clean URL and the rest in the body', async () => {
+  const r = await parseJobDocx(await makeDocx([{ lines: ['https://x.io/a', 'more text'] }, { text: 'Body' }]));
+  expect(r).toEqual({ url: 'https://x.io/a', body: 'more text\nBody', warnings: [] });
+});

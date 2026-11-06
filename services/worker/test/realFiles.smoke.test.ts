@@ -9,10 +9,10 @@ const dir = process.env.JOBLISTING_DIR ?? path.resolve(here, '../../../Joblistin
 const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.docx') && !f.startsWith('~$')) : [];
 
 describe.skipIf(files.length === 0)('real job files', () => {
-  test.each(files)('%s parses to an http(s) URL and a non-empty body', async (file) => {
+  test.each(files.map((f, i) => [i + 1, f] as const))('file #%i parses to an http(s) URL and a non-empty body', async (_n, file) => {
     const r = await parseJobDocx(readFileSync(path.join(dir, file)));
-    expect(r.url).toMatch(/^https?:\/\/\S+$/);
-    expect(r.body.length).toBeGreaterThan(0);
+    expect(/^https?:\/\/\S+$/.test(r.url ?? '')).toBe(true);
+    expect(r.body.length > 0).toBe(true);
     expect(r.warnings).toEqual([]);
   });
 });
