@@ -173,6 +173,8 @@ Prompt must say: judge only from the base CVs (never assume skills not stated); 
 
 Also include the 403 gate (`X-JobHunter: 1`) on `POST api/jobs/score` and `saveDataSuccessExecution: "none"`.
 
+**Amended 2026-11-07 (Prayush approved after the Task 5 review):** the reset stage tags each job with the new basis and clears its old score (`match_basis_hash` means "the basis this job's score state belongs to", not only "the basis of the saved score"), so a job resets once per new CV and the 3-attempt cap holds. Claims take at most **10 jobs per run** (ordered oldest first); the same limit applies to Plan 1's extraction claim in `job-intake-sync.json`.
+
 - [ ] **Step 1: Write failing e2e tests** — `scores a job against the base CV` (score, explanation starts with "%:" pattern from stub, breakdown saved, basis hash = current, cost row purpose `score_job`); `no base CVs means no scoring calls`; `unchanged basis doesn't rescore`; `CV change rescores all jobs` (change a CV file → documents sync → scoring sync → stub saw a new score call per job, basis updated); `basis change during scoring rescores` (force a job `in_progress` with an old basis claim, change basis, sync → job ends scored with the new basis, never saved with the old one); `job file edit rescores that job` (extraction resets → after re-extraction the job is scored again); `scoring failure is retried with backoff then gives up`; `sends fallbacks for sonnet`.
 - [ ] **Step 2–4:** run (FAIL) → build → `npm run e2e` (PASS).
 - [ ] **Step 5: Commit** `feat(n8n): job match scoring`
