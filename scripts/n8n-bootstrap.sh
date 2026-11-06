@@ -111,6 +111,46 @@ for (const f of fs.readdirSync("/workflows").filter((f) => f.endsWith(".json")).
 
 remove_temp_credentials() { n8n_exec rm -f /tmp/jh-credentials.json >/dev/null 2>&1 || true; }
 
+# Checks $ANTHROPIC_KEY with a free request (GET /v1/models) before it is saved into n8n,
+# so a wrong key stops the bootstrap instead of turning up later as failed extractions.
+# Runs inside the n8n container (the same network path n8n uses). The key travels over
+# stdin, never argv, and is never printed. Base URL: JOBHUNTER_ANTHROPIC_BASE_URL (the
+# tests point it at the stub), else the container's ANTHROPIC_BASE_URL, else
+# https://api.anthropic.com. Returns 1 with a message on any failure.
+check_anthropic_key() {
+  local result
+  result="$(KEY="${ANTHROPIC_KEY:-}" BASE="${JOBHUNTER_ANTHROPIC_BASE_URL:-}" node -e '
+process.stdout.write(JSON.stringify({ key: process.env.KEY, base: process.env.BASE }));' |
+    n8n_exec node -e '
+(async () => {
+  let input = "";
+  for await (const c of process.stdin) input += c;
+  const { key, base } = JSON.parse(input);
+  const url = (base || process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/+$/, "") + "/v1/models";
+  try {
+    const r = await fetch(url, { headers: { "x-api-key": key, "anthropic-version": "2026-10-21" }, signal: AbortSignal.timeout(20000) });
+    console.log(r.status);
+  } catch (e) {
+    console.log("network " + ((e.cause && e.cause.code) || e.name || "error"));
+  }
+})().catch(() => console.log("error"));' | tr -d '\r')" || true
+  case "$result" in
+    200) echo "[bootstrap] Anthropic API key accepted" ;;
+    401 | 403)
+      echo "Your Anthropic API key was rejected — check ANTHROPIC_API_KEY in .env" >&2
+      return 1 ;;
+    network\ *)
+      echo "Could not reach the Anthropic API to check the key (${result#network }). Check your internet connection and run the bootstrap again." >&2
+      return 1 ;;
+    [0-9][0-9][0-9])
+      echo "Checking the Anthropic API key failed: GET /v1/models answered HTTP $result. Try the bootstrap again later." >&2
+      return 1 ;;
+    *)
+      echo "Could not run the Anthropic API key check inside the n8n container." >&2
+      return 1 ;;
+  esac
+}
+
 # Sourced (tests): stop here, having only defined settings and functions.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -151,6 +191,8 @@ if [ "$IS_TEST_STACK" = 1 ]; then
 else
   ANTHROPIC_KEY="$(env_value ANTHROPIC_API_KEY)"
   [ -n "$ANTHROPIC_KEY" ] || { echo "ANTHROPIC_API_KEY is empty in .env" >&2; exit 1; }
+  echo "[bootstrap] checking the Anthropic API key"
+  check_anthropic_key || exit 1
 fi
 # Remove the in-container temp file holding secrets even if a step fails or is interrupted.
 trap remove_temp_credentials EXIT

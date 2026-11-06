@@ -34,6 +34,15 @@ createServer((req, res) => {
       return send(res, 200, { ok: true });
     }
     if (req.method === 'GET' && url === '/health') return send(res, 200, { ok: true });
+    // Free key check used by the bootstrap. Not recorded in /_requests.
+    if (req.method === 'GET' && url === '/v1/models') {
+      if (req.headers['anthropic-version'] !== '2026-10-21')
+        return err(res, 400, 'anthropic-version must be 2026-10-21');
+      const key = req.headers['x-api-key'];
+      if (!key || key === 'bad-key')
+        return send(res, 401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } });
+      return send(res, 200, { data: [{ type: 'model', id: 'claude-haiku-5-5' }], has_more: false });
+    }
     if (req.method === 'POST' && url === '/v1/messages') {
       if (!req.headers['x-api-key']) return err(res, 400, 'x-api-key header required');
       if (req.headers['anthropic-version'] !== '2026-10-21')

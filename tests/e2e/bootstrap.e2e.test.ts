@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -72,5 +72,60 @@ describe('bootstrap script helpers', () => {
     const [composeFile, isTest] = out.trim().split('\n');
     expect(existsSync(composeFile)).toBe(true);
     expect(isTest).toBe('1');
+  });
+});
+
+// check_anthropic_key runs inside the TEST stack's n8n container against the stub
+// (JOBHUNTER_ANTHROPIC_BASE_URL override), never against the real API or real key.
+describe('bootstrap Anthropic key check', () => {
+  const TEST_COMPOSE = join(ROOT, 'docker-compose.test.yml');
+  const check = (key: string, baseUrl: string) => {
+    const r = spawnSync('bash', ['-c', '. "$SCRIPT" "$@"\ncheck_anthropic_key', 'bash', TEST_COMPOSE], {
+      cwd: tmpdir(),
+      env: { ...process.env, SCRIPT, JOBHUNTER_ENV_FILE: join(tmpdir(), 'jh-no-such.env'), ANTHROPIC_KEY: key, JOBHUNTER_ANTHROPIC_BASE_URL: baseUrl },
+      encoding: 'utf8',
+    });
+    return { status: r.status, out: r.stdout + r.stderr };
+  };
+  const STUB = 'http://anthropic-stub:8080';
+
+  test('accepted key: continues', () => {
+    const { status, out } = check('sk-good-secret-123', STUB);
+    expect(status).toBe(0);
+    expect(out).toContain('Anthropic API key accepted');
+    expect(out).not.toContain('sk-good-secret-123');
+  });
+
+  test('rejected key (401): stops with a clear message', () => {
+    const { status, out } = check('bad-key', STUB);
+    expect(status).toBe(1);
+    expect(out).toContain('Your Anthropic API key was rejected — check ANTHROPIC_API_KEY in .env');
+    expect(out).not.toContain('bad-key');
+  });
+
+  test('other status: stops and names the status, not the key', () => {
+    const { status, out } = check('sk-good-secret-123', `${STUB}/nowhere`);
+    expect(status).toBe(1);
+    expect(out).toContain('HTTP 404');
+    expect(out).not.toContain('sk-good-secret-123');
+  });
+
+  test('network error: stops with a clear message', () => {
+    const { status, out } = check('sk-good-secret-123', 'http://no-such-host.invalid');
+    expect(status).toBe(1);
+    expect(out).toMatch(/Could not reach the Anthropic API/);
+    expect(out).not.toContain('sk-good-secret-123');
+  });
+
+  test('runs on the main stack only, before credentials are imported', () => {
+    const script = readFileSync(SCRIPT, 'utf8');
+    const main = script.slice(script.indexOf('\nensure_owner_login\n'));
+    const realKey = main.indexOf('ANTHROPIC_KEY="$(env_value ANTHROPIC_API_KEY)"');
+    const call = main.indexOf('check_anthropic_key || exit 1');
+    expect(realKey).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(realKey);
+    expect(call).toBeLessThan(main.indexOf('import:credentials'));
+    // Inside the else (main stack) branch, not after the fi.
+    expect(main.slice(realKey, call)).not.toMatch(/^fi$/m);
   });
 });
