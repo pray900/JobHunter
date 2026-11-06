@@ -116,35 +116,44 @@ for (const f of fs.readdirSync("/workflows").filter((f) => f.endsWith(".json")).
 # n8n sees an active workflow and publishes the OLD version; while it is queued, the startup
 # re-publish of the new one is skipped too. Webhooks then serve the old version, and the
 # webhook probe below cannot tell versions apart.
-# wait_publication drained IDS...: waits until no outbox record of IDS is pending/in progress.
+# wait_publication drained IDS...: waits until every outbox record of IDS is processed.
 # wait_publication published IDS...: also requires published version = active version =
 #   current (last imported) version for every id.
+# Outbox status values in n8n 2.46.6 (WorkflowPublicationOutboxStatus, checked on the test
+# stack): pending -> in_progress -> completed | partial_success | failed. Processed rows
+# are kept (a cleanup task deletes them after 1 h / 7 days), so any row NOT in that terminal
+# set counts as in flight: an unknown status keeps the wait waiting (fails closed).
 # Reads n8n's SQLite database (the n8n default; this stack sets no DB_TYPE) read-only.
-# Fails closed (exit 1) after 120 s.
+# Query errors (e.g. a transient SQLITE_BUSY) are retried. Fails closed (exit 1) after
+# JOBHUNTER_PUBLISH_WAIT_S seconds (default 120), naming the last error.
 wait_publication() {
   n8n_exec node -e '
 const { DatabaseSync } = require("node:sqlite");
-const [mode, ...ids] = process.argv.slice(1);
+const [mode, waitS, ...ids] = process.argv.slice(1);
+if (mode !== "drained" && mode !== "published") { console.error("wait_publication: unknown mode " + mode); process.exit(2); }
 if ((process.env.DB_TYPE || "sqlite") !== "sqlite") { console.error("wait_publication: only the SQLite database is supported"); process.exit(1); }
-const db = new DatabaseSync((process.env.N8N_USER_FOLDER || "/home/node") + "/.n8n/database.sqlite", { readOnly: true });
-const inFlight = db.prepare("select count(*) as n from workflow_publication_outbox where workflowId = ? and status in (\x27pending\x27, \x27in_progress\x27)");
-const versions = db.prepare("select w.versionId as current, w.activeVersionId as active, p.publishedVersionId as published from workflow_entity w left join workflow_published_version p on p.workflowId = w.id where w.id = ?");
+const file = (process.env.N8N_USER_FOLDER || "/home/node") + "/.n8n/database.sqlite";
+let db;
 const pending = (id) => {
-  if (inFlight.get(id).n > 0) return "publication still queued";
+  db ??= new DatabaseSync(file, { readOnly: true });
+  const q = db.prepare("select count(*) as n from workflow_publication_outbox where workflowId = ? and status not in (\x27completed\x27, \x27partial_success\x27, \x27failed\x27)");
+  if (q.get(id).n > 0) return "publication still queued";
   if (mode !== "published") return null;
-  const v = versions.get(id);
+  const v = db.prepare("select w.versionId as current, w.activeVersionId as active, p.publishedVersionId as published from workflow_entity w left join workflow_published_version p on p.workflowId = w.id where w.id = ?").get(id);
   return v && v.active === v.current && v.published === v.current ? null : "published version is not the imported one";
 };
 (async () => {
-  const deadline = Date.now() + 120000;
+  const deadline = Date.now() + Number(waitS) * 1000;
   for (const id of ids) {
-    let why;
-    while ((why = pending(id))) {
-      if (Date.now() > deadline) { console.error(id + ": " + why + " after 120s"); process.exit(1); }
+    for (;;) {
+      let why;
+      try { why = pending(id); } catch (e) { why = "cannot read " + file + ": " + e.message; db = undefined; }
+      if (!why) break;
+      if (Date.now() > deadline) { console.error(id + ": " + why + " after " + waitS + "s"); process.exit(1); }
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
-})();' "$@"
+})();' "$1" "${JOBHUNTER_PUBLISH_WAIT_S:-120}" "${@:2}"
 }
 
 remove_temp_credentials() { n8n_exec rm -f /tmp/jh-credentials.json >/dev/null 2>&1 || true; }

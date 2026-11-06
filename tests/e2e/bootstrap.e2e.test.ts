@@ -1,5 +1,5 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -128,6 +128,152 @@ describe('bootstrap Anthropic key check', () => {
     expect(call).toBeLessThan(main.indexOf('import:credentials'));
     // Inside the else (main stack) branch, not after the fi.
     expect(main.slice(realKey, call)).not.toMatch(/^fi$/m);
+  });
+});
+
+// wait_publication against a local temp SQLite file shaped like n8n's tables: n8n_exec is
+// replaced by a plain local run, N8N_USER_FOLDER points at the temp folder, and
+// JOBHUNTER_PUBLISH_WAIT_S keeps timeouts short. No container is touched.
+describe('bootstrap wait_publication', () => {
+  let dir: string;
+  let dbFile: string;
+  const SCHEMA = `
+    create table workflow_publication_outbox (id integer primary key, workflowId text, publishedVersionId text, status text);
+    create table workflow_entity (id text primary key, versionId text, activeVersionId text);
+    create table workflow_published_version (workflowId text primary key, publishedVersionId text);`;
+  /** Runs SQL against the temp database in a separate node process (busy timeout 5 s). */
+  const sql = (statements: string) =>
+    execFileSync(
+      'node',
+      [
+        '--no-warnings',
+        '-e',
+        'const { DatabaseSync } = require("node:sqlite"); new DatabaseSync(process.argv[1], { timeout: 5000 }).exec(process.argv[2]);',
+        dbFile,
+        statements,
+      ],
+      { encoding: 'utf8' },
+    );
+  /** Starts `wait_publication <args>`; resolves with exit status, output and elapsed ms. */
+  const wait = (args: string, waitS = 3) =>
+    new Promise<{ status: number | null; out: string; ms: number }>((resolve) => {
+      const started = Date.now();
+      const body = `. "$SCRIPT" "$@"\nn8n_exec() { "$@"; }\nwait_publication ${args}`;
+      const child = spawn('bash', ['-c', body, 'bash', join(ROOT, 'docker-compose.test.yml')], {
+        cwd: tmpdir(),
+        env: {
+          ...process.env,
+          SCRIPT,
+          JOBHUNTER_ENV_FILE: join(dir, 'no.env'),
+          N8N_USER_FOLDER: dir,
+          JOBHUNTER_PUBLISH_WAIT_S: String(waitS),
+        },
+      });
+      let out = '';
+      child.stdout.on('data', (c) => (out += c));
+      child.stderr.on('data', (c) => (out += c));
+      child.on('close', (status) => resolve({ status, out, ms: Date.now() - started }));
+    });
+  const later = (ms: number, fn: () => void) => new Promise<void>((r) => setTimeout(() => (fn(), r()), ms));
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jh-wait-'));
+    mkdirSync(join(dir, '.n8n'));
+    dbFile = join(dir, '.n8n', 'database.sqlite');
+    sql(SCHEMA);
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('drained: an empty outbox returns at once', async () => {
+    const r = await wait('drained jh-a jh-b');
+    expect(r.status).toBe(0);
+    expect(r.ms).toBeLessThan(2500);
+  });
+
+  test('drained: only terminal statuses count as processed; other workflows are ignored', async () => {
+    sql(`insert into workflow_publication_outbox (workflowId, status) values
+      ('jh-a', 'completed'), ('jh-a', 'partial_success'), ('jh-a', 'failed'), ('user-own', 'pending')`);
+    expect((await wait('drained jh-a')).status).toBe(0);
+  });
+
+  test('drained: blocks while a record is in flight and returns once n8n processed it', async () => {
+    sql(`insert into workflow_publication_outbox (workflowId, status) values ('jh-a', 'pending')`);
+    const running = wait('drained jh-a', 20);
+    await later(2500, () => sql(`update workflow_publication_outbox set status = 'completed'`));
+    const r = await running;
+    expect(r.status).toBe(0);
+    expect(r.ms).toBeGreaterThan(2500);
+  });
+
+  test.each(['pending', 'in_progress', 'some_future_status'])('drained: fails after the deadline while a record is %s', async (status) => {
+    sql(`insert into workflow_publication_outbox (workflowId, status) values ('jh-a', '${status}')`);
+    const r = await wait('drained jh-a', 2);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('jh-a: publication still queued after 2s');
+  });
+
+  test('missing tables: fails and names the missing table', async () => {
+    rmSync(dbFile);
+    writeFileSync(dbFile, '');
+    const r = await wait('drained jh-a', 2);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('no such table: workflow_publication_outbox');
+  });
+
+  test('published: passes when published = active = current version', async () => {
+    sql(`insert into workflow_entity values ('jh-a', 'v2', 'v2'); insert into workflow_published_version values ('jh-a', 'v2')`);
+    expect((await wait('published jh-a')).status).toBe(0);
+  });
+
+  test.each([
+    ['the old version is still published', `insert into workflow_entity values ('jh-a', 'v2', 'v2'); insert into workflow_published_version values ('jh-a', 'v1')`],
+    ['nothing is published', `insert into workflow_entity values ('jh-a', 'v2', 'v2')`],
+    ['the active version is not the imported one', `insert into workflow_entity values ('jh-a', 'v2', 'v1'); insert into workflow_published_version values ('jh-a', 'v1')`],
+    ['the workflow is missing', ''],
+  ])('published: fails after the deadline when %s', async (_, seed) => {
+    if (seed) sql(seed);
+    const r = await wait('published jh-a', 2);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('jh-a: published version is not the imported one after 2s');
+  });
+
+  test('published: blocks while the old version is published and passes once n8n publishes the new one', async () => {
+    sql(`insert into workflow_entity values ('jh-a', 'v2', 'v2'); insert into workflow_published_version values ('jh-a', 'v1')`);
+    const running = wait('published jh-a', 20);
+    await later(2500, () => sql(`update workflow_published_version set publishedVersionId = 'v2'`));
+    const r = await running;
+    expect(r.status).toBe(0);
+    expect(r.ms).toBeGreaterThan(2500);
+  });
+
+  test('published: an in-flight record blocks even when the versions match', async () => {
+    sql(`insert into workflow_entity values ('jh-a', 'v2', 'v2'); insert into workflow_published_version values ('jh-a', 'v2');
+      insert into workflow_publication_outbox (workflowId, status) values ('jh-a', 'pending')`);
+    const r = await wait('published jh-a', 2);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('jh-a: publication still queued after 2s');
+  });
+
+  test('order: drained after the import and before publishing; published after the restart and before the webhook probe', () => {
+    const script = readFileSync(SCRIPT, 'utf8');
+    const main = script.slice(script.indexOf('\nensure_owner_login\n'));
+    const at = (s: string, from = 0) => {
+      const i = main.indexOf(s, from);
+      expect(i, s).toBeGreaterThan(-1);
+      return i;
+    };
+    const imported = at('n8n_cli import:workflow');
+    const drained = at('wait_publication drained $IDS');
+    const publish = at('n8n_cli publish:workflow');
+    const restart = at('dc restart n8n');
+    const healthy = at('wait_healthy', restart);
+    const published = at('wait_publication published $IDS');
+    const probe = at('"verified " + hooks.length');
+    expect(imported).toBeLessThan(drained);
+    expect(drained).toBeLessThan(publish);
+    expect(publish).toBeLessThan(restart);
+    expect(healthy).toBeLessThan(published);
+    expect(published).toBeLessThan(probe);
   });
 });
 
