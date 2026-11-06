@@ -59,6 +59,20 @@ describe('JobsPage', () => {
     expect(screen.getByText('Loading jobs…')).toBeInTheDocument();
   });
 
+  test('skips a refresh tick while a request is still in flight', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockFetch.mockReturnValue(new Promise(() => {}));
+      render(<JobsPage />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31_000);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('auto-refreshes every 15 seconds', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

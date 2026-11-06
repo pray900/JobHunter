@@ -6,8 +6,19 @@ function companyLine(job: JobSummary): string | null {
   return job.employer ?? job.advertiser;
 }
 
+function safeHref(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 export function JobCard({ job }: { job: JobSummary }) {
   const company = companyLine(job);
+  const href = safeHref(job.url);
   const reading = job.extractionStatus === 'pending' || job.extractionStatus === 'in_progress';
   return (
     <article className="card">
@@ -33,8 +44,8 @@ export function JobCard({ job }: { job: JobSummary }) {
       )}
       <div className="card-bottom">
         {job.sourceRemoved && <span className="badge">Source file removed</span>}
-        {job.url && (
-          <a href={job.url} target="_blank" rel="noopener noreferrer">
+        {href && (
+          <a href={href} target="_blank" rel="noopener noreferrer">
             Open job posting ↗
           </a>
         )}

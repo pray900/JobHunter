@@ -18,6 +18,15 @@ describe('JobCard', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
+  test('omits the link for non-http(s) or unparseable urls', () => {
+    const { rerender } = render(<JobCard job={{ ...baseJob, url: 'javascript:alert(1)' }} />);
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, url: 'not a url' }} />);
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, url: 'https://x.io/a' }} />);
+    expect(screen.getByRole('link', { name: /open job posting/i })).toBeInTheDocument();
+  });
+
   test('employer with advertiser reads "via"', () => {
     render(<JobCard job={{ ...baseJob, employer: 'Acme', advertiser: 'Hays' }} />);
     expect(screen.getByText('Acme via Hays')).toBeInTheDocument();

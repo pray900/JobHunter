@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJobs } from '../api/client';
 import type { JobStatus, JobSummary } from '../api/types';
 import { JobCard } from './JobCard';
@@ -13,12 +13,18 @@ export function JobsPage() {
   const [status, setStatus] = useState<JobStatus | 'all'>('all');
   const [query, setQuery] = useState('');
 
+  const inFlight = useRef(false);
+
   const load = useCallback(async () => {
+    if (inFlight.current) return; // skip overlapping refreshes so stale data never overwrites newer
+    inFlight.current = true;
     try {
       setJobs(await fetchJobs());
       setFailed(false);
     } catch {
       setFailed(true);
+    } finally {
+      inFlight.current = false;
     }
   }, []);
 
