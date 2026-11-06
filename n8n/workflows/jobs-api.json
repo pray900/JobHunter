@@ -1,0 +1,107 @@
+{
+  "id": "jh-jobs-api",
+  "name": "Jobs API",
+  "active": false,
+  "nodes": [
+    {
+      "id": "6a1f0c52-3b0e-4f0a-8d11-2f4d7a9b0c01",
+      "name": "Sticky Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-120, -100],
+      "parameters": {
+        "content": "## Start\n**GET /webhook/api/jobs** — the React app calls this to fill the job board. It answers once the list has been read.",
+        "height": 360,
+        "width": 340,
+        "color": 7
+      }
+    },
+    {
+      "id": "6a1f0c52-3b0e-4f0a-8d11-2f4d7a9b0c02",
+      "name": "GET api/jobs",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 100],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "api/jobs",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "5c0a3f7e-91d2-4b6e-a8c4-7e2d1b9f3a10"
+    },
+    {
+      "id": "6a1f0c52-3b0e-4f0a-8d11-2f4d7a9b0c03",
+      "name": "Sticky Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [260, -100],
+      "parameters": {
+        "content": "## 1. Read the job list\nOne query returns **one row** holding the whole list as a JSON array (`jobs`). Aggregating in SQL means an empty table gives `[]` instead of no items, so the reply is always `{ \"jobs\": [] }` at worst.\nColumns are renamed to the camelCase `JobSummary` shape the UI expects. Only the single owner's jobs; best match first, unscored jobs last, newest first on ties.",
+        "height": 360,
+        "width": 440,
+        "color": 4
+      }
+    },
+    {
+      "id": "6a1f0c52-3b0e-4f0a-8d11-2f4d7a9b0c04",
+      "name": "List jobs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [360, 100],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\nselect coalesce(\n  json_agg(\n    json_build_object(\n      'id',               id,\n      'title',            title,\n      'employer',         employer,\n      'advertiser',       advertiser,\n      'shortDescription', short_description,\n      'url',              url,\n      'status',           status,\n      'matchScore',       match_score,\n      'warnings',         warnings,\n      'extractionStatus', extraction_status,\n      'sourceRemoved',    source_removed,\n      'sourceRef',        source_ref,\n      'createdAt',        to_char(created_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')\n    )\n    order by match_score desc nulls last, created_at desc\n  ),\n  '[]'::json\n) as jobs\nfrom jobs\nwhere owner_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      }
+    },
+    {
+      "id": "6a1f0c52-3b0e-4f0a-8d11-2f4d7a9b0c05",
+      "name": "Sticky Note 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [740, -100],
+      "parameters": {
+        "content": "## 2. Reply\nAnswers `200 { jobs: [...] }`.",
+        "height": 360,
+        "width": 300,
+        "color": 5
+      }
+    },
+    {
+      "id": "6a1f0c52-3b0e-4f0a-8d11-2f4d7a9b0c06",
+      "name": "Respond with jobs",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [840, 100],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { jobs: $json.jobs } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "GET api/jobs": {
+      "main": [[{ "node": "List jobs", "type": "main", "index": 0 }]]
+    },
+    "List jobs": {
+      "main": [[{ "node": "Respond with jobs", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}
