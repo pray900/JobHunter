@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { listJobFiles } from '../storage/jobFolder.js';
+import { listJobFiles, type ListJobFilesOptions } from '../storage/jobFolder.js';
 import { parseJobDocx } from './parseJobDocx.js';
 import type { ScannedJob } from './types.js';
 
-export async function scanJobFolder(dir: string): Promise<ScannedJob[]> {
-  const files = await listJobFiles(dir);
+export async function scanJobFolder(dir: string, opts: ListJobFilesOptions = {}): Promise<ScannedJob[]> {
+  const files = await listJobFiles(dir, opts);
   return Promise.all(
     files.map(async (file) => {
       const parsed = await parseJobDocx(file.bytes);

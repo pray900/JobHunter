@@ -43,9 +43,39 @@ test('changed content changes the hash', async () => {
   expect(after.contentHash).not.toBe(before.contentHash);
 });
 
-test('missing folder scans to an empty list', async () => {
+test('missing folder returns 503 job_folder_missing, not an empty list', async () => {
   const app = buildServer({ jobFolderDir: path.join(dir, 'nope') });
   const res = await app.inject({ method: 'POST', url: '/jobs/scan' });
+  expect(res.statusCode).toBe(503);
+  expect(res.json()).toEqual({ error: 'job_folder_missing' });
+  await app.close();
+});
+
+test('empty existing folder returns an empty job list', async () => {
+  const empty = await fs.mkdtemp(path.join(os.tmpdir(), 'scanempty-'));
+  const app = buildServer({ jobFolderDir: empty });
+  const res = await app.inject({ method: 'POST', url: '/jobs/scan' });
+  expect(res.statusCode).toBe(200);
   expect(res.json()).toEqual({ jobs: [] });
+  await app.close();
+  await fs.rm(empty, { recursive: true, force: true });
+});
+
+test('non-ENOENT per-file read error fails the scan with 500 and logs the file and code', async () => {
+  const lines: Record<string, unknown>[] = [];
+  const sink = { write: (chunk: string) => void lines.push(JSON.parse(chunk)) };
+  const readFile = async () => {
+    throw Object.assign(new Error('denied'), { code: 'EACCES' });
+  };
+  const app = buildServer({
+    jobFolderDir: dir,
+    readFile,
+    logger: { level: 'error', stream: sink } as never,
+  });
+  const res = await app.inject({ method: 'POST', url: '/jobs/scan' });
+  expect(res.statusCode).toBe(500);
+  expect(res.json()).toEqual({ error: 'job_scan_failed' });
+  const logged = lines.find((l) => l.msg === 'job file read failed');
+  expect(logged).toMatchObject({ file: 'job1.docx', code: 'EACCES', folder: dir });
   await app.close();
 });
