@@ -233,3 +233,22 @@ All state-changing webhooks require `X-JobHunter: 1` (403 otherwise) and every w
 - [ ] **Step 3: Verify scores** on the board: all 3 jobs scored with explanations; the Salesforce Developer role (job1) ranks above the senior 5+ years role (job2), which ranks above the Tableau pre-sales role (job3); no explanation claims a skill absent from the CV. Total cost in `cost_log` for this run < $0.15.
 - [ ] **Step 4: Verify rescoring** — replace the CV with a copy under a new name through the page (basis changes → all jobs rescore once, then stop); confirm the old file is gone from the folder. Then restore Prayush's original CV the same way and delete the copy, so the folder ends exactly as it started.
 - [ ] **Step 5:** All suites green (`npm test`, `npm run e2e`); commit `docs: README for plan 2`.
+
+---
+
+### Task 9: Upload-only documents (Prayush's change, 2026-11-07)
+
+Prayush decided the CV and cover letter come **only through the app's upload** — no folders (spec §7.3 updated). This replaces the folder-scan and "newest file wins" design from Tasks 2, 4b and 6.
+
+**Behaviour:**
+- Storage: the worker keeps documents in its own storage — a Docker named volume `documents_data` mounted at `/data/documents` (subfolders `cv/`, `cover_letter/`), still only through `services/worker/src/storage/documentFolder.ts` (§9 seam). Remove the `CV_DIR` / `COVER_LETTER_DIR` bind mounts and env keys; never read or touch the old `PersonalDetailsCV/` / `PersonalDetailsCoverLetter/` folders. Test stack uses its own volume.
+- One document per kind. **Upload** (empty slot) and **Replace** (filled slot) are the same operation: the worker writes the new file and removes the previous one of that kind in one step (write new → switch → delete old; a failed write leaves the old document in place). No Delete endpoint, no ignored files, no `extra_file_ignored`, no `modifiedAt` rule.
+- Analysis runs right after an upload (the upload webhook triggers the documents sync, which now reads the stored documents instead of scanning folders). Keep a schedule only if needed to retry failed analyses (backoff/cap as now); it must not re-read unchanged documents.
+- DB: keep `base_documents` and the `active` flag (exactly one active row per kind = the current document); previous documents become `source_removed`. Basis hash definition for scoring is unchanged.
+- API: `GET api/documents` → `{ cv: BaseDocumentSummary | null, coverLetter: BaseDocumentSummary | null }`; `POST api/documents/upload?kind=…` → 201 `{ sourceRef }` / 400 / 413; same-name uploads simply replace (no 409); `DELETE api/documents` removed. X-JobHunter gate, CORS, saveDataSuccessExecution none, timeouts < 30 s all kept.
+- UI: two slots with Upload / Replace (in-page confirm "Replace {sourceRef}? The current file will be replaced."); remove the ignored-files section and the delete dialog; remove the README note about Windows Modified dates and the folder instructions; README says the old folders are no longer used and can be deleted by the user.
+- Degree rule unchanged (Prayush said no to flagging future end dates).
+
+- [ ] **Step 1: Write failing tests** — worker: write/replace in the volume-backed storage keeps exactly one file per kind and a failed write keeps the old; scan/list reads stored documents only. e2e: upload into an empty slot → analysed; replace (same or different name) → old file gone, new active and analysed, jobs rescored if content changed; no request touches a folder outside `/data/documents`; documents API shape; no delete endpoint (404/405); X-JobHunter still required. Web: two slots, Upload/Replace with confirm, no ignored list. Remove tests for folders, ignored files and delete.
+- [ ] **Step 2–4:** run (FAIL) → implement → `npm test` + `npm run e2e` (PASS).
+- [ ] **Step 5: Commit** `refactor: documents are upload-only`

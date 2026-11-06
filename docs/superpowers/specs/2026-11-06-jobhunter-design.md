@@ -225,7 +225,7 @@ Prayush supplied 3 job files and real base documents. Use them (redacted where n
 
 **Base CVs (`PersonalDetailsCV/`)** — two PDFs: an April 2026 "Software Engineer" (security leaning) CV and a September 2026 "LLM Observability & QA" CV.
 - They **conflict on scope**: April says "**Led** a team of 5 developers"; September says "Introduced code reviews and task prioritisation **for** a 5-developer team". April: "Identified and implemented FLS in 50+ vulnerable Apex classes"; September: "Analysed 50+ Apex classes … and implemented FLS". The conflict check (§6.3) must catch exactly this kind of thing, and the writer uses the more conservative wording until Prayush resolves it.
-- **Degree** reads "2025 – Present" (April) and "2025 – Nov 2026" (September). Neither reads "(conferral Nov 2026)". Flag on My documents; writer uses "Master of Information Technology, UTS (conferral Nov 2026)" form only once Prayush confirms it in a base CV.
+- **Degree** reads "2025 – Present" (April) and "2025 – Nov 2026" (September). Neither reads "(conferral Nov 2026)". *(Prayush decided 2026-11-07: do NOT flag a degree with a future end date; only "Present"/open-ended dates are flagged.)* Writer uses "Master of Information Technology, UTS (conferral Nov 2026)" form only once Prayush confirms it in a base CV.
 - **Neither CV has a work-rights line.** The app must flag this on My documents; generated CVs can't include it until a base CV states it (never invented).
 - April profile contains "**Proven track record**" — a banned phrase. Banned-word checks apply to *output*; base docs get an informational warning only.
 - Both use a role-specific headline under the name ("Software Engineer", "Software Engineer Intern – LLM Observability & Quality Assurance"). The headline must be regenerated per job and is a template-leakage risk.
@@ -256,7 +256,7 @@ Prayush supplied 3 job files and real base documents. Use them (redacted where n
 - Version history (label, time, instruction); switch to / restore an older version.
 
 ### 7.3 My documents
-- **Changed 2026-11-07: one slot for the base CV and one for the base cover letter.** They live in **`PersonalDetailsCV/`** and **`PersonalDetailsCoverLetter/`** (paths configurable). Uploading replaces the current file, after an in-page confirmation because it removes the old file. *(Claude's call:)* if a folder holds more than one accepted file, the most recently modified one is used and the others are listed as "ignored" so Prayush can remove them.
+- **Changed 2026-11-07: one slot for the base CV and one for the base cover letter.** **Changed again 2026-11-07 (Prayush): documents come only through the app's upload — no folders.** Upload fills an empty slot; Replace swaps the file in one step (in-page confirmation). *(Claude's calls:)* files are kept in the app's own storage (a Docker volume, behind the worker's storage module); no Delete button (replace only); the old `PersonalDetailsCV/` and `PersonalDetailsCoverLetter/` folders are no longer read and are left untouched.
 - Warnings: missing work-rights line, unclear degree status, banned phrases.
 - Every generated version records which base document (and its version) it came from.
 
