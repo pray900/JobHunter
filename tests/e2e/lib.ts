@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -15,7 +15,7 @@ export const STUB_URL = 'http://localhost:58081';
 export const WEB_URL = 'http://localhost:58080';
 const DB_URL = 'postgres://jobhunter:test@localhost:55433/jobhunter';
 
-function compose(args: string[]): void {
+export function compose(args: string[]): void {
   execFileSync('docker', ['compose', '-f', COMPOSE_FILE, ...args], { cwd: ROOT, stdio: 'inherit' });
 }
 
@@ -39,8 +39,22 @@ export async function writeJobFile(name: string, paras: DocxPara[]): Promise<voi
   writeFileSync(join(JOB_DIR, name), await makeDocx(paras));
 }
 
+/** Writes arbitrary bytes (e.g. a corrupt .docx) into the job folder. */
+export function writeRawJobFile(name: string, bytes: string | Buffer): void {
+  mkdirSync(JOB_DIR, { recursive: true });
+  writeFileSync(join(JOB_DIR, name), bytes);
+}
+
 export function removeJobFile(name: string): void {
   rmSync(join(JOB_DIR, name), { force: true });
+}
+
+/** Per-test reset: empty job tables, empty job folder, clear stub request log. */
+export async function resetState(): Promise<void> {
+  await db.query('truncate jobs, job_status_history, cost_log');
+  mkdirSync(JOB_DIR, { recursive: true });
+  for (const f of readdirSync(JOB_DIR)) rmSync(join(JOB_DIR, f), { recursive: true, force: true });
+  await stub.reset();
 }
 
 /** Runs the sync workflow and resolves once it responds (needs Task 5's webhook). */

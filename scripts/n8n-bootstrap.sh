@@ -93,7 +93,13 @@ process.stdout.write(JSON.stringify({ email: process.env.OWNER_EMAIL, password: 
   n8n_exec node -e '
 const base = "http://localhost:5678";
 (async () => {
-  const s = await (await fetch(base + "/rest/settings")).json();
+  // /healthz can answer before the REST API serves JSON on a fresh volume: retry briefly.
+  let s;
+  for (let i = 0; ; i++) {
+    try { s = await (await fetch(base + "/rest/settings")).json(); if (s && s.data) break; } catch (e) { if (i >= 60) throw e; }
+    if (i >= 60) throw new Error("/rest/settings not ready");
+    await new Promise((r) => setTimeout(r, 1000));
+  }
   if (s.data.userManagement.showSetupOnFirstLoad === false) { console.log("owner already set up"); return; }
   let body = "";
   for await (const c of process.stdin) body += c;
