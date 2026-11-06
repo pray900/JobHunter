@@ -2,13 +2,12 @@ name: jobhunter
 
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:17
     environment:
       POSTGRES_DB: jobhunter
       POSTGRES_USER: jobhunter
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,6 +17,7 @@ services:
       retries: 20
 
   worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: services/worker/Dockerfile
@@ -25,7 +25,14 @@ services:
       DATABASE_URL: postgres://jobhunter:${POSTGRES_PASSWORD}@postgres:5432/jobhunter
       JOBLISTING_DIR: /data/joblisting
     volumes:
-      - ${JOBLISTING_DIR:-./Joblisting}:/data/joblisting:ro
+      # Long syntax with create_host_path: false, so a missing job folder fails loudly
+      # instead of Compose silently creating an empty one.
+      - type: bind
+        source: ${JOBLISTING_DIR:-./Joblisting}
+        target: /data/joblisting
+        read_only: true
+        bind:
+          create_host_path: false
     expose:
       - "3001"
     healthcheck:
@@ -38,6 +45,7 @@ services:
         condition: service_healthy
 
   n8n:
+    restart: unless-stopped
     image: n8nio/n8n:2.46.6
     ports:
       - "127.0.0.1:5678:5678"
@@ -56,6 +64,7 @@ services:
       - worker
 
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/web/Dockerfile

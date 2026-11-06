@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: jobhunter
       POSTGRES_PASSWORD: test
     ports:
-      - "55433:5432"
+      - "127.0.0.1:55433:5432"
     volumes:
       - pg_test_data:/var/lib/postgresql/data
     healthcheck:
@@ -25,7 +25,11 @@ services:
       DATABASE_URL: postgres://jobhunter:test@postgres:5432/jobhunter
       JOBLISTING_DIR: /data/joblisting
     volumes:
-      - ./.tmp/e2e-joblisting:/data/joblisting
+      - type: bind
+        source: ./.tmp/e2e-joblisting
+        target: /data/joblisting
+        bind:
+          create_host_path: false
     expose:
       - "3001"
     healthcheck:
@@ -41,7 +45,7 @@ services:
     build:
       context: tests/stubs/anthropic-stub
     ports:
-      - "58081:8080"
+      - "127.0.0.1:58081:8080"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
@@ -51,7 +55,7 @@ services:
   n8n:
     image: n8nio/n8n:2.46.6
     ports:
-      - "55678:5678"
+      - "127.0.0.1:55678:5678"
     environment:
       N8N_ENCRYPTION_KEY: test-encryption-key-0123456789ab
       ANTHROPIC_BASE_URL: http://anthropic-stub:8080
