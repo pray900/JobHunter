@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  JOB_DIR,
   N8N_URL,
   ROOT,
   compose,
@@ -98,6 +99,8 @@ describe('job intake sync', () => {
     await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
     await writeJobFile('b.docx', [{ text: 'https://x.io/b' }, { text: 'Job B' }]);
     await triggerSync();
+    // Keep the exact bytes: makeDocx stamps the time into the zip, so regenerating would change the hash.
+    const aBytes = readFileSync(join(JOB_DIR, 'a.docx'));
     removeJobFile('a.docx');
     await triggerSync();
     expect((await jobRow('a.docx')).source_removed).toBe(true);
@@ -107,7 +110,7 @@ describe('job intake sync', () => {
     await triggerSync();
     expect((await jobRow('b.docx')).source_removed).toBe(true);
     // Restoring the file clears the mark and keeps the job.
-    await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
+    writeRawJobFile('a.docx', aBytes);
     await triggerSync();
     const restored = await jobRow('a.docx');
     expect(restored).toMatchObject({ source_removed: false, extraction_status: 'done', title: 'Stub Title' });
