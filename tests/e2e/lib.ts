@@ -85,9 +85,9 @@ export const stub = {
   },
 };
 
-/** n8n webhooks for now; switch to WEB_URL once the web container exists (Task 7). */
+/** Goes through the web container (nginx proxies /api/* to n8n webhooks). */
 export const api = {
   async get(path: string): Promise<Response> {
-    return fetch(`${N8N_URL}/webhook/${path.replace(/^\//, '')}`);
+    return fetch(`${WEB_URL}/${path.replace(/^\//, '')}`);
   },
 };

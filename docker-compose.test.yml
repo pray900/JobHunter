@@ -67,6 +67,15 @@ services:
       - worker
       - anthropic-stub
 
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "58080:80"
+    depends_on:
+      - n8n
+
 volumes:
   pg_test_data:
   n8n_test_data:
