@@ -133,6 +133,29 @@ Stub changes: route by a marker in the system prompt (`purpose: analyse_cv | ana
 
 ---
 
+### Task 4b: Simplify to one base CV and one base cover letter (Prayush's change, 2026-11-07)
+
+Prayush changed the design: **exactly one base CV and one base cover letter** (spec §4, §6.2, §6.3, §7.3 updated). This task removes what Task 4 built for several CVs and adds the "one active document per kind" rule. It also applies Prayush's decision to stop n8n saving successful runs.
+
+**Files:**
+- Create: `db/migrations/003_single_base_document.sql`
+- Modify: `services/worker/src/storage/documentFolder.ts`, `services/worker/src/documents/scan.ts`, `services/worker/src/documents/types.ts` (scan reports each file's `modifiedAt`), `n8n/workflows/base-documents-sync.json`, `n8n/workflows/job-intake-sync.json`, `n8n/workflows/jobs-api.json` (settings only), `tests/stubs/anthropic-stub/server.mjs`, `tests/e2e/documents.e2e.test.ts`, `services/worker/test/*` as needed, `README.md`
+- Delete: `n8n/prompts/check-cv-conflicts.md`
+
+**Interfaces:**
+- `ScannedDocument` gains `modifiedAt: string` (ISO, from the file's mtime).
+- Migration 003: drop table `base_document_checks`; drop columns `base_documents.label`, `base_documents.label_suggested`; add `base_documents.active boolean not null default false` with a partial unique index so at most one row per `(owner_id, kind)` is `active`.
+- **Active document rule:** per kind, the active document is the non-removed, readable file with the newest `modifiedAt` (ties → `sourceRef` ascending). Every other present file of that kind gets warning `{ code: 'extra_file_ignored', detail: 'Only one <CV|cover letter> is used; this file is ignored.' }` and is **never sent to Claude** (`analysis_status='skipped'`). Only the active document is analysed. When the active document changes, the new one is analysed and the old one becomes ignored.
+- **Basis hash** (used by Task 5) = the `content_hash` of the active CV whose `analysis_status='done'`, or null when there is none.
+- Remove from the workflow: the conflict-check stages, the label suggestion and label saving, and `labelSuggestion` in the analysis schemas. Keep everything else from Task 4 (claim, backoff, cap, price check, 403 gate, cost rows, checks).
+- All shipped workflows set `settings.saveDataSuccessExecution: "none"` and `saveManualExecutions: false` (Prayush's decision); failed runs are still saved. README: one line explaining it and how to switch it on per workflow while learning.
+
+- [ ] **Step 1: Write failing tests** — migrate test applies 003; scan returns `modifiedAt`; e2e `two CVs: only the newest is analysed, the other is ignored` (stub sees one analyse_cv request; the older row has `extra_file_ignored` and `skipped`); `newer CV takes over` (touch the older file to make it newest → it is analysed, the other becomes ignored); `no conflict check is ever called`; `analysis schema has no labelSuggestion`; `shipped workflows don't save successful runs` (workflow-definition test over all JSON files). Remove or rewrite the Task 4 tests about labels and conflicts.
+- [ ] **Step 2–4:** run (FAIL) → implement → worker suite + `npm run e2e` (PASS).
+- [ ] **Step 5: Commit** `refactor: one base CV and one cover letter`
+
+---
+
 ### Task 5: n8n workflow "Job match scoring"
 
 **Files:**
@@ -144,11 +167,13 @@ Stub changes: route by a marker in the system prompt (`purpose: analyse_cv | ana
 - Consumes: `jobs` (extraction done), `base_documents` ready CVs and their `structured`.
 - Produces: workflow id `jh-job-match-scoring`, Schedule (30 s, gated) and Webhook `POST api/jobs/score` → `{ ok, scored, basisHash }`. Writes `match_score`, `match_explanation`, `match_breakdown`, `match_basis_hash`, `score_status`.
 
-Stages: compute current basis (same `basis_hash` definition as Task 4; no ready CVs → mark nothing, respond `{ok:true, scored:0, basisHash:null}`, stop) → reset jobs whose `match_basis_hash` differs from the current basis (and `score_status` not `in_progress` with a live claim) to `pending`, attempts 0 → look up `SCORE_MODEL` price → claim (`extraction_status='done' and not source_removed and score_status='pending'` or failed with backoff/cap; claim token) → Claude score (input: job `raw_text` in `<job_ad>`, each ready CV's `structured` in `<base_cv source="…">`; schema `{ score: integer 0–100, explanation: string, matched: string[], missing: string[], notes: string[] }`) → save with `match_basis_hash = <basis used for this call>` only if the job's claim token still matches **and** the basis is still current (otherwise leave `pending`) → cost row.
+Stages: compute current basis (the Task 4b definition: the active, analysed CV's content hash; none → mark nothing, respond `{ok:true, scored:0, basisHash:null}`, stop) → reset jobs whose `match_basis_hash` differs from the current basis (and `score_status` not `in_progress` with a live claim) to `pending`, attempts 0 → look up `SCORE_MODEL` price → claim (`extraction_status='done' and not source_removed and score_status='pending'` or failed with backoff/cap; claim token) → Claude score (input: job `raw_text` in `<job_ad>`, the active CV's `structured` in `<base_cv>`; schema `{ score: integer 0–100, explanation: string, matched: string[], missing: string[], notes: string[] }`) → save with `match_basis_hash = <basis used for this call>` only if the job's claim token still matches **and** the basis is still current (otherwise leave `pending`) → cost row.
 
 Prompt must say: judge only from the base CVs (never assume skills not stated); treat US/AU spellings as the same keyword; ignore job-site clutter; weigh required over nice-to-have; count years from the CV dates; explanation is one sentence starting with "<score>%:" naming required skills matched/total, any experience gap, and domain fit.
 
-- [ ] **Step 1: Write failing e2e tests** — `scores a job against ready CVs` (score, explanation starts with "%:" pattern from stub, breakdown saved, basis hash = current, cost row purpose `score_job`); `no base CVs means no scoring calls`; `unchanged basis doesn't rescore`; `CV change rescores all jobs` (change a CV file → documents sync → scoring sync → stub saw a new score call per job, basis updated); `basis change during scoring rescores` (force a job `in_progress` with an old basis claim, change basis, sync → job ends scored with the new basis, never saved with the old one); `job file edit rescores that job` (extraction resets → after re-extraction the job is scored again); `scoring failure is retried with backoff then gives up`; `sends fallbacks for sonnet`.
+Also include the 403 gate (`X-JobHunter: 1`) on `POST api/jobs/score` and `saveDataSuccessExecution: "none"`.
+
+- [ ] **Step 1: Write failing e2e tests** — `scores a job against the base CV` (score, explanation starts with "%:" pattern from stub, breakdown saved, basis hash = current, cost row purpose `score_job`); `no base CVs means no scoring calls`; `unchanged basis doesn't rescore`; `CV change rescores all jobs` (change a CV file → documents sync → scoring sync → stub saw a new score call per job, basis updated); `basis change during scoring rescores` (force a job `in_progress` with an old basis claim, change basis, sync → job ends scored with the new basis, never saved with the old one); `job file edit rescores that job` (extraction resets → after re-extraction the job is scored again); `scoring failure is retried with backoff then gives up`; `sends fallbacks for sonnet`.
 - [ ] **Step 2–4:** run (FAIL) → build → `npm run e2e` (PASS).
 - [ ] **Step 5: Commit** `feat(n8n): job match scoring`
 
@@ -165,13 +190,14 @@ Note: when a job's content hash changes, Plan 1's upsert must also reset `score_
 
 **Interfaces:**
 - Produces (all webhooks Allowed Origins as Global Constraints):
-  - `GET api/documents` → `{ documents: BaseDocumentSummary[], conflicts: Conflict[] }` where `BaseDocumentSummary = { id; kind: 'cv'|'cover_letter'; sourceRef; label: string|null; labelSuggested: string|null; analysisStatus; analysisError: string|null; warnings: { code; detail }[]; sourceRemoved: boolean; updatedAt: string }` and `conflicts` = the row for the current basis (or `[]`). Order: kind, then `sourceRef`.
-  - `PATCH api/documents/label` body `{ id, label }` (label 1–60 chars trimmed) → `200 { ok: true }` / `400` / `404`.
-  - `POST api/documents/upload?kind=cv|cover_letter&replace=true|false` multipart `file` → forwards to worker `POST /documents/:kind`, passes through 201/400/409, then triggers `api/documents/sync` so analysis starts at once.
+  - `GET api/documents` → `{ cv: BaseDocumentSummary | null, coverLetter: BaseDocumentSummary | null, ignored: BaseDocumentSummary[] }` where `BaseDocumentSummary = { id; kind: 'cv'|'cover_letter'; sourceRef; analysisStatus; analysisError: string|null; warnings: { code; detail }[]; updatedAt: string }`; `cv`/`coverLetter` are the active documents (Task 4b), `ignored` the other present files.
+  - `POST api/documents/upload?kind=cv|cover_letter` multipart `file` → writes the new file via the worker (`replace=false`; a name clash → 409), then deletes the previous active document of that kind via the worker, then triggers `api/documents/sync` → `201 { sourceRef }` / 400 / 409. (Upload = replace the current one; the UI confirms first.)
   - `DELETE api/documents?id=<uuid>` → looks up kind/sourceRef, calls worker delete, marks the row removed, triggers sync (so the basis changes and jobs rescore) → `204` / `404`.
   - `JobSummary` gains `matchExplanation: string|null`, `matchBreakdown: { matched: string[]; missing: string[]; notes: string[] } | null`, `scoreStatus: 'pending'|'in_progress'|'done'|'failed'|'skipped'`.
 
-- [ ] **Step 1: Write failing e2e tests** — list shape (exact keys), conflicts for current basis only; relabel ok / blank → 400 / unknown id → 404; `upload same name without replace is 409`, with replace → 201 and re-analysed; upload then list shows the new document pending→done after sync; delete → file gone from the e2e folder, row `sourceRemoved: true`, jobs reset to pending scoring; jobs API new keys present; foreign `Origin` gets no CORS allow header on the new endpoints.
+All state-changing webhooks require `X-JobHunter: 1` (403 otherwise) and every workflow sets `saveDataSuccessExecution: "none"`.
+
+- [ ] **Step 1: Write failing e2e tests** — list shape (exact keys) with an active CV, an active cover letter and one ignored file; `upload same name as an existing file is 409`; upload replaces the current CV (old file gone from the e2e folder, new one active and analysed after sync); upload then list shows the new document pending→done after sync; requests without `X-JobHunter` → 403; delete → file gone from the e2e folder, row `sourceRemoved: true`, jobs reset to pending scoring; jobs API new keys present; foreign `Origin` gets no CORS allow header on the new endpoints.
 - [ ] **Step 2–4:** run (FAIL) → build → `npm run e2e` (PASS).
 - [ ] **Step 5: Commit** `feat(n8n): documents API and score fields`
 
@@ -180,16 +206,16 @@ Note: when a job's content hash changes, Plan 1's upsert must also reset `score_
 ### Task 7: Web — My documents page and scores on cards
 
 **Files:**
-- Create: `apps/web/src/documents/DocumentsPage.tsx`, `apps/web/src/documents/DocumentRow.tsx`, `apps/web/src/documents/labels.ts`, `apps/web/src/Nav.tsx`
-- Modify: `apps/web/src/App.tsx` (routes `/` Jobs, `/documents` My documents), `apps/web/src/api/types.ts`, `apps/web/src/api/client.ts` (`fetchDocuments()`, `uploadDocument(kind, file, replace)`, `relabelDocument(id, label)`, `deleteDocument(id)`), `apps/web/src/jobs/JobCard.tsx`, `apps/web/nginx.conf` (allow uploads: `client_max_body_size 6m` on `/api/`; SPA fallback covers `/documents`)
+- Create: `apps/web/src/documents/DocumentsPage.tsx`, `apps/web/src/documents/DocumentSlot.tsx`, `apps/web/src/documents/labels.ts`, `apps/web/src/Nav.tsx`
+- Modify: `apps/web/src/App.tsx` (routes `/` Jobs, `/documents` My documents), `apps/web/src/api/types.ts`, `apps/web/src/api/client.ts` (`fetchDocuments()`, `uploadDocument(kind, file)`, `deleteDocument(id)`), `apps/web/src/jobs/JobCard.tsx`, `apps/web/nginx.conf` (allow uploads: `client_max_body_size 6m` on `/api/`; SPA fallback covers `/documents`)
 - Test: `apps/web/src/documents/DocumentsPage.test.tsx`, `apps/web/src/jobs/JobCard.test.tsx` (extend), `tests/e2e/web.e2e.test.ts` (extend: `/documents` serves the app)
 
 **Interfaces:**
 - Consumes: Task 6 shapes, copied verbatim into `api/types.ts`.
-- Produces copy (verbatim): nav "Jobs", "My documents"; page heading "My documents"; sections "Base CVs", "Base cover letters"; buttons "Upload CV", "Upload cover letter", "Replace", "Delete", "Save label"; delete confirm (in-page dialog, not `window.confirm`) "Delete {sourceRef}? This removes the file from your folder."; statuses "Analysing…", "Ready", "Couldn't read this document: {analysisError}"; warning texts `missing_work_rights` "No work-rights line (e.g. "Full working rights (485 visa)")", `degree_status_unclear` "Degree status unclear — say e.g. "(conferral Nov 2026)"", `banned_phrase` "Phrase that reads as AI or cliché: {detail}"; conflicts banner title "Your base CVs disagree" with one line per conflict: "{fact}: " + each value as "{sourceRef}: "{text}"" + "Suggestion: {suggestion}"; 409 on upload → "A file with that name already exists. Use Replace on it instead."; 400 → "That file can't be used. Upload a PDF or Word file under 5 MB."
+- Produces copy (verbatim): nav "Jobs", "My documents"; page heading "My documents"; two slots "Your CV" and "Your cover letter", each showing the file name, status and warnings, or "No CV yet" / "No cover letter yet"; buttons "Upload CV" / "Upload cover letter" (empty slot) or "Replace" (filled slot); replace confirm (in-page dialog, not `window.confirm`) "Replace {sourceRef}? The old file is removed from your folder."; statuses "Analysing…", "Ready", "Couldn't read this document: {analysisError}"; warning texts `missing_work_rights` "No work-rights line (e.g. "Full working rights (485 visa)")", `degree_status_unclear` "Degree status unclear — say e.g. "(conferral Nov 2026)"", `banned_phrase` "Phrase that reads as AI or cliché: {detail}"; ignored files section "Other files in your folders (not used)" listing each `sourceRef` with "Delete" (in-page confirm "Delete {sourceRef}? This removes the file from your folder."); 409 on upload → "A file with that name is already in the folder. Rename your file and try again."; 400 → "That file can't be used. Upload a PDF or Word file under 5 MB."
 - Card changes: score badge "{n}% match"; "Why this score?" toggle revealing `matchExplanation` and the matched/missing lists ("Matched:", "Missing:"); `scoreStatus` `pending`/`in_progress` → "Scoring…" (only when extraction is done), `failed` → "Couldn't score this job"; when the documents API reports no ready CVs, cards with no score show "Add a base CV to get match scores" linking to `/documents`.
 
-- [ ] **Step 1: Write failing tests** — page lists CVs and cover letters with labels/status/warnings; relabel calls `relabelDocument` and shows the new label; upload 409 shows the exists message; delete asks in-page then calls `deleteDocument`; conflicts banner renders each conflict; card shows "82% match" and toggles the explanation; `shows add-a-CV hint`; nav switches pages.
+- [ ] **Step 1: Write failing tests** — page shows the CV and cover-letter slots with status/warnings and the empty-slot text; replace asks in-page then calls `uploadDocument`; upload 409 shows the name-clash message; ignored files list with in-page delete calling `deleteDocument`; card shows "82% match" and toggles the explanation; `shows add-a-CV hint`; nav switches pages.
 - [ ] **Step 2–4:** run (FAIL) → implement → `npm test -w apps/web && npm run e2e` (PASS).
 - [ ] **Step 5: Commit** `feat(web): my documents page and match scores`
 
@@ -201,7 +227,7 @@ Note: when a job's content hash changes, Plan 1's upsert must also reset `score_
 - Modify: `README.md` (My documents, how scores work, costs: about $0.02 per base document analysed with Opus 5.5 and about $0.01 per job scored with Sonnet 5.5 — confirm against the real `cost_log` and correct the numbers)
 
 - [ ] **Step 1:** Rebuild the real stack and bootstrap (`docker compose up -d --build`, `bash scripts/n8n-bootstrap.sh`).
-- [ ] **Step 2: Verify documents** at `http://localhost:8080/documents`. Expected: 2 CVs and 1 cover letter `Ready` with sensible suggested labels; both CVs warn `missing_work_rights` and `degree_status_unclear`; the April CV warns `banned_phrase: proven track record`; the cover letter warns about "leveraging" / "fast-paced"; the conflicts banner lists at least "Led a team of 5" vs "for a 5-developer team" and the FLS "Identified and implemented" vs "Analysed … implemented" difference; the cover letter's `structured.previousTarget` names Decode Global and Ms. Li.
-- [ ] **Step 3: Verify scores** on the board: all 3 jobs scored with explanations; the Salesforce Developer role (job1) ranks above the senior 5+ years role (job2), which ranks above the Tableau pre-sales role (job3); no explanation claims a skill absent from both CVs. Total cost in `cost_log` for this run < $0.25.
-- [ ] **Step 4: Verify rescoring** — relabel a CV (no rescore); upload a copy of a CV under a new name, then delete it (each changes the basis → all jobs rescore once, then stop).
+- [ ] **Step 2: Verify documents** at `http://localhost:8080/documents`. Prayush's CV folder currently has 2 files: expected the newer (September, `Prayush_Shrestha_Resume.pdf`) is the active CV and `Ready`, the April one is listed under "Other files in your folders (not used)" and was never sent to Claude; the CV warns `missing_work_rights` and `degree_status_unclear`; the cover letter is `Ready` and warns about "leveraging" / "fast-paced"; its `structured.previousTarget` names Decode Global and Ms. Li.
+- [ ] **Step 3: Verify scores** on the board: all 3 jobs scored with explanations; the Salesforce Developer role (job1) ranks above the senior 5+ years role (job2), which ranks above the Tableau pre-sales role (job3); no explanation claims a skill absent from the CV. Total cost in `cost_log` for this run < $0.15.
+- [ ] **Step 4: Verify rescoring** — replace the CV with a copy under a new name through the page (basis changes → all jobs rescore once, then stop); confirm the old file is gone from the folder. Then restore Prayush's original CV the same way and delete the copy, so the folder ends exactly as it started.
 - [ ] **Step 5:** All suites green (`npm test`, `npm run e2e`); commit `docs: README for plan 2`.

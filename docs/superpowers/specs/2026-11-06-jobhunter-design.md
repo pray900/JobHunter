@@ -99,8 +99,7 @@ These are hard fails. A CV/cover letter that has any of them must not be present
 - Statuses track the application (e.g. New, CV ready, Applied, Interviewing, Closed).
 - Clicking a card opens a job page with: full JD, CV and cover letter, reasons for the changes, a box for extra instructions + regenerate, a link to the job posting.
 - **Every decision gets a reason**, including the match score ("why 82%").
-- Multiple base CVs for different kinds of roles, provided as Word and PDF.
-- Claude **picks the base CV** for each job, says why, and Prayush can switch it.
+- **Changed 2026-11-07: exactly one base CV and one base cover letter** (Word or PDF). Originally multiple base CVs with Claude picking one per job; dropped for simplicity — no per-job base-CV choice, no labels, no cross-CV conflict check.
 - Generated CV and cover letter are **editable in-app** for small changes.
 - On Regenerate, Claude **sees Prayush's manual edits and keeps them** unless the new instruction says otherwise.
 - Generation **waits for a Generate click**; nothing expensive runs on file arrival.
@@ -150,7 +149,7 @@ These two intake calls are the only Claude calls that run without a click (besid
 
 Triggered by the Generate button on a card or job page.
 
-1. **Base CV selection.** Claude picks the best-fitting base CV (and base cover letter) and gives a reason ("used Frontend CV because the role is mostly React work"). Prayush can switch it on the job page, which regenerates.
+1. **Base documents.** The one base CV and the one base cover letter are always used (changed 2026-11-07; no selection step).
 2. **Template selection.** Claude picks a template with a reason (only Standard ATS exists today). Switchable on the job page.
 3. **Writer** produces structured CV + cover letter + reasons + keyword coverage of this version. (The match score is not produced here; it comes from intake, §6.1.)
 4. **Automated code checks** (§6.4) run on the rendered output.
@@ -165,7 +164,7 @@ The reviewer also checks the honesty of each reason and the keyword-coverage cla
 
 - Base CVs are the only source of facts.
 - Every skill, number/metric, job title, employer, and date in a generated CV must be traceable to at least one base CV. Anything that isn't is flagged (code check where possible, reviewer otherwise).
-- If base CVs disagree with each other on a fact (e.g. 2.5 vs 3 years experience, different dates), the app surfaces a warning on My documents so Prayush fixes the base CVs. Generation should not silently pick one. *(Claude's call:)* generation still runs, with a warning banner on the job page naming the conflict; the writer uses the more conservative version of the fact. Conflicts are detected by a Claude call when a base document is added or changed (an action Prayush takes), not on every generation.
+- Cross-CV conflict detection: dropped 2026-11-07 — with a single base CV there is nothing to conflict with.
 - **How strict the fact check is** *(Claude's call)*: a skill, number/metric, job title, employer or date that does not appear in any base CV is a **hard fail** the writer must fix. Rephrasing real work in the job's language (e.g. "Lightning Web Components" → "modern JavaScript component frameworks") is allowed; the code check flags it as unmatched and the **reviewer** rules whether the rephrasing is honest. Rulings show in the reasons panel.
 - Facts must be consistent across all generated versions for the same person.
 - Degree status and work-rights line must appear as in the base CVs; if a base CV lacks the work-rights line, flag it.
@@ -257,9 +256,8 @@ Prayush supplied 3 job files and real base documents. Use them (redacted where n
 - Version history (label, time, instruction); switch to / restore an older version.
 
 ### 7.3 My documents
-- Base documents live in two folders Prayush created: **`PersonalDetailsCV/`** (base CVs) and **`PersonalDetailsCoverLetter/`** (base cover letters), paths configurable like the job folder. The app reads these folders; uploading/replacing/deleting on this page writes to them.
-- Each base CV is labelled with the kind of role it's for. Files have no labels today, so *(Claude's call)* Claude suggests a label when a file is first seen (e.g. "LLM / QA", "Software engineering / cybersecurity") and Prayush can edit it.
-- Warnings for facts that conflict between base CVs; missing work-rights line.
+- **Changed 2026-11-07: one slot for the base CV and one for the base cover letter.** They live in **`PersonalDetailsCV/`** and **`PersonalDetailsCoverLetter/`** (paths configurable). Uploading replaces the current file, after an in-page confirmation because it removes the old file. *(Claude's call:)* if a folder holds more than one accepted file, the most recently modified one is used and the others are listed as "ignored" so Prayush can remove them.
+- Warnings: missing work-rights line, unclear degree status, banned phrases.
 - Every generated version records which base document (and its version) it came from.
 
 ### 7.4 Settings (minimal)
