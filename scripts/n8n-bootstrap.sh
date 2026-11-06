@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
 # Idempotent n8n bootstrap: owner account, credentials, workflows, publish, restart.
 # Usage: scripts/n8n-bootstrap.sh [compose-file]   (default: docker-compose.yml)
-# Secrets are read from the running stack / .env and piped over stdin into a temp
-# file inside the n8n container. They are never written to the repo or printed.
+# Secrets are read from the running stack / .env and piped over stdin into the n8n
+# container. They are never written to the repo or printed.
 set -euo pipefail
 
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'   # Git Bash: don't rewrite /tmp, /workflows
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${1:-$ROOT/docker-compose.yml}"
+IS_TEST_STACK=0
+[ "$(basename "$COMPOSE_FILE")" = "docker-compose.test.yml" ] && IS_TEST_STACK=1
+ENV_FILE="$ROOT/.env"
+
 dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
 n8n_exec() { dc exec -T n8n "$@"; }
-n8n_cli() { n8n_exec n8n "$@" 2> >(grep -v 'license SDK' >&2) | grep -v 'license SDK' || true; }
-
-OWNER_EMAIL="${N8N_OWNER_EMAIL:-owner@jobhunter.local}"
-OWNER_PASSWORD="${N8N_OWNER_PASSWORD:-Jobhunter-Local-1}"
+# Run the n8n CLI, hide licence-SDK noise, but keep the real exit status.
+n8n_cli() {
+  local out
+  if ! out="$(n8n_exec n8n "$@" 2>&1)"; then
+    printf '%s\n' "$out" | grep -v 'license SDK' >&2 || true
+    echo "n8n $* failed" >&2
+    return 1
+  fi
+  printf '%s\n' "$out" | grep -v 'license SDK' || true
+}
 
 wait_healthy() {
   local i
@@ -24,40 +34,83 @@ wait_healthy() {
     fi
     sleep 2
   done
-  echo "n8n did not become healthy" >&2
+  echo "n8n did not become healthy within 180s" >&2
   return 1
 }
 
 # Read KEY from .env without sourcing it.
 env_value() {
-  [ -f "$ROOT/.env" ] || return 0
-  grep -E "^$1=" "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d '\r' || true
+  [ -f "$ENV_FILE" ] || return 0
+  grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d '\r' || true
 }
+
+# Set KEY=VALUE in .env (replace an existing/empty line, else append).
+set_env_value() {
+  local key="$1" value="$2"
+  touch "$ENV_FILE"
+  if grep -qE "^$key=" "$ENV_FILE"; then
+    KEY="$key" VALUE="$value" node -e '
+      const fs = require("fs"), f = process.argv[1], k = process.env.KEY;
+      const out = fs.readFileSync(f, "utf8").split(/\r?\n/).map((l) => (l.startsWith(k + "=") ? k + "=" + process.env.VALUE : l)).join("\n");
+      fs.writeFileSync(f, out);' "$ENV_FILE"
+  else
+    if [ -s "$ENV_FILE" ] && [ -n "$(tail -c1 "$ENV_FILE")" ]; then echo >>"$ENV_FILE"; fi
+    printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
+  fi
+}
+
+# Owner login: fixed, non-secret values for the throwaway test stack only. The real
+# stack takes them from .env and generates (and saves) whatever is missing.
+if [ "$IS_TEST_STACK" = 1 ]; then
+  OWNER_EMAIL="owner@jobhunter.local"
+  OWNER_PASSWORD="Jobhunter-Local-1"
+else
+  OWNER_EMAIL="$(env_value N8N_OWNER_EMAIL)"
+  OWNER_PASSWORD="$(env_value N8N_OWNER_PASSWORD)"
+  GENERATED=0
+  if [ -z "$OWNER_EMAIL" ]; then
+    OWNER_EMAIL="prayush@jobhunter.local"
+    set_env_value N8N_OWNER_EMAIL "$OWNER_EMAIL"
+    GENERATED=1
+  fi
+  if [ -z "$OWNER_PASSWORD" ]; then
+    # base64url chars plus a suffix that satisfies n8n's upper/lower/digit rule.
+    OWNER_PASSWORD="$(node -e 'process.stdout.write(require("crypto").randomBytes(24).toString("base64url") + "Aa1")')"
+    set_env_value N8N_OWNER_PASSWORD "$OWNER_PASSWORD"
+    GENERATED=1
+  fi
+  if [ "$GENERATED" = 1 ]; then echo "[bootstrap] n8n owner login saved in .env"; fi
+fi
 
 echo "[bootstrap] waiting for n8n"
 wait_healthy
 
 # 1. Owner account (n8n 2.x needs an owner to own imported credentials/workflows).
-#    Re-running returns 4xx once the owner exists; that is fine.
+#    Pre-checks setup state; any failure other than "already set up" aborts.
 echo "[bootstrap] ensuring owner account"
-N8N_OWNER_EMAIL="$OWNER_EMAIL" N8N_OWNER_PASSWORD="$OWNER_PASSWORD" \
-  n8n_exec sh -c 'cat >/tmp/owner.json' <<JSON
-{"email":"$OWNER_EMAIL","password":"$OWNER_PASSWORD","firstName":"Job","lastName":"Hunter"}
-JSON
-n8n_exec node -e "
-const b=require('fs').readFileSync('/tmp/owner.json','utf8');
-fetch('http://localhost:5678/rest/owner/setup',{method:'POST',headers:{'content-type':'application/json'},body:b})
- .then(r=>console.log('owner setup status',r.status)).finally(()=>require('fs').unlinkSync('/tmp/owner.json'));"
+OWNER_EMAIL="$OWNER_EMAIL" OWNER_PASSWORD="$OWNER_PASSWORD" node -e '
+process.stdout.write(JSON.stringify({ email: process.env.OWNER_EMAIL, password: process.env.OWNER_PASSWORD, firstName: "Job", lastName: "Hunter" }));' |
+  n8n_exec node -e '
+const base = "http://localhost:5678";
+(async () => {
+  const s = await (await fetch(base + "/rest/settings")).json();
+  if (s.data.userManagement.showSetupOnFirstLoad === false) { console.log("owner already set up"); return; }
+  let body = "";
+  for await (const c of process.stdin) body += c;
+  const r = await fetch(base + "/rest/owner/setup", { method: "POST", headers: { "content-type": "application/json" }, body });
+  if (!r.ok) { console.error("owner setup failed: HTTP " + r.status); process.exit(1); }
+  console.log("owner created");
+})().catch((e) => { console.error("owner setup failed: " + e.message); process.exit(1); });
+'
 
 # 2. Credentials (ids are fixed, so import upserts rather than duplicates).
 echo "[bootstrap] importing credentials"
 PG_PASSWORD="$(dc exec -T postgres printenv POSTGRES_PASSWORD | tr -d '\r\n')"
-ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-$(env_value ANTHROPIC_API_KEY)}"
-if [ -z "$ANTHROPIC_KEY" ]; then
-  case "$COMPOSE_FILE" in
-    *test*) ANTHROPIC_KEY="test-dummy-key" ;;  # the stub only checks the header exists
-    *) echo "ANTHROPIC_API_KEY is empty in .env" >&2; exit 1 ;;
-  esac
+if [ "$IS_TEST_STACK" = 1 ]; then
+  ANTHROPIC_KEY="test-dummy-key"   # the stub only checks the header exists; never use a real key here
+else
+  ANTHROPIC_KEY="$(env_value ANTHROPIC_API_KEY)"
+  [ -n "$ANTHROPIC_KEY" ] || { echo "ANTHROPIC_API_KEY is empty in .env" >&2; exit 1; }
 fi
 PG_PASSWORD="$PG_PASSWORD" ANTHROPIC_KEY="$ANTHROPIC_KEY" node -e '
 const e = process.env;
@@ -76,19 +129,44 @@ n8n_cli import:workflow --separate --input=/workflows
 
 # 4. Publish all workflows (n8n 2.x: publish:workflow; takes effect only after restart).
 echo "[bootstrap] publishing workflows"
-IDS="$(n8n_exec n8n list:workflow --onlyId 2>/dev/null | grep -v 'license SDK' | tr -d '\r' || true)"
+LIST="$(n8n_cli list:workflow --onlyId)"
+IDS="$(printf '%s\n' "$LIST" | tr -d '\r' | grep -E '^[A-Za-z0-9_-]+$' || true)"
 for id in $IDS; do
   n8n_cli publish:workflow --id="$id"
 done
 
 if [ -n "$IDS" ]; then
   echo "[bootstrap] restarting n8n to register published workflows"
-  SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   dc restart n8n >/dev/null
   wait_healthy
-  for _ in $(seq 1 60); do
-    dc logs --since "$SINCE" n8n 2>/dev/null | grep -q 'Finished building workflow dependency index' && break
-    sleep 1
-  done
+  # /healthz is up before published webhooks are registered. For every webhook node in
+  # /workflows, probe with a method it does not accept: a registered path answers
+  # "Did you mean to make a ... request?" (nothing is executed), an unregistered one
+  # answers "is not registered". Fails closed (exit 1) on timeout.
+  n8n_exec node -e '
+const fs = require("fs");
+const hooks = [];
+for (const f of fs.readdirSync("/workflows").filter((f) => f.endsWith(".json"))) {
+  const wf = JSON.parse(fs.readFileSync("/workflows/" + f, "utf8"));
+  for (const n of wf.nodes || []) if (n.type === "n8n-nodes-base.webhook")
+    hooks.push({ path: n.parameters.path, method: (n.parameters.httpMethod || "GET").toUpperCase() });
+}
+const registered = async (h) => {
+  const probe = h.method === "GET" ? "POST" : "GET";
+  const r = await fetch("http://localhost:5678/webhook/" + h.path, { method: probe });
+  const j = await r.json().catch(() => ({}));
+  return r.status !== 404 || /Did you mean/.test(j.message || "");
+};
+(async () => {
+  const deadline = Date.now() + 120000;
+  for (const h of hooks) {
+    while (!(await registered(h).catch(() => false))) {
+      if (Date.now() > deadline) { console.error("webhook not registered after restart: " + h.method + " " + h.path); process.exit(1); }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  console.log("verified " + hooks.length + " webhook(s) registered");
+})();
+' || { echo "[bootstrap] n8n did not register published workflows" >&2; exit 1; }
 fi
 echo "[bootstrap] done"
