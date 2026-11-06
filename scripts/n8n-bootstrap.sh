@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # Idempotent n8n bootstrap: owner account, credentials, workflows, publish, restart.
 # Usage: scripts/n8n-bootstrap.sh [compose-file]   (default: docker-compose.yml)
+#        JOBHUNTER_ENV_FILE overrides the env file (default: <repo>/.env).
+# Sourcing the script (`. scripts/n8n-bootstrap.sh`) only defines settings and functions;
+# nothing runs and no container is touched (used by tests/e2e/bootstrap.e2e.test.ts).
 # Secrets are read from the running stack / .env and piped over stdin into the n8n
 # container. They are never written to the repo or printed.
 set -euo pipefail
 
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'   # Git Bash: don't rewrite /tmp, /workflows
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_FILE="${1:-$ROOT/docker-compose.yml}"
+# Paths go to Windows docker/node as well as bash. With path conversion off, a Git Bash
+# path like /c/... is unreadable to them, so use the mixed form C:/... (pwd -W) on
+# Windows; bash accepts it too. Elsewhere pwd -W fails and plain pwd is used.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && { pwd -W 2>/dev/null || pwd; })"
+to_native_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m -- "$1"; else printf '%s\n' "$1"; fi; }
+COMPOSE_FILE="$(to_native_path "${1:-$ROOT/docker-compose.yml}")"
 IS_TEST_STACK=0
 [ "$(basename "$COMPOSE_FILE")" = "docker-compose.test.yml" ] && IS_TEST_STACK=1
-ENV_FILE="$ROOT/.env"
+ENV_FILE="$(to_native_path "${JOBHUNTER_ENV_FILE:-$ROOT/.env}")"
 
 dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
 n8n_exec() { dc exec -T n8n "$@"; }
@@ -38,10 +45,16 @@ wait_healthy() {
   return 1
 }
 
-# Read KEY from .env without sourcing it.
+# Read KEY from .env without sourcing it. One pair of matching surrounding quotes
+# (KEY="v" or KEY='v') is stripped, as docker compose does.
 env_value() {
   [ -f "$ENV_FILE" ] || return 0
-  grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d '\r' || true
+  local v
+  v="$(grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d '\r' || true)"
+  if [ "${#v}" -ge 2 ] && { [[ $v == \"*\" ]] || [[ $v == \'*\' ]]; }; then
+    v="${v:1:${#v}-2}"
+  fi
+  printf '%s' "$v"
 }
 
 # Set KEY=VALUE in .env (replace an existing/empty line, else append).
@@ -61,6 +74,7 @@ set_env_value() {
 
 # Owner login: fixed, non-secret values for the throwaway test stack only. The real
 # stack takes them from .env and generates (and saves) whatever is missing.
+ensure_owner_login() {
 if [ "$IS_TEST_STACK" = 1 ]; then
   OWNER_EMAIL="owner@jobhunter.local"
   OWNER_PASSWORD="Jobhunter-Local-1"
@@ -81,6 +95,26 @@ else
   fi
   if [ "$GENERATED" = 1 ]; then echo "[bootstrap] n8n owner login saved in .env"; fi
 fi
+}
+
+# Workflow ids shipped in n8n/workflows/*.json (mounted at /workflows). Only these are
+# published; workflows the user created in the editor are left alone.
+shipped_workflow_ids() {
+  n8n_exec node -e '
+const fs = require("fs");
+for (const f of fs.readdirSync("/workflows").filter((f) => f.endsWith(".json")).sort()) {
+  const wf = JSON.parse(fs.readFileSync("/workflows/" + f, "utf8"));
+  if (!wf.id) { console.error("workflow without id: " + f); process.exit(1); }
+  console.log(wf.id);
+}' | tr -d '\r'
+}
+
+remove_temp_credentials() { n8n_exec rm -f /tmp/jh-credentials.json >/dev/null 2>&1 || true; }
+
+# Sourced (tests): stop here, having only defined settings and functions.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
+ensure_owner_login
 
 echo "[bootstrap] waiting for n8n"
 wait_healthy
@@ -118,6 +152,9 @@ else
   ANTHROPIC_KEY="$(env_value ANTHROPIC_API_KEY)"
   [ -n "$ANTHROPIC_KEY" ] || { echo "ANTHROPIC_API_KEY is empty in .env" >&2; exit 1; }
 fi
+# Remove the in-container temp file holding secrets even if a step fails or is interrupted.
+trap remove_temp_credentials EXIT
+trap 'exit 1' INT TERM
 PG_PASSWORD="$PG_PASSWORD" ANTHROPIC_KEY="$ANTHROPIC_KEY" node -e '
 const e = process.env;
 process.stdout.write(JSON.stringify([
@@ -126,17 +163,18 @@ process.stdout.write(JSON.stringify([
   { id: "jh-anthropic", name: "Anthropic", type: "anthropicApi", data: { apiKey: e.ANTHROPIC_KEY } },
 ]));' | n8n_exec sh -c 'umask 077; cat >/tmp/jh-credentials.json'
 n8n_cli import:credentials --input=/tmp/jh-credentials.json
-n8n_exec rm -f /tmp/jh-credentials.json
+remove_temp_credentials
+trap - EXIT INT TERM
 
 # 3. Workflows. --activeState defaults to false, so everything is imported inactive and
 #    published explicitly below. Workflow JSON must carry stable ids to stay idempotent.
 echo "[bootstrap] importing workflows"
 n8n_cli import:workflow --separate --input=/workflows
 
-# 4. Publish all workflows (n8n 2.x: publish:workflow; takes effect only after restart).
+# 4. Publish the shipped workflows only (n8n 2.x: publish:workflow; takes effect only
+#    after restart). Other workflows in n8n are not touched.
 echo "[bootstrap] publishing workflows"
-LIST="$(n8n_cli list:workflow --onlyId)"
-IDS="$(printf '%s\n' "$LIST" | tr -d '\r' | grep -E '^[A-Za-z0-9_-]+$' || true)"
+IDS="$(shipped_workflow_ids)"
 for id in $IDS; do
   n8n_cli publish:workflow --id="$id"
 done
