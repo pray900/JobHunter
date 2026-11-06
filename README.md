@@ -59,9 +59,9 @@ Runs every 30 seconds and also when the web page or a test calls `POST /webhook/
 - **1. Scan folder**: asks the worker to read every `.docx`. If the scan fails, the run answers 502 and stops with no changes.
 - **2. Upsert jobs**: one query per file. New file: insert the job and its first status. Known file: refresh the text and link, and only if the content changed reset the extraction. Unreadable or empty files are marked `skipped` and never sent to Claude.
 - **3. Mark removed files**: jobs whose file is gone get `source_removed = true`. The job itself is kept.
-- **4. Claim pending extractions**: gives up on claims stuck for over 5 minutes, checks `EXTRACT_MODEL` has a known price (stops before spending anything if not), then claims the jobs to extract (new or changed, or failed with fewer than 3 attempts).
+- **4. Claim pending extractions**: gives up on claims stuck for over 5 minutes, checks `EXTRACT_MODEL` has a known price (stops before spending anything if not), then claims the jobs to extract (new or changed, or failed with fewer than 3 attempts once they have waited 1 minute after the first attempt or 5 minutes after the second, so a short outage does not use up all 3 attempts).
 - **5. Ask Claude**: one call per claimed job, using structured output so the answer is always title, employer, advertiser and short description.
-- **6. Save details or failure**: a good answer is saved and the job is `done`; anything else is `failed` and retried up to 3 times. Token cost is logged in `cost_log`. Saves only apply if the job still holds this run's claim.
+- **6. Save details or failure**: a good answer is saved and the job is `done`; anything else is `failed` and retried (after 1, then 5 minutes) up to 3 attempts in total. Token cost is logged in `cost_log`. Saves only apply if the job still holds this run's claim.
 - **Finish**: waits for all branches and answers the webhook with `{ ok, scanned, extracted }`.
 
 ### Jobs API

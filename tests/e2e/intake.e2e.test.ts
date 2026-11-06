@@ -141,7 +141,11 @@ describe('job intake sync', () => {
 
   test('extraction failure is retried then gives up', async () => {
     await writeJobFile('fail.docx', [{ text: 'https://x.io/f' }, { text: 'STUB_FAIL please' }]);
-    for (let i = 0; i < 4; i++) await triggerSync();
+    for (let i = 0; i < 4; i++) {
+      await triggerSync();
+      // Skip the retry wait (1 minute after attempt 1, 5 after attempt 2) so every sync may retry.
+      await db.query(`update jobs set extraction_claimed_at = extraction_claimed_at - interval '10 minutes' where source_ref='fail.docx'`);
+    }
     expect(await jobRow('fail.docx')).toMatchObject({
       extraction_status: 'failed',
       extraction_attempts: 3,
@@ -150,6 +154,36 @@ describe('job intake sync', () => {
     expect(await stub.requests()).toHaveLength(3);
     // A 500 has no usage, so nothing is logged as cost.
     expect(await db.query(`select id from cost_log`)).toEqual([]);
+  });
+
+  describe('failed extraction waits before retrying (1 minute after attempt 1, 5 minutes after attempt 2)', () => {
+    const makeFailed = async (attempts: number, lastClaimedAgo: string) => {
+      await writeJobFile('retry.docx', [{ text: 'https://x.io/r' }, { text: 'Retry job' }]);
+      await triggerSync();
+      await stub.reset();
+      await db.query(
+        `update jobs set extraction_status='failed', extraction_attempts=$1, extraction_claimed_at=now() - $2::interval,
+           title=null where source_ref='retry.docx'`,
+        [attempts, lastClaimedAgo],
+      );
+    };
+
+    test.each([
+      [1, '30 seconds', false],
+      [1, '2 minutes', true],
+      [2, '2 minutes', false],
+      [2, '6 minutes', true],
+      [3, '1 hour', false],
+    ])('attempts=%i, last attempt %s ago: retried=%s', async (attempts, ago, retried) => {
+      await makeFailed(attempts, ago);
+      await triggerSync();
+      expect(await stub.requests()).toHaveLength(retried ? 1 : 0);
+      expect(await jobRow('retry.docx')).toMatchObject(
+        retried
+          ? { extraction_status: 'done', extraction_attempts: attempts + 1, title: 'Stub Title' }
+          : { extraction_status: 'failed', extraction_attempts: attempts, title: null },
+      );
+    });
   });
 
   test('refusal counts as failure', async () => {

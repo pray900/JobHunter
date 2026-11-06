@@ -318,7 +318,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 4. Claim pending extractions\n- **Give up on stuck extractions**: a claim older than 5 minutes means that run crashed; when all 3 attempts are used, the job becomes `failed` instead of staying `in_progress` forever.\n- **Look up model price**: stops the run, before any job is claimed or Claude is called, when `EXTRACT_MODEL` has no price, so nothing is spent without its cost being logged.\n- **Claim pending extractions**: atomically marks the jobs this run will send to Claude as `in_progress` (+1 attempt): new/changed jobs, failed jobs with fewer than 3 attempts, and stuck claims with fewer than 3 attempts. `for update skip locked` means two overlapping runs never claim the same job. The returned `claimed_at` is this run's claim token, checked again in stage 6.",
+        "content": "## 4. Claim pending extractions\n- **Give up on stuck extractions**: a claim older than 5 minutes means that run crashed; when all 3 attempts are used, the job becomes `failed` instead of staying `in_progress` forever.\n- **Look up model price**: stops the run, before any job is claimed or Claude is called, when `EXTRACT_MODEL` has no price, so nothing is spent without its cost being logged.\n- **Claim pending extractions**: atomically marks the jobs this run will send to Claude as `in_progress` (+1 attempt): new/changed jobs, failed jobs with fewer than 3 attempts once they have waited since their last attempt (**1 minute after attempt 1, 5 minutes after attempt 2**, so an outage does not burn all 3 attempts in 90 seconds), and stuck claims with fewer than 3 attempts. `for update skip locked` means two overlapping runs never claim the same job. The returned `claimed_at` is this run's claim token, checked again in stage 6.",
         "height": 520,
         "width": 860,
         "color": 6
@@ -373,7 +373,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "update jobs\nset extraction_status = 'in_progress',\n    extraction_claimed_at = now(),\n    extraction_attempts = extraction_attempts + 1\nwhere id in (\n  select id from jobs\n  where source_removed = false\n    and (extraction_status in ('pending')\n         or (extraction_status = 'failed' and extraction_attempts < 3)\n         or (extraction_status = 'in_progress' and extraction_claimed_at < now() - interval '5 minutes'\n             and extraction_attempts < 3))\n  for update skip locked\n)\nreturning id, raw_text, url, extraction_claimed_at::text as claimed_at;  -- claimed_at = this run's claim token",
+        "query": "update jobs\nset extraction_status = 'in_progress',\n    extraction_claimed_at = now(),\n    extraction_attempts = extraction_attempts + 1\nwhere id in (\n  select id from jobs\n  where source_removed = false\n    and (extraction_status in ('pending')\n         -- failed: retry after a wait since the last attempt (1 minute after attempt 1,\n         -- 5 minutes after attempt 2), so a short outage does not use up all 3 attempts\n         or (extraction_status = 'failed' and extraction_attempts < 3\n             and extraction_claimed_at < now() - case when extraction_attempts <= 1\n                                                      then interval '1 minute'\n                                                      else interval '5 minutes' end)\n         or (extraction_status = 'in_progress' and extraction_claimed_at < now() - interval '5 minutes'\n             and extraction_attempts < 3))\n  for update skip locked\n)\nreturning id, raw_text, url, extraction_claimed_at::text as claimed_at;  -- claimed_at = this run's claim token",
         "options": {
           "queryReplacement": ""
         }
@@ -526,7 +526,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 6. Save details or failure\nSuccess = HTTP 2xx **and** `stop_reason` is `end_turn` **and** the JSON answer is valid → save details, `done`. Anything else (error, refusal, `max_tokens`, bad JSON) → `failed` (retried by stage 4 up to 3 attempts).\nWhenever Claude reported token `usage`, the cost is logged in `cost_log` (prices per model live in **Look up model price**, stage 4).\nBoth saves only apply while the job still carries **this run's claim** (`extraction_claimed_at` = the claimed_at token), so a job re-claimed by a later run, or reset because its file changed, is never overwritten.",
+        "content": "## 6. Save details or failure\nSuccess = HTTP 2xx **and** `stop_reason` is `end_turn` **and** the JSON answer is valid → save details, `done`. Anything else (error, refusal, `max_tokens`, bad JSON) → `failed` (retried by stage 4 after 1, then 5 minutes, up to 3 attempts).\nWhenever Claude reported token `usage`, the cost is logged in `cost_log` (prices per model live in **Look up model price**, stage 4).\nBoth saves only apply while the job still carries **this run's claim** (`extraction_claimed_at` = the claimed_at token), so a job re-claimed by a later run, or reset because its file changed, is never overwritten.",
         "height": 720,
         "width": 1180,
         "color": 5
