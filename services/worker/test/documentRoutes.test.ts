@@ -75,6 +75,14 @@ test('unreadable docx gets unreadable_file warning', async () => {
   expect(res.json().documents[0]).toMatchObject({ text: null, warnings: ['unreadable_file'] });
 });
 
+test('docx with no readable text gets unreadable_file and no text', async () => {
+  await fs.writeFile(path.join(cv, 'empty.docx'), await makeDocx([{ text: '   ' }, { text: '' }]));
+  const a = app();
+  const res = await a.inject({ method: 'POST', url: '/documents/scan' });
+  await a.close();
+  expect(res.json().documents[0]).toMatchObject({ text: null, pdfBase64: null, warnings: ['unreadable_file'] });
+});
+
 test('missing cv folder -> 503 document_folder_missing', async () => {
   await fs.rm(cv, { recursive: true });
   const a = app();

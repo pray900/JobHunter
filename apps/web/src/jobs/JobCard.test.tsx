@@ -106,11 +106,11 @@ describe('JobCard', () => {
 
   test('shows scoring and failed states', () => {
     const { rerender } = render(<JobCard job={{ ...baseJob, scoreStatus: 'pending' }} />);
-    expect(screen.getByText('Scoring…')).toBeInTheDocument();
+    expect(screen.getByText('Scoringâ€¦')).toBeInTheDocument();
     rerender(<JobCard job={{ ...baseJob, scoreStatus: 'in_progress' }} />);
-    expect(screen.getByText('Scoring…')).toBeInTheDocument();
+    expect(screen.getByText('Scoringâ€¦')).toBeInTheDocument();
     rerender(<JobCard job={{ ...baseJob, scoreStatus: 'pending', extractionStatus: 'pending' }} />);
-    expect(screen.queryByText('Scoring…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Scoringâ€¦')).not.toBeInTheDocument();
     rerender(<JobCard job={{ ...baseJob, scoreStatus: 'failed' }} />);
     expect(screen.getByText("Couldn't score this job")).toBeInTheDocument();
   });

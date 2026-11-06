@@ -32,7 +32,7 @@ function cvFacts(overrides: Partial<BaseCvFacts> = {}): BaseCvFacts {
 
 function letterFacts(overrides: Partial<BaseCoverLetterFacts> = {}): BaseCoverLetterFacts {
   return {
-    previousTarget: { company: 'Decode Global', addressee: 'Ms. Li', role: 'Engineer' },
+    previousTarget: { company: 'Example Corp', addressee: 'Ms. Example', role: 'Engineer' },
     reusableParagraphs: ['I enjoy working in a team.'],
     toneNotes: 'Direct and warm.',
     ...overrides,
@@ -96,6 +96,13 @@ describe('checkBaseCv', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({ code: 'banned_phrase' });
     expect(warnings[0].detail).toContain('spearheaded');
+  });
+
+  test('a multi-word phrase matches across a line break or extra spaces', () => {
+    const facts = cvFacts({ skills: ['A proven\ntrack   record of delivery'] });
+    expect(checkBaseCv(facts, ['proven track record']).filter((w) => w.code === 'banned_phrase')).toEqual([
+      { code: 'banned_phrase', detail: 'proven track record' },
+    ]);
   });
 
   test('does not match a banned word inside a longer word', () => {

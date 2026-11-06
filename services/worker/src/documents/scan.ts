@@ -19,6 +19,8 @@ async function scanKind(folders: DocumentFolders, kind: DocumentKind): Promise<S
       if (isPdf) return { ...base, pdfBase64: file.bytes.toString('base64'), text: null, warnings: [] };
       try {
         const text = (await readDocxBlocks(file.bytes)).map((b) => b.text).join('\n');
+        // No readable text: never sent to Claude.
+        if (text.trim() === '') return { ...base, pdfBase64: null, text: null, warnings: ['unreadable_file'] };
         return { ...base, pdfBase64: null, text, warnings: [] };
       } catch {
         return { ...base, pdfBase64: null, text: null, warnings: ['unreadable_file'] };

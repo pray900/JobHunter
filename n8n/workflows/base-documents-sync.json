@@ -736,7 +736,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ kind: $json.kind, facts: $json.facts }) }}",
         "options": {
-          "timeout": 30000,
+          "timeout": 10000,
           "response": {
             "response": {
               "fullResponse": true,

@@ -22,9 +22,9 @@ function collectStrings(value: unknown, out: string[] = []): string[] {
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// Word-boundary, case-insensitive match. The phrase's single spaces match literal spaces in the text.
+// Word-boundary, case-insensitive match. Spaces in the phrase match any run of whitespace (PDF text breaks lines inside phrases).
 function phraseRegex(phrase: string): RegExp {
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(phrase)}(?![\\p{L}\\p{N}])`, 'iu');
+  return new RegExp(`(?<![\\p{L}\\p{N}])${phrase.trim().split(/\s+/).map(escapeRegex).join('\\s+')}(?![\\p{L}\\p{N}])`, 'iu');
 }
 
 function bannedPhraseWarnings(facts: unknown, bannedPhrases: string[]): DocWarning[] {

@@ -82,7 +82,7 @@ export function DocumentSlot(props: {
         type="file"
         className="sr-file"
         aria-label={copy.chooser}
-        accept=".pdf,.doc,.docx"
+        accept=".pdf,.docx"
         tabIndex={-1}
         onChange={(e) => {
           const file = e.target.files?.[0];

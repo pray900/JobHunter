@@ -42,7 +42,7 @@ export function JobCard({ job, noReadyCv = false }: { job: JobSummary; noReadyCv
       {job.shortDescription && <p className="card-desc">{job.shortDescription}</p>}
       {reading && <p className="note">Reading job…</p>}
       {job.extractionStatus === 'failed' && <p className="note note-bad">Details unavailable</p>}
-      {scoring && <p className="note">Scoring�</p>}
+      {scoring && <p className="note">Scoring…</p>}
       {!scored && job.scoreStatus === 'failed' && <p className="note note-bad">Couldn't score this job</p>}
       {!scored && job.scoreStatus !== 'failed' && noReadyCv && (
         <p className="note">

@@ -39,9 +39,6 @@ export interface BaseCoverLetterFacts {
 
 export type DocWarningCode = 'missing_work_rights' | 'degree_status_unclear' | 'banned_phrase';
 
-// Set by the base documents sync (not the worker) on every file of a kind except the one used.
-export type IgnoredFileWarningCode = 'extra_file_ignored';
-
 export interface DocWarning {
   code: DocWarningCode;
   detail: string;

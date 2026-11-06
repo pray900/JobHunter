@@ -40,7 +40,7 @@ Put one Word file (`.docx`) per job in the `Joblisting/` folder in the project r
 The folder must exist before `docker compose up`. The worker mount is declared with `create_host_path: false`, so on a Linux Docker engine a missing folder stops the worker from starting instead of Compose creating an empty one. Docker Desktop on Windows still creates a missing folder for the mount, so there check the path in `JOBLISTING_DIR` yourself: a typo gives you an empty board, not an error.
 
 - The first non-empty line of the file must be the link to the job posting. That becomes the "Open job posting" button on the card.
-- The folder is checked every 30 seconds. A new file becomes a card, an edited file is read again, and a deleted or renamed file keeps its card but shows "Source file removed".
+- The folder is checked every 60 seconds. A new file becomes a card, an edited file is read again, and a deleted or renamed file keeps its card but shows "Source file removed".
 - Word's temporary lock files (names starting with `~$`) are ignored.
 - If the folder is missing or cannot be read, the sync fails loudly and changes nothing. It never marks jobs as removed because of a broken scan.
 - `Joblisting/`, `PersonalDetailsCV/`, `PersonalDetailsCoverLetter/` and `.env` are git-ignored, so personal data is never committed.
@@ -49,9 +49,10 @@ The folder must exist before `docker compose up`. The worker mount is declared w
 
 JobHunter uses **one** base CV and **one** base cover letter. Open http://localhost:8080/documents (**My documents** in the top menu). There are two slots, one for the CV and one for the cover letter.
 
-1. Click upload in a slot and choose a `.pdf` or `.docx` (up to 5 MB). You can also drop the file into `PersonalDetailsCV/` or `PersonalDetailsCoverLetter/` in the project root; the next sync (every 30 seconds) picks it up.
+1. Click upload in a slot and choose a `.pdf` or `.docx` (up to 5 MB). You can also drop the file into `PersonalDetailsCV/` or `PersonalDetailsCoverLetter/` in the project root; the next sync (every 60 seconds) picks it up.
 2. Uploading **replaces** the current file. The old file is removed from the folder only after you confirm in the page.
 3. If a folder holds several accepted files, the **newest readable one is used**. The others are listed as "not used" and are never sent to Claude. Delete the ones you don't want from the page.
+   The newest file by Modified date is used. Windows keeps the original Modified date when you copy a file in, so if an older file stays "not used", upload it through the page instead.
 4. After reading, each slot shows warnings: **work rights** missing or unclear, **degree status** unclear, and **banned phrases** found in the letter (for example "leveraging", "fast-paced").
 
 Folders and files:

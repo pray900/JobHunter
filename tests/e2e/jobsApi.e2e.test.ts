@@ -1,5 +1,16 @@
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
-import { api, db, resetState, triggerSync, writeJobFile } from './lib';
+import {
+  api,
+  db,
+  makePdf,
+  removeDocument,
+  resetState,
+  triggerDocumentsSync,
+  triggerScoring,
+  triggerSync,
+  writeDocument,
+  writeJobFile,
+} from './lib';
 
 const OWNER = '00000000-0000-0000-0000-000000000001';
 
@@ -9,12 +20,23 @@ async function listJobs(): Promise<any> {
   return res.json();
 }
 
-async function insertJob(ref: string, title: string, matchScore: number | null, createdAt?: string) {
+async function insertJob(ref: string, title: string, matchScore: number | null, createdAt?: string, basis: string | null = null) {
   await db.query(
-    `insert into jobs (owner_id, source, source_ref, content_hash, raw_text, title, extraction_status, match_score, created_at)
-     values ($1, 'folder', $2, 'h', 'text', $3, 'done', $4, coalesce($5::timestamptz, now()))`,
-    [OWNER, ref, title, matchScore, createdAt ?? null],
+    `insert into jobs (owner_id, source, source_ref, content_hash, raw_text, title, extraction_status, match_score,
+                       match_basis_hash, score_status, created_at)
+     values ($1, 'folder', $2, 'h', 'text', $3, 'done', $4, $6, case when $4::int is null then 'pending' else 'done' end,
+             coalesce($5::timestamptz, now()))`,
+    [OWNER, ref, title, matchScore, createdAt ?? null, basis],
   );
+}
+
+/** Puts one base CV in the folder and analyses it. Returns its hash (the scoring basis). */
+async function readyCv(tag = 'v1'): Promise<string> {
+  writeDocument('cv', 'cv.pdf', makePdf(`Base CV STUB_HEADLINE:${tag}`));
+  await triggerDocumentsSync();
+  const [cv] = await db.query(`select content_hash from base_documents where kind='cv' and active and analysis_status='done'`);
+  expect(cv).toBeDefined();
+  return cv.content_hash;
 }
 
 describe('jobs API', () => {
@@ -39,13 +61,47 @@ describe('jobs API', () => {
   });
 
   test('orders by match score desc with unscored last', async () => {
-    await insertJob('1.docx', 'forty', 40);
+    const basis = await readyCv();
+    await insertJob('1.docx', 'forty', 40, undefined, basis);
     await insertJob('2.docx', 'none', null);
-    await insertJob('3.docx', 'ninety', 90);
+    await insertJob('3.docx', 'ninety', 90, undefined, basis);
     const { jobs } = await listJobs();
     expect(jobs.map((j: any) => j.title)).toEqual(['ninety', 'forty', 'none']);
     expect(typeof jobs[0].matchScore).toBe('number');
     expect(jobs[2].matchScore).toBeNull();
+  });
+
+  test('a score from another basis is hidden, the card shows pending, and ordering uses the returned score', async () => {
+    const basis = await readyCv();
+    await insertJob('1.docx', 'current', 40, undefined, basis);
+    await insertJob('2.docx', 'old cv', 95, undefined, 'older-basis');
+    const { jobs } = await listJobs();
+    expect(jobs.map((j: any) => j.title)).toEqual(['current', 'old cv']);
+    expect(jobs[0]).toMatchObject({ matchScore: 40, scoreStatus: 'done' });
+    expect(jobs[1]).toMatchObject({ matchScore: null, matchExplanation: null, matchBreakdown: null, scoreStatus: 'pending' });
+  });
+
+  test('CV file removed by hand: scores disappear; they come back only after rescoring', async () => {
+    await readyCv('v1');
+    await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
+    await triggerSync();
+    expect((await triggerScoring()).scored).toBe(1);
+    expect((await listJobs()).jobs[0]).toMatchObject({ scoreStatus: 'done' });
+    expect(typeof (await listJobs()).jobs[0].matchScore).toBe('number');
+
+    removeDocument('cv', 'cv.pdf');
+    await triggerDocumentsSync();
+    // No current CV: no score is shown, whatever was saved.
+    expect((await listJobs()).jobs[0]).toMatchObject({ matchScore: null, matchExplanation: null, matchBreakdown: null });
+
+    // A different CV that is analysed: the old score stays hidden (pending) until the job is rescored.
+    writeDocument('cv', 'cv2.pdf', makePdf('Base CV STUB_HEADLINE:v2'));
+    await triggerDocumentsSync();
+    expect((await listJobs()).jobs[0]).toMatchObject({ matchScore: null, matchBreakdown: null, scoreStatus: 'pending' });
+    expect((await triggerScoring()).scored).toBe(1);
+    const job = (await listJobs()).jobs[0];
+    expect(job.scoreStatus).toBe('done');
+    expect(typeof job.matchScore).toBe('number');
   });
 
   test('ties on score are newest first', async () => {
