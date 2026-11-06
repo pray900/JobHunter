@@ -18,6 +18,10 @@ describe('filterJobs', () => {
     expect(filterJobs(jobs, { status: 'all', query: 'ACME' }).map((j) => j.id)).toEqual(['2', '3', '4']);
     expect(filterJobs(jobs, { status: 'all', query: 'salesforce' }).map((j) => j.id)).toEqual(['1']);
   });
+  test('query also matches sourceRef (the heading of untitled cards)', () => {
+    const untitled = [job({ id: 'u', title: null, sourceRef: 'Contoso-Platform-Lead.docx' }), ...jobs];
+    expect(filterJobs(untitled, { status: 'all', query: 'contoso' }).map((j) => j.id)).toEqual(['u']);
+  });
   test('all + empty query returns everything', () => {
     expect(filterJobs(jobs, { status: 'all', query: '' })).toEqual(jobs);
   });

@@ -10,7 +10,7 @@ export function filterJobs(jobs: JobSummary[], f: JobFilter): JobSummary[] {
   return jobs.filter((j) => {
     if (f.status !== 'all' && j.status !== f.status) return false;
     if (!q) return true;
-    return [j.title, j.employer, j.advertiser, j.shortDescription].some((v) => v?.toLowerCase().includes(q));
+    return [j.title, j.employer, j.advertiser, j.shortDescription, j.sourceRef].some((v) => v?.toLowerCase().includes(q));
   });
 }
 
