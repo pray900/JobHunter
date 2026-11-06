@@ -1,11 +1,14 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { constants as fsConstants, createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { DocumentKind } from '../documents/types.js';
 
 export interface DocumentFile {
   name: string;
-  bytes: Buffer;
+  // null when the file is over MAX_DOCUMENT_BYTES (never read into memory).
+  bytes: Buffer | null;
+  contentHash: string;
 }
 
 export type DocumentDirs = Record<DocumentKind, string>;
@@ -64,9 +67,6 @@ const isAcceptedName = (name: string): boolean =>
 
 // A name that is already safe to use verbatim: no separators, no `..`, only allowed characters.
 const SAFE_NAME = /^[A-Za-z0-9 ._()-]+$/;
-function assertSafeName(name: string): void {
-  if (!isAcceptedName(name) || !SAFE_NAME.test(name) || name.includes('..')) throw new InvalidDocumentNameError();
-}
 
 // Cleans an uploaded file name. Returns null when it cannot be made into a valid .pdf/.docx name.
 export function sanitiseDocumentName(raw: string): string | null {
@@ -85,31 +85,71 @@ export function sanitiseDocumentName(raw: string): string | null {
 
 export interface DocumentFolders {
   listDocuments(kind: DocumentKind): Promise<DocumentFile[]>;
+  // Exact name of an existing accepted file in the folder, or null. Never matches path-like names.
+  findDocument(kind: DocumentKind, name: string): Promise<string | null>;
   writeDocument(kind: DocumentKind, name: string, bytes: Buffer, opts: { replace: boolean }): Promise<void>;
   deleteDocument(kind: DocumentKind, name: string): Promise<void>;
 }
 
+const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer);
+  return hash.digest('hex');
+}
+
+const hasPathTricks = (name: string): boolean => /[\/\0]/.test(name) || name.includes('..');
+
+export type DocumentLog = (message: string, context: Record<string, unknown>) => void;
+
 // The only module that touches the CV and cover letter folders on disk.
-export function createDocumentFolders(dirs: DocumentDirs): DocumentFolders {
+export function createDocumentFolders(dirs: DocumentDirs, log: DocumentLog = () => {}): DocumentFolders {
+  async function readEntries(kind: DocumentKind) {
+    const dir = dirs[kind];
+    try {
+      return await fs.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if (hasCode(err, 'ENOENT')) throw new DocumentFolderMissingError(kind, dir);
+      throw err;
+    }
+  }
+
+  async function findDocument(kind: DocumentKind, name: string): Promise<string | null> {
+    if (name === '' || hasPathTricks(name) || !isAcceptedName(name)) return null;
+    const entries = await readEntries(kind);
+    return entries.some((e) => e.isFile() && e.name === name) ? name : null;
+  }
+
+  // Safe names are used as-is; anything else must be an exact existing entry (e.g. a hand-placed file).
+  async function resolveName(kind: DocumentKind, name: string): Promise<string> {
+    if (isAcceptedName(name) && SAFE_NAME.test(name) && !name.includes('..')) return name;
+    const found = await findDocument(kind, name);
+    if (found === null) throw new InvalidDocumentNameError();
+    return found;
+  }
+
   return {
+    findDocument,
+
     async listDocuments(kind) {
       const dir = dirs[kind];
-      let entries;
-      try {
-        entries = await fs.readdir(dir, { withFileTypes: true });
-      } catch (err) {
-        if (hasCode(err, 'ENOENT')) throw new DocumentFolderMissingError(kind, dir);
-        throw err;
-      }
-      const names = entries
+      const names = (await readEntries(kind))
         .filter((e) => e.isFile())
         .map((e) => e.name)
         .filter(isAcceptedName)
         .sort();
       const files = await Promise.all(
         names.map(async (name): Promise<DocumentFile | null> => {
+          const filePath = path.join(dir, name);
           try {
-            return { name, bytes: await fs.readFile(path.join(dir, name)) };
+            // Oversize files are hashed by streaming and never held in memory.
+            if ((await fs.stat(filePath)).size > MAX_DOCUMENT_BYTES) {
+              return { name, bytes: null, contentHash: await sha256File(filePath) };
+            }
+            const bytes = await fs.readFile(filePath);
+            if (bytes.length > MAX_DOCUMENT_BYTES) return { name, bytes: null, contentHash: sha256(bytes) };
+            return { name, bytes, contentHash: sha256(bytes) };
           } catch (err) {
             if (hasCode(err, 'ENOENT')) return null;
             throw new DocumentFileReadError(name, err as NodeJS.ErrnoException);
@@ -119,9 +159,9 @@ export function createDocumentFolders(dirs: DocumentDirs): DocumentFolders {
       return files.filter((f): f is DocumentFile => f !== null);
     },
 
-    async writeDocument(kind, name, bytes, { replace }) {
-      assertSafeName(name);
+    async writeDocument(kind, rawName, bytes, { replace }) {
       const dir = dirs[kind];
+      const name = await resolveName(kind, rawName);
       const target = path.join(dir, name);
       const tmp = path.join(dir, `.upload-${randomBytes(8).toString('hex')}.tmp`);
       try {
@@ -130,31 +170,41 @@ export function createDocumentFolders(dirs: DocumentDirs): DocumentFolders {
         if (hasCode(err, 'ENOENT')) throw new DocumentFolderMissingError(kind, dir);
         throw err;
       }
+      const removeTmp = async (): Promise<void> => {
+        try {
+          await fs.rm(tmp, { force: true });
+        } catch (err) {
+          log('temp file cleanup failed', { kind, code: (err as NodeJS.ErrnoException)?.code });
+        }
+      };
       try {
         if (replace) {
           await fs.rename(tmp, target);
-        } else {
-          // link fails with EEXIST instead of overwriting, so concurrent uploads cannot clobber a file.
-          try {
-            await fs.link(tmp, target);
-          } catch (err) {
-            if (hasCode(err, 'EEXIST')) throw new DocumentExistsError(name);
-            // Some bind mounts (Docker Desktop on Windows) do not support hard links: check, then rename.
-            if (!hasCode(err, 'EPERM') && !hasCode(err, 'ENOTSUP') && !hasCode(err, 'EOPNOTSUPP') && !hasCode(err, 'EXDEV')) throw err;
-            const exists = await fs.lstat(target).then(() => true, () => false);
-            if (exists) throw new DocumentExistsError(name);
-            await fs.rename(tmp, target);
-          }
-          await fs.rm(tmp, { force: true });
+          return;
         }
+        // link/copy with EXCL fail with EEXIST instead of overwriting, so concurrent uploads cannot clobber a file.
+        try {
+          await fs.link(tmp, target);
+        } catch (err) {
+          if (hasCode(err, 'EEXIST')) throw new DocumentExistsError(name);
+          // Some bind mounts (Docker Desktop on Windows) do not support hard links.
+          if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].some((c) => hasCode(err, c))) throw err;
+          try {
+            await fs.copyFile(tmp, target, fsConstants.COPYFILE_EXCL);
+          } catch (copyErr) {
+            if (hasCode(copyErr, 'EEXIST')) throw new DocumentExistsError(name);
+            throw copyErr;
+          }
+        }
+        await removeTmp();
       } catch (err) {
-        await fs.rm(tmp, { force: true });
+        await removeTmp();
         throw err;
       }
     },
 
-    async deleteDocument(kind, name) {
-      assertSafeName(name);
+    async deleteDocument(kind, rawName) {
+      const name = await resolveName(kind, rawName);
       const target = path.join(dirs[kind], name);
       let stat;
       try {

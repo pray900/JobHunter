@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readDocxBlocks } from '../jobs/docxBlocks.js';
 import type { DocumentFolders } from '../storage/documentFolder.js';
 import { DOCUMENT_KINDS, DOCX_MEDIA_TYPE, PDF_MEDIA_TYPE, type DocumentKind, type ScannedDocument } from './types.js';
@@ -7,19 +6,21 @@ async function scanKind(folders: DocumentFolders, kind: DocumentKind): Promise<S
   const files = await folders.listDocuments(kind);
   return Promise.all(
     files.map(async (file): Promise<ScannedDocument> => {
+      const isPdf = /\.pdf$/i.test(file.name);
       const base = {
         kind,
         sourceRef: file.name,
-        contentHash: createHash('sha256').update(file.bytes).digest('hex'),
-      };
-      if (/\.pdf$/i.test(file.name)) {
-        return { ...base, mediaType: PDF_MEDIA_TYPE, pdfBase64: file.bytes.toString('base64'), text: null, warnings: [] };
-      }
+        contentHash: file.contentHash,
+        mediaType: isPdf ? PDF_MEDIA_TYPE : DOCX_MEDIA_TYPE,
+      } as const;
+      // Over the size limit: reported as unreadable, hash kept so changes are still detected.
+      if (file.bytes === null) return { ...base, pdfBase64: null, text: null, warnings: ['unreadable_file'] };
+      if (isPdf) return { ...base, pdfBase64: file.bytes.toString('base64'), text: null, warnings: [] };
       try {
         const text = (await readDocxBlocks(file.bytes)).map((b) => b.text).join('\n');
-        return { ...base, mediaType: DOCX_MEDIA_TYPE, pdfBase64: null, text, warnings: [] };
+        return { ...base, pdfBase64: null, text, warnings: [] };
       } catch {
-        return { ...base, mediaType: DOCX_MEDIA_TYPE, pdfBase64: null, text: null, warnings: ['unreadable_file'] };
+        return { ...base, pdfBase64: null, text: null, warnings: ['unreadable_file'] };
       }
     }),
   );

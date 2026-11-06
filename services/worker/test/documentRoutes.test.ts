@@ -142,3 +142,34 @@ test('sanitises odd characters but keeps the extension', async () => {
   expect(sourceRef).toBe('CV  Sep2026.pdf');
   expect(await fs.readdir(cv)).toEqual([sourceRef]);
 });
+
+test('scan flags an over-5MB file as unreadable but keeps its hash', async () => {
+  const big = Buffer.concat([PDF, Buffer.alloc(5 * 1024 * 1024)]);
+  await fs.writeFile(path.join(cv, 'big.pdf'), big);
+  const a = app();
+  const res = await a.inject({ method: 'POST', url: '/documents/scan' });
+  await a.close();
+  expect(res.json().documents[0]).toMatchObject({
+    sourceRef: 'big.pdf',
+    pdfBase64: null,
+    text: null,
+    warnings: ['unreadable_file'],
+    contentHash: createHash('sha256').update(big).digest('hex'),
+  });
+});
+
+test('delete and replace work on a hand-placed name with odd characters', async () => {
+  const name = "Prayush's CV \u2013 M\u00fcller.pdf";
+  await fs.writeFile(path.join(cv, name), PDF);
+  const a = app();
+  const del = await a.inject({ method: 'DELETE', url: `/documents/cv/${encodeURIComponent(name)}` });
+  expect(del.statusCode).toBe(204);
+  expect((await a.inject({ method: 'DELETE', url: `/documents/cv/${encodeURIComponent(name)}` })).statusCode).toBe(404);
+  await a.close();
+  await fs.writeFile(path.join(cv, name), PDF);
+  const res = await upload(name, Buffer.concat([PDF, Buffer.from('2')]), { replace: true });
+  expect(res.statusCode).toBe(201);
+  expect(res.json()).toEqual({ sourceRef: name });
+  expect(await fs.readdir(cv)).toEqual([name]);
+  expect((await fs.readFile(path.join(cv, name))).length).toBe(PDF.length + 1);
+});

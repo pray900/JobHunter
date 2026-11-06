@@ -9,6 +9,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(here, '../..');
 const COMPOSE_FILE = join(ROOT, 'docker-compose.test.yml');
 export const JOB_DIR = join(ROOT, '.tmp', 'e2e-joblisting');
+export const CV_DIR = join(ROOT, '.tmp', 'e2e-cv');
+export const COVER_LETTER_DIR = join(ROOT, '.tmp', 'e2e-cover-letter');
 
 export const N8N_URL = 'http://localhost:55678';
 export const STUB_URL = 'http://localhost:58081';
@@ -22,6 +24,8 @@ export function compose(args: string[]): void {
 export const stack = {
   async up(): Promise<void> {
     mkdirSync(JOB_DIR, { recursive: true });
+    mkdirSync(CV_DIR, { recursive: true });
+    mkdirSync(COVER_LETTER_DIR, { recursive: true });
     compose(['up', '-d', '--build', '--wait']);
     // Bootstrap is a bash script: run it through Git Bash / sh.
     execFileSync('bash', [join(ROOT, 'scripts', 'n8n-bootstrap.sh'), COMPOSE_FILE], {

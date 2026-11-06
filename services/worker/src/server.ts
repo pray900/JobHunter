@@ -40,10 +40,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerDocumentRoutes(
     app,
-    createDocumentFolders({
-      cv: deps.cvDir ?? './PersonalDetailsCV',
-      cover_letter: deps.coverLetterDir ?? './PersonalDetailsCoverLetter',
-    }),
+    createDocumentFolders(
+      {
+        cv: deps.cvDir ?? './PersonalDetailsCV',
+        cover_letter: deps.coverLetterDir ?? './PersonalDetailsCoverLetter',
+      },
+      (message, context) => app.log.warn(context, message),
+    ),
   );
 
   return app;

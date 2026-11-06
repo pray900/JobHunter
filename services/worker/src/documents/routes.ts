@@ -65,8 +65,10 @@ export function registerDocumentRoutes(app: FastifyInstance, folders: DocumentFo
         if (part.file.truncated || !bytesMatchExtension(name, bytes)) {
           return reply.code(400).send({ error: 'bad_file' });
         }
-        await folders.writeDocument(kind, name, bytes, { replace });
-        return reply.code(201).send({ sourceRef: name });
+        // Replacing targets a hand-placed file with this exact name if one exists, not a sanitised twin.
+        const target = replace ? ((await folders.findDocument(kind, part.filename)) ?? name) : name;
+        await folders.writeDocument(kind, target, bytes, { replace });
+        return reply.code(201).send({ sourceRef: target });
       } catch (err) {
         if (err instanceof DocumentExistsError) return reply.code(409).send({ error: 'document_exists' });
         if (err instanceof InvalidDocumentNameError) return reply.code(400).send({ error: 'bad_file' });
