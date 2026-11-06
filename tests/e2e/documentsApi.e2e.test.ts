@@ -150,6 +150,72 @@ describe('documents API', () => {
     expect(await listDocuments()).toEqual({ cv: null, coverLetter: null, ignored: [] });
   });
 
+  test('failed write keeps a different current CV', async () => {
+    writeDocument('cv', 'a.pdf', makePdf('CV A'));
+    await triggerDocumentsSync();
+    const res = await uploadDocument('cv', 'x.pdf', Buffer.from('not a pdf'));
+    expect(res.status).toBe(400);
+    await res.arrayBuffer();
+    expect(readdirSync(CV_DIR)).toEqual(['a.pdf']);
+    expect((await listDocuments()).cv.sourceRef).toBe('a.pdf');
+  });
+
+  test('409 on an ignored file name keeps the active CV', async () => {
+    writeDocument('cv', 'old.pdf', makePdf('CV old'), OLD);
+    writeDocument('cv', 'new.pdf', makePdf('CV new'), NEW);
+    await triggerDocumentsSync();
+    const res = await uploadDocument('cv', 'old.pdf', makePdf('CV again'));
+    expect(res.status).toBe(409);
+    await res.arrayBuffer();
+    expect(readdirSync(CV_DIR).sort()).toEqual(['new.pdf', 'old.pdf']);
+    expect((await listDocuments()).cv.sourceRef).toBe('new.pdf');
+  });
+
+  test('hostile file name is stored inside the folder or rejected', async () => {
+    const res = await uploadDocument('cv', '../x.pdf', makePdf('CV x'));
+    const body: any = await res.json();
+    if (res.status === 201) {
+      expect(body.sourceRef).not.toMatch(/[\\/]|\.\./);
+      expect(readdirSync(CV_DIR)).toEqual([body.sourceRef]);
+    } else {
+      expect(res.status).toBe(400);
+      expect(readdirSync(CV_DIR)).toEqual([]);
+    }
+    expect(existsSync(join(CV_DIR, '..', 'x.pdf'))).toBe(false);
+  });
+
+  test('deleting an ignored file or the cover letter leaves job scores alone', async () => {
+    writeDocument('cv', 'old.pdf', makePdf('CV old'), OLD);
+    writeDocument('cv', 'new.pdf', makePdf('CV new'), NEW);
+    writeDocument('cover_letter', 'cl.pdf', makePdf('Letter'));
+    await triggerDocumentsSync();
+    await db.query(
+      `insert into jobs (owner_id, source, source_ref, content_hash, raw_text, title, extraction_status)
+       values ($1, 'folder', 'j.docx', 'h', 'text', 'Job', 'done')`,
+      [OWNER],
+    );
+    await triggerScoring();
+    const before = (await db.query(`select score_status, match_score, match_basis_hash from jobs`))[0];
+    expect(before.score_status).toBe('done');
+    for (const ref of ['old.pdf', 'cl.pdf']) {
+      const [row] = await db.query(`select id from base_documents where source_ref=$1`, [ref]);
+      const res = await deleteDocument(row.id);
+      expect(res.status).toBe(204);
+      await res.arrayBuffer();
+    }
+    expect((await db.query(`select score_status, match_score, match_basis_hash from jobs`))[0]).toEqual(before);
+  });
+
+  test('deleting an already removed document is 404', async () => {
+    writeDocument('cv', 'a.pdf', makePdf('CV A'));
+    await triggerDocumentsSync();
+    const [row] = await db.query(`select id from base_documents`);
+    expect((await deleteDocument(row.id)).status).toBe(204);
+    const again = await deleteDocument(row.id);
+    expect(again.status).toBe(404);
+    await again.arrayBuffer();
+  });
+
   test('delete can remove an ignored file', async () => {
     writeDocument('cv', 'old.pdf', makePdf('CV old'), OLD);
     writeDocument('cv', 'new.pdf', makePdf('CV new'), NEW);

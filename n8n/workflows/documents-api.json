@@ -290,7 +290,7 @@
         360
       ],
       "parameters": {
-        "content": "## 3. Write the new file first\nThe worker saves the file with `replace=false`: if the name is already taken it answers `409` and **nothing is deleted** (the user's current CV stays). `400 bad_file` (wrong type, not really a PDF/Word file, bad name) is passed on; any other worker failure becomes `502 upload_failed`.\nOnly after the write succeeded, and only if the previous active file has a **different name**, the previous file is deleted through the worker. If that delete fails the upload still succeeds (the new file is safe; the old one is simply ignored by the sync as an extra file).",
+        "content": "## 3. Write the new file first\nThe worker saves the file with `replace=false`: if the name is already taken it answers `409` and **nothing is deleted** (the user's current CV stays). `400 bad_file` (wrong type, not really a PDF/Word file, bad name) is passed on; a missing document folder (`503 document_folder_missing`, with `kind`) is passed on; any other worker failure becomes `502 upload_failed`.\nOnly after the write succeeded, and only if the previous active file has a **different name**, the previous file is deleted through the worker. If that delete fails the upload still succeeds (the new file is safe; the old one is simply ignored by the sync as an extra file).",
         "height": 420,
         "width": 860,
         "color": 5
@@ -309,7 +309,7 @@
         "method": "POST",
         "url": "={{ $env.WORKER_URL }}/documents/{{ $json.kind }}?replace=false",
         "options": {
-          "timeout": 60000,
+          "timeout": 8000,
           "response": {
             "response": {
               "fullResponse": true,
@@ -376,10 +376,10 @@
       ],
       "parameters": {
         "options": {
-          "responseCode": "={{ $json.statusCode === 409 ? 409 : ($json.statusCode === 400 ? 400 : 502) }}"
+          "responseCode": "={{ [400, 409, 503].includes($json.statusCode) ? $json.statusCode : 502 }}"
         },
         "respondWith": "json",
-        "responseBody": "={{ { error: $json.statusCode === 409 ? 'document_exists' : ($json.statusCode === 400 ? 'bad_file' : 'upload_failed') } }}"
+        "responseBody": "={{ $json.statusCode === 503 ? { error: 'document_folder_missing', kind: $json.body?.kind } : { error: $json.statusCode === 409 ? 'document_exists' : ($json.statusCode === 400 ? 'bad_file' : 'upload_failed') } }}"
       }
     },
     {
@@ -428,7 +428,7 @@
         "method": "DELETE",
         "url": "={{ $env.WORKER_URL }}/documents/{{ $('Prepare upload').first().json.kind }}/{{ encodeURIComponent($('Prepare upload').first().json.previousRef) }}",
         "options": {
-          "timeout": 30000,
+          "timeout": 4000,
           "response": {
             "response": {
               "fullResponse": true,
@@ -450,7 +450,7 @@
         360
       ],
       "parameters": {
-        "content": "## 4. Sync, then answer\n**Trigger documents sync** calls this n8n's own `POST api/documents/sync` (with the X-JobHunter header) so the new file is picked up, becomes the active document and starts its analysis; the old row is marked removed. It waits at most 25 seconds and carries on either way (a slow analysis keeps running and the scheduled sync would catch up anyway). Then `201 { sourceRef }`.",
+        "content": "## 4. Sync, then answer\n**Trigger documents sync** calls this n8n's own `POST api/documents/sync` (with the X-JobHunter header) so the new file is picked up, becomes the active document and starts its analysis; the old row is marked removed. It waits at most 15 seconds and carries on either way (a slow analysis keeps running and the scheduled sync would catch up; the app polls the status). Worst case per request stays under nginx's 30 s: write 8 s + delete old 4 s + sync 15 s = 27 s; delete path: worker 8 s + sync 15 s = 23 s. Then `201 { sourceRef }`.",
         "height": 420,
         "width": 760,
         "color": 6
@@ -467,9 +467,9 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:5678/webhook/api/documents/sync",
+        "url": "=http://localhost:{{ $env.N8N_PORT || 5678 }}/webhook/api/documents/sync",
         "options": {
-          "timeout": 25000,
+          "timeout": 15000,
           "response": {
             "response": {
               "fullResponse": true,
@@ -730,7 +730,7 @@
         "method": "DELETE",
         "url": "={{ $env.WORKER_URL }}/documents/{{ $json.kind }}/{{ encodeURIComponent($json.source_ref) }}",
         "options": {
-          "timeout": 30000,
+          "timeout": 8000,
           "response": {
             "response": {
               "fullResponse": true,
@@ -842,9 +842,9 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:5678/webhook/api/documents/sync",
+        "url": "=http://localhost:{{ $env.N8N_PORT || 5678 }}/webhook/api/documents/sync",
         "options": {
-          "timeout": 25000,
+          "timeout": 15000,
           "response": {
             "response": {
               "fullResponse": true,
