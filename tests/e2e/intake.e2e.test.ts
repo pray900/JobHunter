@@ -163,6 +163,33 @@ describe('job intake sync', () => {
     ]);
   });
 
+  describe('stuck extraction claims (run crashed > 5 minutes ago)', () => {
+    const makeStuck = async (sourceRef: string, attempts: number) => {
+      await writeJobFile(sourceRef, [{ text: 'https://x.io/s' }, { text: `Stuck job ${sourceRef}` }]);
+      await triggerSync();
+      await stub.reset();
+      await db.query(
+        `update jobs set extraction_status='in_progress', extraction_claimed_at=now() - interval '10 minutes',
+           extraction_attempts=$2, title=null where source_ref=$1`,
+        [sourceRef, attempts],
+      );
+    };
+
+    test('all 3 attempts used: marked failed, no Claude call', async () => {
+      await makeStuck('stuck3.docx', 3);
+      await triggerSync();
+      expect(await jobRow('stuck3.docx')).toMatchObject({ extraction_status: 'failed', extraction_attempts: 3, title: null });
+      expect(await stub.requests()).toEqual([]);
+    });
+
+    test('attempts left: reclaimed and extracted', async () => {
+      await makeStuck('stuck1.docx', 1);
+      await triggerSync();
+      expect(await jobRow('stuck1.docx')).toMatchObject({ extraction_status: 'done', extraction_attempts: 2, title: 'Stub Title' });
+      expect(await stub.requests()).toHaveLength(1);
+    });
+  });
+
   test('overlapping syncs do not double-call Claude', async () => {
     await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
     await Promise.all([triggerSync(), triggerSync()]);
@@ -186,6 +213,47 @@ describe('job intake sync', () => {
     expect(req.messages).toEqual([{ role: 'user', content: '<job_ad>\nSalesforce Developer at Acme\n</job_ad>' }]);
     const prompt = readFileSync(join(ROOT, 'n8n', 'prompts', 'extract-job.md'), 'utf8');
     expect(normalise(req.system)).toBe(normalise(prompt));
+  });
+
+  // Checks on the workflow JSON itself, for behaviour the fixed test env cannot reach
+  // (EXTRACT_MODEL is fixed per container) or races too narrow to trigger reliably.
+  describe('workflow definition', () => {
+    const wf = JSON.parse(readFileSync(join(ROOT, 'n8n', 'workflows', 'job-intake-sync.json'), 'utf8'));
+    const nodeByName = (name: string) => wf.nodes.find((n: { name: string }) => n.name === name);
+    const parentsOf = (name: string) =>
+      Object.entries(wf.connections as Record<string, { main: { node: string }[][] }>)
+        .filter(([, c]) => c.main.flat().some((t) => t.node === name))
+        .map(([from]) => from);
+    const ancestorsOf = (name: string, seen = new Set<string>()): Set<string> => {
+      for (const p of parentsOf(name)) if (!seen.has(p)) ancestorsOf(p, seen.add(p));
+      return seen;
+    };
+    const runPriceLookup = (model: string) =>
+      new Function('$env', nodeByName('Look up model price').parameters.jsCode)({ EXTRACT_MODEL: model });
+
+    test('unknown model stops the run before any job is claimed or Claude is called', () => {
+      expect(() => runPriceLookup('claude-unknown-9')).toThrow(/No price for model "claude-unknown-9"/);
+      expect(runPriceLookup('claude-haiku-5-5')).toEqual([
+        { json: { model: 'claude-haiku-5-5', input_usd_per_mtok: 0.1, output_usd_per_mtok: 0.5 } },
+      ]);
+      // The price lookup is the only way into the claim, and the claim is the only way to Claude.
+      expect(parentsOf('Claim pending extractions')).toEqual(['Look up model price']);
+      expect(ancestorsOf('Ask Claude').has('Claim pending extractions')).toBe(true);
+      expect(ancestorsOf('Look up model price').has('Ask Claude')).toBe(false);
+    });
+
+    test('saves only apply to the claim made by this run', () => {
+      for (const name of ['Save extracted details', 'Mark extraction failed']) {
+        expect(nodeByName(name).parameters.query).toMatch(/extraction_claimed_at = \$2::timestamptz/);
+      }
+      expect(nodeByName('Claim pending extractions').parameters.query).toMatch(/extraction_claimed_at::text as claimed_at/);
+    });
+
+    test('prompt in the workflow matches n8n/prompts/extract-job.md', () => {
+      const setNode = nodeByName('Extraction prompt and schema');
+      const value = setNode.parameters.assignments.assignments.find((a: { name: string }) => a.name === 'system_prompt').value;
+      expect(normalise(value)).toBe(normalise(readFileSync(join(ROOT, 'n8n', 'prompts', 'extract-job.md'), 'utf8')));
+    });
   });
 
   describe('when the folder scan fails', () => {
