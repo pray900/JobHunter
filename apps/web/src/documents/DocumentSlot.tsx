@@ -12,10 +12,9 @@ const COPY: Record<DocumentKind, { heading: string; empty: string; upload: strin
   },
 };
 
-export function ConfirmDialog(props: {
+function ConfirmDialog(props: {
   message: string;
   confirmLabel: string;
-  danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -27,12 +26,7 @@ export function ConfirmDialog(props: {
           <button type="button" className="btn" onClick={props.onCancel}>
             Cancel
           </button>
-          <button
-            type="button"
-            className={props.danger ? 'btn btn-danger' : 'btn btn-primary'}
-            onClick={props.onConfirm}
-            autoFocus
-          >
+          <button type="button" className="btn btn-primary" onClick={props.onConfirm} autoFocus>
             {props.confirmLabel}
           </button>
         </div>
@@ -103,7 +97,7 @@ export function DocumentSlot(props: {
       </div>
       {confirming && doc !== null && (
         <ConfirmDialog
-          message={`Replace ${doc.sourceRef}? The old file is removed from your folder.`}
+          message={`Replace ${doc.sourceRef}? The current file will be replaced.`}
           confirmLabel="Replace file"
           onCancel={() => setConfirming(false)}
           onConfirm={() => {

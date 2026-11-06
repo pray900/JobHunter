@@ -33,8 +33,7 @@ export type DocumentWarningCode =
   | 'missing_work_rights'
   | 'degree_status_unclear'
   | 'banned_phrase'
-  | 'unreadable_file'
-  | 'extra_file_ignored';
+  | 'unreadable_file';
 
 export interface DocumentWarning {
   code: DocumentWarningCode;
@@ -51,8 +50,8 @@ export interface BaseDocumentSummary {
   updatedAt: string;
 }
 
+// The one uploaded CV and the one uploaded cover letter; null when that slot is empty.
 export interface DocumentsResponse {
   cv: BaseDocumentSummary | null;
   coverLetter: BaseDocumentSummary | null;
-  ignored: BaseDocumentSummary[];
 }

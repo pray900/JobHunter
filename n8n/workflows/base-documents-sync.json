@@ -13,7 +13,7 @@
         -100
       ],
       "parameters": {
-        "content": "## Start\nTwo ways to start a sync:\n- **Every minute** (only when env `JOBHUNTER_SCHEDULE_ENABLED` is not `false`; the e2e test stack turns it off).\n- **POST /webhook/api/documents/sync** — the app and tests call this; it answers once the run has finished with `{ ok, scanned, analysed }`.\n\n**Has X-JobHunter header?** The webhook only runs when the request carries `X-JobHunter: 1` (the web app sends it). Anything else gets `403 {\"error\":\"missing_jobhunter_header\"}` and nothing runs. This stops other websites triggering a paid analysis with a cross-site POST (CSRF): CORS blocks reading the answer, not sending a plain `text/plain` POST. The schedule does not pass through this check.",
+        "content": "## Start\nTwo ways to start a sync:\n- **POST /webhook/api/documents/sync** — the Documents API calls this right after every upload, so a new CV or cover letter is analysed at once; tests call it too. It answers once the run has finished with `{ ok, scanned, analysed }`.\n- **Every minute** (only when env `JOBHUNTER_SCHEDULE_ENABLED` is not `false`; the e2e test stack turns it off), only to retry analyses and catch up — see the note on the left.\n\n**Has X-JobHunter header?** The webhook only runs when the request carries `X-JobHunter: 1` (the web app sends it). Anything else gets `403 {\"error\":\"missing_jobhunter_header\"}` and nothing runs. This stops other websites triggering a paid analysis with a cross-site POST (CSRF): CORS blocks reading the answer, not sending a plain `text/plain` POST. The schedule does not pass through this check.",
         "height": 760,
         "width": 480,
         "color": 7
@@ -25,7 +25,7 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
-        0,
+        -1100,
         100
       ],
       "parameters": {
@@ -45,7 +45,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        200,
+        -900,
         100
       ],
       "parameters": {
@@ -153,7 +153,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 1. Scan folders\nAsks the worker to read every `.pdf` / `.docx` in the CV folder and the cover-letter folder (PDFs come back as base64, Word files as text, files over 5 MB or unreadable as `unreadable_file` with no content).\nIf the scan fails (a folder is missing → `503 document_folder_missing`, worker down, …) the red error branch answers `502` and **stops the run without changing anything** — a broken scan must never mark documents as removed or start paid analyses.",
+        "content": "## 1. Read the stored documents\nAsks the worker for the uploaded CV and cover letter (the app's own storage, at most **one of each**; PDFs come back as base64, Word files as text, unreadable files as `unreadable_file` with no content). Nothing outside that storage is ever read.\nIf the read fails (worker down, …) the red error branch answers `502` and **stops the run without changing anything** — a failed read must never mark documents as removed or start paid analyses.",
         "height": 720,
         "width": 460,
         "color": 4
@@ -161,7 +161,7 @@
     },
     {
       "id": "d193ce69-fd24-45cd-a06e-02749b696531",
-      "name": "Scan document folders",
+      "name": "Read stored documents",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -204,7 +204,7 @@
         620
       ],
       "parameters": {
-        "errorMessage": "Document folder scan failed, so nothing was changed in this run. Check the worker logs."
+        "errorMessage": "Reading the stored documents failed, so nothing was changed in this run. Check the worker logs."
       }
     },
     {
@@ -217,7 +217,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 2. Upsert base documents\nOne item per scanned file, then one parameterised query per item (key: kind + file name):\n- **new file** → insert it with analysis `pending`.\n- **known file** → refresh it and clear \"removed\". Only if the **content changed**: reset the analysis (attempts 0, error cleared) and clear `structured` and `warnings`.\n- Unreadable or over-5 MB files get `analysis_status = skipped` with an `unreadable_file` warning (no Claude call).\nWhich file of a kind is **used** is decided in stage 3, not here.",
+        "content": "## 2. Upsert base documents\nOne item per stored document, then one parameterised query per item (key: kind + file name):\n- **new document** → insert it with analysis `pending`.\n- **known document** → refresh it and clear \"removed\". The analysis starts again from scratch (attempts 0, error, `structured` and `warnings` cleared) only if the **content changed**, or if the row was **not the current document** and has no finished analysis (for example a file uploaded again after it was replaced). An unchanged current document is never analysed again.\n- Unreadable files (for example a Word file with no text) get `analysis_status = skipped` with an `unreadable_file` warning (no Claude call).",
         "height": 520,
         "width": 700,
         "color": 5
@@ -250,7 +250,7 @@
     },
     {
       "id": "8f7dd3dd-fe1a-4114-aebd-e3d8387c44ea",
-      "name": "Any documents in the folders?",
+      "name": "Any documents stored?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
@@ -307,7 +307,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner, [2] kind, [3] file name, [4] content hash, [5] media type,\n-- [6] scan warnings (JSON array of code + detail; only unreadable_file comes from the scan)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\ninsert into base_documents (owner_id, kind, source_ref, content_hash, media_type, warnings, analysis_status, analysis_error)\nvalues (\n  $1, $2, $3, $4, $5, $6::jsonb,\n  -- unreadable or over-5 MB files are never sent to Claude\n  case when $6::jsonb @> '[{\"code\":\"unreadable_file\"}]' then 'skipped' else 'pending' end,\n  case when $6::jsonb @> '[{\"code\":\"unreadable_file\"}]' then 'The file could not be read (damaged, or over 5 MB).' end\n)\non conflict (owner_id, kind, source_ref) do update set\n  content_hash   = excluded.content_hash,\n  media_type     = excluded.media_type,\n  source_removed = false,\n  updated_at     = now(),\n  -- the rest only changes when the file content changed: analyse again from scratch\n  analysis_status     = case when base_documents.content_hash <> excluded.content_hash then excluded.analysis_status else base_documents.analysis_status end,\n  analysis_attempts   = case when base_documents.content_hash <> excluded.content_hash then 0 else base_documents.analysis_attempts end,\n  analysis_claimed_at = case when base_documents.content_hash <> excluded.content_hash then null else base_documents.analysis_claimed_at end,\n  analysis_error      = case when base_documents.content_hash <> excluded.content_hash then excluded.analysis_error else base_documents.analysis_error end,\n  structured          = case when base_documents.content_hash <> excluded.content_hash then null else base_documents.structured end,\n  warnings            = case when base_documents.content_hash <> excluded.content_hash then excluded.warnings else base_documents.warnings end\nreturning id, kind, source_ref, (xmax = 0) as is_new;   -- xmax = 0 means the row was inserted, not updated",
+        "query": "-- Parameters: [1] owner, [2] kind, [3] file name, [4] content hash, [5] media type,\n-- [6] scan warnings (JSON array of code + detail; only unreadable_file comes from the scan)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\ninsert into base_documents (owner_id, kind, source_ref, content_hash, media_type, warnings, analysis_status, analysis_error)\nvalues (\n  $1, $2, $3, $4, $5, $6::jsonb,\n  -- unreadable files are never sent to Claude\n  case when $6::jsonb @> '[{\"code\":\"unreadable_file\"}]' then 'skipped' else 'pending' end,\n  case when $6::jsonb @> '[{\"code\":\"unreadable_file\"}]' then 'The file could not be read (damaged, or no text in it).' end\n)\non conflict (owner_id, kind, source_ref) do update set\n  content_hash   = excluded.content_hash,\n  media_type     = excluded.media_type,\n  source_removed = false,\n  updated_at     = now(),\n  -- the rest only changes when the content changed, or when a row that was not the current\n  -- document and has no finished analysis comes back: analyse again from scratch\n  analysis_status     = case when (base_documents.content_hash <> excluded.content_hash or (not base_documents.active and base_documents.analysis_status <> 'done')) then excluded.analysis_status else base_documents.analysis_status end,\n  analysis_attempts   = case when (base_documents.content_hash <> excluded.content_hash or (not base_documents.active and base_documents.analysis_status <> 'done')) then 0 else base_documents.analysis_attempts end,\n  analysis_claimed_at = case when (base_documents.content_hash <> excluded.content_hash or (not base_documents.active and base_documents.analysis_status <> 'done')) then null else base_documents.analysis_claimed_at end,\n  analysis_error      = case when (base_documents.content_hash <> excluded.content_hash or (not base_documents.active and base_documents.analysis_status <> 'done')) then excluded.analysis_error else base_documents.analysis_error end,\n  structured          = case when (base_documents.content_hash <> excluded.content_hash or (not base_documents.active and base_documents.analysis_status <> 'done')) then null else base_documents.structured end,\n  warnings            = case when (base_documents.content_hash <> excluded.content_hash or (not base_documents.active and base_documents.analysis_status <> 'done')) then excluded.warnings else base_documents.warnings end\nreturning id, kind, source_ref, (xmax = 0) as is_new;   -- xmax = 0 means the row was inserted, not updated",
         "options": {
           "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $json.kind, $json.sourceRef, $json.contentHash, $json.mediaType, JSON.stringify($json.warnings.map(code => ({ code, detail: '' }))) ] }}"
         }
@@ -329,7 +329,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 3. Removed files, and the one file used per kind\n**Mark removed documents**: every base document whose file (kind + name) is no longer in the scan gets `source_removed = true` (the row is kept). An empty folder marks all of them. Restored files were already un-marked by the upsert.\n\n**One CV and one cover letter.** Per kind, the **active** document is the newest readable file in the scan (newest `modifiedAt`; same time → first file name in order). Only it is ever sent to Claude.\n- **Pick the active documents** works it out from the scan (pure code, no database).\n- **Ignore extra documents** clears `active` on every other row. Other files still in the folder become `skipped` with the `extra_file_ignored` warning, and lose any earlier analysis (`structured` and its warnings), so nothing stale is used. An `unreadable_file` warning is kept.\n- **Activate the newest documents** then sets `active` on the picked file. If it was ignored before, its analysis starts again from scratch (`pending`, 0 attempts). A database index allows at most one active row per kind, which is why the old one is cleared first.\n\nTask 5 scores jobs against the active CV only: its basis hash is the `content_hash` of the active CV with `analysis_status = done` (none → no scoring).",
+        "content": "## 3. The current CV and cover letter\nThe app stores **one CV and one cover letter**: an upload replaces the previous file of that kind. The database keeps every document it has seen; exactly one row per kind is **active** (= the stored document).\n- **Retire replaced documents**: every row whose document (kind + name) is not in the storage any more gets `source_removed = true` and `active = false` (the row and its analysis are kept). An empty storage retires all of them.\n- **Activate stored documents** then sets `active` on the stored documents. A database index allows at most one active row per kind, which is why the old one is retired first.\nOnly the active document is ever sent to Claude.\n\nJob match scoring uses the active CV only: its basis hash is the `content_hash` of the active CV with `analysis_status = done` (none → no scoring).",
         "height": 620,
         "width": 1060,
         "color": 3
@@ -337,16 +337,16 @@
     },
     {
       "id": "c30d6d95-23d3-489d-aa34-b0351b3d6ea1",
-      "name": "Mark removed documents",
+      "name": "Retire replaced documents",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        1720,
+        1760,
         200
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner, [2] documents found by this scan (JSON array of kind, sourceRef, contentHash)\nupdate base_documents d\nset source_removed = true, updated_at = now()\nwhere d.owner_id = $1\n  and d.source_removed = false\n  and not exists (\n    select 1 from jsonb_to_recordset($2::jsonb) as s(kind text, \"sourceRef\" text)\n    where s.kind = d.kind and s.\"sourceRef\" = d.source_ref\n  )\nreturning d.id;",
+        "query": "-- Parameters: [1] owner, [2] documents read from the storage (JSON array of kind, sourceRef, contentHash)\n-- A row that is not the stored document of its kind any more was replaced by an upload: kept, no longer used.\nupdate base_documents d\nset source_removed = true, active = false, updated_at = now()\nwhere d.owner_id = $1\n  and (not d.source_removed or d.active)\n  and not exists (\n    select 1 from jsonb_to_recordset($2::jsonb) as s(kind text, \"sourceRef\" text)\n    where s.kind = d.kind and s.\"sourceRef\" = d.source_ref\n  )\nreturning d.id;",
         "options": {
           "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', JSON.stringify($('Collect scanned documents').first().json.scanned) ] }}"
         }
@@ -369,7 +369,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 4. Claim pending analyses\n- **Give up on stuck analyses**: a claim older than 5 minutes means that run crashed; when all 3 attempts are used, the document becomes `failed` instead of staying `in_progress` forever.\n- **Look up model price**: stops the run, before any document is claimed or Claude is called, when `ANALYSE_MODEL` has no price, so nothing is spent without its cost being logged. It also says whether the model gets server-side fallbacks (Opus / Sonnet), and passes on the whole price table for stage 6.\n- **Claim pending analyses**: atomically marks the **active** documents this run will send to Claude as `in_progress` (+1 attempt): new/changed documents, failed ones with fewer than 3 attempts once they have waited since their last attempt (**1 minute after attempt 1, 5 minutes after attempt 2**), and stuck claims with fewer than 3 attempts. Only documents whose current content is in **this run's scan** are claimed (their content is sent from it). `for update skip locked` means two overlapping runs never claim the same document. The returned `claimed_at` is this run's claim token, checked again in stage 6.",
+        "content": "## 4. Claim pending analyses\n- **Give up on stuck analyses**: a claim older than 5 minutes means that run crashed; when all 3 attempts are used, the document becomes `failed` instead of staying `in_progress` forever.\n- **Look up model price**: stops the run, before any document is claimed or Claude is called, when `ANALYSE_MODEL` has no price, so nothing is spent without its cost being logged. It also says whether the model gets server-side fallbacks (Opus / Sonnet), and passes on the whole price table for stage 6.\n- **Claim pending analyses**: atomically marks the **active** documents this run will send to Claude as `in_progress` (+1 attempt): new/changed documents, failed ones with fewer than 3 attempts once they have waited since their last attempt (**1 minute after attempt 1, 5 minutes after attempt 2**), and stuck claims with fewer than 3 attempts. Only documents whose current content is in **this run's read of the storage** are claimed (their content is sent from it). `for update skip locked` means two overlapping runs never claim the same document. The returned `claimed_at` is this run's claim token, checked again in stage 6.",
         "height": 520,
         "width": 860,
         "color": 6
@@ -424,7 +424,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner, [2] documents found by this scan (JSON array of kind, sourceRef, contentHash)\nupdate base_documents\nset analysis_status = 'in_progress',\n    analysis_claimed_at = now(),\n    analysis_attempts = analysis_attempts + 1,\n    updated_at = now()\nwhere id in (\n  select d.id from base_documents d\n  -- only documents whose current content is in this run's scan: that is the content sent to Claude\n  join jsonb_to_recordset($2::jsonb) as s(kind text, \"sourceRef\" text, \"contentHash\" text)\n    on s.kind = d.kind and s.\"sourceRef\" = d.source_ref and s.\"contentHash\" = d.content_hash\n  where d.owner_id = $1\n    and d.source_removed = false\n    and d.active   -- only the one document per kind that is used is ever sent to Claude\n    and (d.analysis_status = 'pending'\n         -- failed: retry after a wait since the last attempt (1 minute after attempt 1,\n         -- 5 minutes after attempt 2), so a short outage does not use up all 3 attempts\n         or (d.analysis_status = 'failed' and d.analysis_attempts < 3\n             and d.analysis_claimed_at < now() - case when d.analysis_attempts <= 1\n                                                      then interval '1 minute'\n                                                      else interval '5 minutes' end)\n         or (d.analysis_status = 'in_progress' and d.analysis_claimed_at < now() - interval '5 minutes'\n             and d.analysis_attempts < 3))\n  for update of d skip locked\n)\nreturning id, kind, source_ref, media_type, analysis_claimed_at::text as claimed_at;  -- claimed_at = this run's claim token",
+        "query": "-- Parameters: [1] owner, [2] documents read from the storage (JSON array of kind, sourceRef, contentHash)\nupdate base_documents\nset analysis_status = 'in_progress',\n    analysis_claimed_at = now(),\n    analysis_attempts = analysis_attempts + 1,\n    updated_at = now()\nwhere id in (\n  select d.id from base_documents d\n  -- only documents whose current content is in this run's read: that is the content sent to Claude\n  join jsonb_to_recordset($2::jsonb) as s(kind text, \"sourceRef\" text, \"contentHash\" text)\n    on s.kind = d.kind and s.\"sourceRef\" = d.source_ref and s.\"contentHash\" = d.content_hash\n  where d.owner_id = $1\n    and d.source_removed = false\n    and d.active   -- only the one document per kind that is used is ever sent to Claude\n    and (d.analysis_status = 'pending'\n         -- failed: retry after a wait since the last attempt (1 minute after attempt 1,\n         -- 5 minutes after attempt 2), so a short outage does not use up all 3 attempts\n         or (d.analysis_status = 'failed' and d.analysis_attempts < 3\n             and d.analysis_claimed_at < now() - case when d.analysis_attempts <= 1\n                                                      then interval '1 minute'\n                                                      else interval '5 minutes' end)\n         or (d.analysis_status = 'in_progress' and d.analysis_claimed_at < now() - interval '5 minutes'\n             and d.analysis_attempts < 3))\n  for update of d skip locked\n)\nreturning id, kind, source_ref, media_type, analysis_claimed_at::text as claimed_at;  -- claimed_at = this run's claim token",
         "options": {
           "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', JSON.stringify($('Collect scanned documents').first().json.scanned) ] }}"
         }
@@ -542,7 +542,7 @@
       ],
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Builds the Messages API request for one claimed document. Its content comes from this\n// run's scan: the claim only takes documents whose current content hash is in it.\nconst doc = $json;\nconst price = $('Look up model price').first().json;\nconst scanned = $('Scan document folders').first().json.documents\n  .find((d) => d.kind === doc.kind && d.sourceRef === doc.source_ref);\nif (!scanned) throw new Error(`Claimed document ${doc.kind}/${doc.source_ref} is not in this run's scan.`);\n\nconst isCv = doc.kind === 'cv';\nconst documentBlock = scanned.pdfBase64\n  ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: scanned.pdfBase64 } }\n  : { type: 'text', text: '<document>\\n' + (scanned.text ?? '') + '\\n</document>' };\nconst instruction = isCv\n  ? 'Record the facts this base CV states.'\n  : 'Record what this base cover letter states.';\n\nconst headers = { 'anthropic-version': '2026-10-21', 'content-type': 'application/json' };\nif (price.fallbacks) headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';\nconst request = {\n  model: price.model,\n  max_tokens: 16000,\n  output_config: { effort: 'medium', format: { type: 'json_schema', schema: isCv ? doc.cv_schema : doc.cover_letter_schema } },\n  system: isCv ? doc.cv_prompt : doc.cover_letter_prompt,\n  messages: [{ role: 'user', content: [documentBlock, { type: 'text', text: instruction }] }],\n};\nif (price.fallbacks) request.fallbacks = 'default';\n\nreturn {\n  json: {\n    document_id: doc.id,\n    kind: doc.kind,\n    source_ref: doc.source_ref,\n    claimed_at: doc.claimed_at,\n    purpose: isCv ? 'analyse_cv' : 'analyse_cover_letter',\n    headers,\n    request,\n  },\n};"
+        "jsCode": "// Builds the Messages API request for one claimed document. Its content comes from this\n// run's read of the storage: the claim only takes documents whose current content hash is in it.\nconst doc = $json;\nconst price = $('Look up model price').first().json;\nconst scanned = $('Read stored documents').first().json.documents\n  .find((d) => d.kind === doc.kind && d.sourceRef === doc.source_ref);\nif (!scanned) throw new Error(`Claimed document ${doc.kind}/${doc.source_ref} is not in this run's read of the storage.`);\n\nconst isCv = doc.kind === 'cv';\nconst documentBlock = scanned.pdfBase64\n  ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: scanned.pdfBase64 } }\n  : { type: 'text', text: '<document>\\n' + (scanned.text ?? '') + '\\n</document>' };\nconst instruction = isCv\n  ? 'Record the facts this base CV states.'\n  : 'Record what this base cover letter states.';\n\nconst headers = { 'anthropic-version': '2026-10-21', 'content-type': 'application/json' };\nif (price.fallbacks) headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';\nconst request = {\n  model: price.model,\n  max_tokens: 16000,\n  output_config: { effort: 'medium', format: { type: 'json_schema', schema: isCv ? doc.cv_schema : doc.cover_letter_schema } },\n  system: isCv ? doc.cv_prompt : doc.cover_letter_prompt,\n  messages: [{ role: 'user', content: [documentBlock, { type: 'text', text: instruction }] }],\n};\nif (price.fallbacks) request.fallbacks = 'default';\n\nreturn {\n  json: {\n    document_id: doc.id,\n    kind: doc.kind,\n    source_ref: doc.source_ref,\n    claimed_at: doc.claimed_at,\n    purpose: isCv ? 'analyse_cv' : 'analyse_cover_letter',\n    headers,\n    request,\n  },\n};"
       }
     },
     {
@@ -593,7 +593,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 6. Checks, then save the analysis or the failure\nSuccess = HTTP 2xx **and** `stop_reason` is `end_turn` **and** the JSON answer has the expected shape. Anything else (error, refusal, `max_tokens`, bad JSON) → `failed` with a readable `analysis_error` (retried by stage 4 after 1, then 5 minutes, up to 3 attempts).\nOn success the worker's **code checks** run on the facts (`missing_work_rights`, `degree_status_unclear`, `banned_phrase`), then one save writes `structured` and the warnings. If the checks cannot run, the document is marked failed instead.\nWhenever Claude reported token `usage`, the cost is logged in `cost_log` with the `base_document_id`, the model that **answered** (`model` in the response; a server-side fallback can differ) and that model's price (the requested model's price when the table has no row for it).\nSaves only apply while the document still carries **this run's claim** (`analysis_claimed_at` = the claimed_at token), so a document re-claimed by a later run, or reset because its file changed or ignored because another file became the active one, is never overwritten.",
+        "content": "## 6. Checks, then save the analysis or the failure\nSuccess = HTTP 2xx **and** `stop_reason` is `end_turn` **and** the JSON answer has the expected shape. Anything else (error, refusal, `max_tokens`, bad JSON) → `failed` with a readable `analysis_error` (retried by stage 4 after 1, then 5 minutes, up to 3 attempts).\nOn success the worker's **code checks** run on the facts (`missing_work_rights`, `degree_status_unclear`, `banned_phrase`), then one save writes `structured` and the warnings. If the checks cannot run, the document is marked failed instead.\nWhenever Claude reported token `usage`, the cost is logged in `cost_log` with the `base_document_id`, the model that **answered** (`model` in the response; a server-side fallback can differ) and that model's price (the requested model's price when the table has no row for it).\nSaves only apply while the document still carries **this run's claim** (`analysis_claimed_at` = the claimed_at token), so a document re-claimed by a later run, or reset because its content changed, is never overwritten.",
         "height": 760,
         "width": 1400,
         "color": 5
@@ -807,7 +807,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] base document id, [2] this run's claim token, [3] facts (JSON), [4] warnings (JSON)\n-- Only while the document still carries this run's claim: a newer claim, a changed file or\n-- the document being ignored (another file became the active one) wins.\nupdate base_documents\nset structured = $3::jsonb, warnings = $4::jsonb,\n    analysis_status = 'done', analysis_error = null, updated_at = now()\nwhere id = $1 and analysis_status = 'in_progress' and analysis_claimed_at = $2::timestamptz\nreturning id;",
+        "query": "-- Parameters: [1] base document id, [2] this run's claim token, [3] facts (JSON), [4] warnings (JSON)\n-- Only while the document still carries this run's claim: a newer claim or changed content wins.\nupdate base_documents\nset structured = $3::jsonb, warnings = $4::jsonb,\n    analysis_status = 'done', analysis_error = null, updated_at = now()\nwhere id = $1 and analysis_status = 'in_progress' and analysis_claimed_at = $2::timestamptz\nreturning id;",
         "options": {
           "queryReplacement": "={{ [ $json.document_id, $json.claimed_at, JSON.stringify($json.facts), JSON.stringify($json.warnings) ] }}"
         }
@@ -916,7 +916,7 @@
             {
               "id": "c953d0ef-fcaa-4f14-aec5-866fd3e22cde",
               "name": "scanned",
-              "value": "={{ $('Scan document folders').first().json.documents.length }}",
+              "value": "={{ $('Read stored documents').first().json.documents.length }}",
               "type": "number"
             },
             {
@@ -947,22 +947,8 @@
       }
     },
     {
-      "id": "06d47080-71bd-40d6-8503-4f6c11fd2e6c",
-      "name": "Pick the active documents",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1900,
-        200
-      ],
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// One CV and one cover letter: per kind, the newest readable file in this run's scan is used.\n// Same modification time: the first file name in order wins. Unreadable files are never used.\nconst documents = $('Scan document folders').first().json.documents;\nconst active = [];\nfor (const kind of ['cv', 'cover_letter']) {\n  const candidates = documents\n    .filter((d) => d.kind === kind && !d.warnings.includes('unreadable_file'))\n    .sort((a, b) => (a.modifiedAt === b.modifiedAt\n      ? (a.sourceRef < b.sourceRef ? -1 : a.sourceRef > b.sourceRef ? 1 : 0)\n      : (a.modifiedAt < b.modifiedAt ? 1 : -1)));\n  if (candidates.length > 0) active.push({ kind, sourceRef: candidates[0].sourceRef });\n}\nreturn [{ json: { active } }];"
-      }
-    },
-    {
-      "id": "d1c76018-2ada-4316-9591-8b5a3dee3a07",
-      "name": "Ignore extra documents",
+      "id": "2d50ebf2-3d47-41b7-b752-c5602f443674",
+      "name": "Activate stored documents",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
@@ -971,9 +957,9 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner, [2] active documents picked from this scan (JSON array of kind, sourceRef)\nwith picked as (\n  select * from jsonb_to_recordset($2::jsonb) as p(kind text, \"sourceRef\" text)\n),\nnot_picked as (\n  select b.id,\n         -- still in the folder, and its kind has an active document: an extra file, ignored\n         (not b.source_removed and b.kind in (select kind from picked)) as ignored\n  from base_documents b\n  where b.owner_id = $1\n    and not exists (select 1 from picked p where p.kind = b.kind and p.\"sourceRef\" = b.source_ref)\n)\nupdate base_documents d\nset active = false,\n    analysis_status     = case when n.ignored then 'skipped' else d.analysis_status end,\n    analysis_claimed_at = case when n.ignored then null else d.analysis_claimed_at end,\n    analysis_error      = case when n.ignored and not d.warnings @> '[{\"code\":\"unreadable_file\"}]' then null else d.analysis_error end,\n    -- an ignored file keeps nothing from an earlier analysis\n    structured          = case when n.ignored then null else d.structured end,\n    warnings = case when n.ignored then\n        (select coalesce(jsonb_agg(w), '[]'::jsonb) from jsonb_array_elements(d.warnings) w where w->>'code' = 'unreadable_file')\n        || jsonb_build_array(jsonb_build_object('code', 'extra_file_ignored', 'detail',\n             case d.kind when 'cv' then 'Only one CV is used; this file is ignored.'\n                         else 'Only one cover letter is used; this file is ignored.' end))\n      else d.warnings end,\n    updated_at = now()\nfrom not_picked n\nwhere d.id = n.id\n  -- only rows that need a change: already-ignored files are left alone\n  and (d.active or (n.ignored and not (d.analysis_status = 'skipped' and d.structured is null\n                                        and d.warnings @> '[{\"code\":\"extra_file_ignored\"}]')));",
+        "query": "-- Parameters: [1] owner, [2] documents read from the storage (JSON array of kind, sourceRef, contentHash)\n-- Runs after \"Retire replaced documents\" cleared the old active row: at most one active row per kind.\nupdate base_documents d\nset active = true, updated_at = now()\nfrom jsonb_to_recordset($2::jsonb) as s(kind text, \"sourceRef\" text)\nwhere d.owner_id = $1 and d.kind = s.kind and d.source_ref = s.\"sourceRef\"\n  and not d.source_removed and not d.active;",
         "options": {
-          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', JSON.stringify($('Pick the active documents').first().json.active) ] }}"
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', JSON.stringify($('Collect scanned documents').first().json.scanned) ] }}"
         }
       },
       "credentials": {
@@ -985,21 +971,97 @@
       "executeOnce": true
     },
     {
-      "id": "2d50ebf2-3d47-41b7-b752-c5602f443674",
-      "name": "Activate the newest documents",
+      "parameters": {
+        "content": "## Schedule: only when something is due\nAn upload already starts a sync, so the schedule is only there to **retry** failed analyses (1 minute after attempt 1, 5 minutes after attempt 2, at most 3 attempts) and to catch up when an upload's sync did not run. It never reads unchanged documents:\n- **List stored documents** asks the worker which documents are stored (name and content hash only; the files are not read). A worker that does not answer ends the run quietly; the next minute tries again.\n- **Anything to do?** first gives up on analyses stuck for 5 minutes with all 3 attempts used, then answers `due` when the active rows differ from the storage (a new or replaced document whose sync did not run) or an analysis is due (pending, failed and past its wait, or stuck with attempts left: the same rules as *Claim pending analyses*).\n- Only then does the run go on and read the documents.",
+        "height": 560,
+        "width": 1000,
+        "color": 7
+      },
+      "id": "cdd3de75-012e-4b1d-a2bf-e3910e694ba9",
+      "name": "Sticky Note 0",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1160,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.WORKER_URL }}/documents",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "bddd49d3-a159-4b28-810e-f4e7d7319efa",
+      "name": "List stored documents",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -700,
+        100
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8d7a1572-8184-4685-b55f-2e27f4a4bbfc",
+              "leftValue": "={{ $json.statusCode === 200 && Array.isArray($json.body?.documents) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "aebe1bf1-2485-4884-83ef-0f9d9f756bf0",
+      "name": "Worker answered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -520,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] stored documents (JSON array of kind, sourceRef, contentHash)\nwith stored as (\n  select * from jsonb_to_recordset($2::jsonb) as s(kind text, \"sourceRef\" text, \"contentHash\" text)\n),\n-- A claim older than 5 minutes means the run that made it crashed. Retry budget used up: give up.\ngave_up as (\n  update base_documents\n  set analysis_status = 'failed', analysis_error = 'The analysis did not finish after 3 attempts.', updated_at = now()\n  where owner_id = $1 and analysis_status = 'in_progress'\n    and analysis_claimed_at < now() - interval '5 minutes' and analysis_attempts >= 3\n  returning id\n)\nselect (\n  -- a stored document that is not the active row with that content: its sync did not run\n  exists (select 1 from stored s\n          where not exists (select 1 from base_documents d\n                            where d.owner_id = $1 and d.active and not d.source_removed\n                              and d.kind = s.kind and d.source_ref = s.\"sourceRef\" and d.content_hash = s.\"contentHash\"))\n  -- a row still treated as current whose document is no longer stored\n  or exists (select 1 from base_documents d\n             where d.owner_id = $1 and (d.active or not d.source_removed)\n               and not exists (select 1 from stored s where s.kind = d.kind and s.\"sourceRef\" = d.source_ref))\n  -- an analysis is due (the same rules as \"Claim pending analyses\")\n  or exists (select 1 from base_documents d\n             where d.owner_id = $1 and d.active and not d.source_removed\n               and (d.analysis_status = 'pending'\n                    or (d.analysis_status = 'failed' and d.analysis_attempts < 3\n                        and d.analysis_claimed_at < now() - case when d.analysis_attempts <= 1\n                                                                 then interval '1 minute'\n                                                                 else interval '5 minutes' end)\n                    or (d.analysis_status = 'in_progress' and d.analysis_claimed_at < now() - interval '5 minutes'\n                        and d.analysis_attempts < 3)))\n) as due;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', JSON.stringify($json.body.documents) ] }}"
+        }
+      },
+      "id": "d0b57ddc-4558-4e46-8cf9-c5c7fce8644b",
+      "name": "Anything to do?",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        2300,
-        200
+        -340,
+        0
       ],
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner, [2] active documents picked from this scan (JSON array of kind, sourceRef)\n-- Runs after \"Ignore extra documents\" cleared the old active row: at most one active row per kind.\nupdate base_documents d\nset active = true,\n    -- it was an ignored extra file until now: analyse it from scratch\n    analysis_status     = case when d.analysis_status = 'skipped' and d.warnings @> '[{\"code\":\"extra_file_ignored\"}]' then 'pending' else d.analysis_status end,\n    analysis_attempts   = case when d.analysis_status = 'skipped' and d.warnings @> '[{\"code\":\"extra_file_ignored\"}]' then 0 else d.analysis_attempts end,\n    analysis_claimed_at = case when d.analysis_status = 'skipped' and d.warnings @> '[{\"code\":\"extra_file_ignored\"}]' then null else d.analysis_claimed_at end,\n    analysis_error      = case when d.analysis_status = 'skipped' and d.warnings @> '[{\"code\":\"extra_file_ignored\"}]' then null else d.analysis_error end,\n    warnings            = case when d.warnings @> '[{\"code\":\"extra_file_ignored\"}]' then '[]'::jsonb else d.warnings end,\n    updated_at = now()\nfrom jsonb_to_recordset($2::jsonb) as p(kind text, \"sourceRef\" text)\nwhere d.owner_id = $1 and d.kind = p.kind and d.source_ref = p.\"sourceRef\" and not d.source_removed\n  and (not d.active or d.warnings @> '[{\"code\":\"extra_file_ignored\"}]');",
-        "options": {
-          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', JSON.stringify($('Pick the active documents').first().json.active) ] }}"
-        }
-      },
       "credentials": {
         "postgres": {
           "id": "jh-postgres",
@@ -1007,6 +1069,41 @@
         }
       },
       "executeOnce": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9035495a-7279-4b87-b2c0-342195c6a11b",
+              "leftValue": "={{ $json.due }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "940158fa-72fc-40b4-a1a9-9e0db4cc7863",
+      "name": "Run needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -200,
+        200
+      ]
     }
   ],
   "connections": {
@@ -1025,7 +1122,7 @@
       "main": [
         [
           {
-            "node": "Scan document folders",
+            "node": "List stored documents",
             "type": "main",
             "index": 0
           }
@@ -1048,7 +1145,7 @@
       "main": [
         [
           {
-            "node": "Scan document folders",
+            "node": "Read stored documents",
             "type": "main",
             "index": 0
           }
@@ -1056,24 +1153,6 @@
         [
           {
             "node": "Respond: missing X-JobHunter header",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Scan document folders": {
-      "main": [
-        [
-          {
-            "node": "Collect scanned documents",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Respond: scan failed",
             "type": "main",
             "index": 0
           }
@@ -1095,25 +1174,7 @@
       "main": [
         [
           {
-            "node": "Any documents in the folders?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Any documents in the folders?": {
-      "main": [
-        [
-          {
-            "node": "One item per document",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark removed documents",
+            "node": "Any documents stored?",
             "type": "main",
             "index": 0
           }
@@ -1135,18 +1196,7 @@
       "main": [
         [
           {
-            "node": "Mark removed documents",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Mark removed documents": {
-      "main": [
-        [
-          {
-            "node": "Pick the active documents",
+            "node": "Retire replaced documents",
             "type": "main",
             "index": 0
           }
@@ -1400,29 +1450,54 @@
         ]
       ]
     },
-    "Pick the active documents": {
+    "Read stored documents": {
       "main": [
         [
           {
-            "node": "Ignore extra documents",
+            "node": "Collect scanned documents",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: scan failed",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Ignore extra documents": {
+    "Any documents stored?": {
       "main": [
         [
           {
-            "node": "Activate the newest documents",
+            "node": "One item per document",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retire replaced documents",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Activate the newest documents": {
+    "Retire replaced documents": {
+      "main": [
+        [
+          {
+            "node": "Activate stored documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Activate stored documents": {
       "main": [
         [
           {
@@ -1431,6 +1506,52 @@
             "index": 0
           }
         ]
+      ]
+    },
+    "List stored documents": {
+      "main": [
+        [
+          {
+            "node": "Worker answered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker answered?": {
+      "main": [
+        [
+          {
+            "node": "Anything to do?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Anything to do?": {
+      "main": [
+        [
+          {
+            "node": "Run needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run needed?": {
+      "main": [
+        [
+          {
+            "node": "Read stored documents",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     }
   },

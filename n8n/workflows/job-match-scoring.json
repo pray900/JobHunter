@@ -153,7 +153,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 1. Current basis\nScores are worked out against **the one base CV in use**: the active CV (see *Base documents sync*) whose analysis is `done` and whose file is still there. Its `content_hash` is the **basis**: every saved score records the basis it was computed from (`match_basis_hash`).\n**No such CV** (none in the folder, still being analysed, or its analysis failed) → nothing is changed, no Claude call is made, and the webhook answers `{ ok: true, scored: 0, basisHash: null }`.",
+        "content": "## 1. Current basis\nScores are worked out against **the one base CV in use**: the active CV (see *Base documents sync*) whose analysis is `done` (the uploaded CV, not a replaced one). Its `content_hash` is the **basis**: every saved score records the basis it was computed from (`match_basis_hash`).\n**No such CV** (none uploaded yet, still being analysed, or its analysis failed) → nothing is changed, no Claude call is made, and the webhook answers `{ ok: true, scored: 0, basisHash: null }`.",
         "height": 760,
         "width": 700,
         "color": 4

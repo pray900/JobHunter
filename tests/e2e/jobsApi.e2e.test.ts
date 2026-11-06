@@ -3,12 +3,10 @@ import {
   api,
   db,
   makePdf,
-  removeDocument,
   resetState,
-  triggerDocumentsSync,
   triggerScoring,
   triggerSync,
-  writeDocument,
+  putDocument,
   writeJobFile,
 } from './lib';
 
@@ -30,10 +28,9 @@ async function insertJob(ref: string, title: string, matchScore: number | null, 
   );
 }
 
-/** Puts one base CV in the folder and analyses it. Returns its hash (the scoring basis). */
+/** Uploads the base CV (which analyses it). Returns its hash (the scoring basis). */
 async function readyCv(tag = 'v1'): Promise<string> {
-  writeDocument('cv', 'cv.pdf', makePdf(`Base CV STUB_HEADLINE:${tag}`));
-  await triggerDocumentsSync();
+  await putDocument('cv', 'cv.pdf', makePdf(`Base CV STUB_HEADLINE:${tag}`));
   const [cv] = await db.query(`select content_hash from base_documents where kind='cv' and active and analysis_status='done'`);
   expect(cv).toBeDefined();
   return cv.content_hash;
@@ -81,7 +78,7 @@ describe('jobs API', () => {
     expect(jobs[1]).toMatchObject({ matchScore: null, matchExplanation: null, matchBreakdown: null, scoreStatus: 'pending' });
   });
 
-  test('CV file removed by hand: scores disappear; they come back only after rescoring', async () => {
+  test('CV replaced: old scores disappear; they come back only after rescoring', async () => {
     await readyCv('v1');
     await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
     await triggerSync();
@@ -89,19 +86,23 @@ describe('jobs API', () => {
     expect((await listJobs()).jobs[0]).toMatchObject({ scoreStatus: 'done' });
     expect(typeof (await listJobs()).jobs[0].matchScore).toBe('number');
 
-    removeDocument('cv', 'cv.pdf');
-    await triggerDocumentsSync();
-    // No current CV: no score is shown, whatever was saved.
-    expect((await listJobs()).jobs[0]).toMatchObject({ matchScore: null, matchExplanation: null, matchBreakdown: null });
-
     // A different CV that is analysed: the old score stays hidden (pending) until the job is rescored.
-    writeDocument('cv', 'cv2.pdf', makePdf('Base CV STUB_HEADLINE:v2'));
-    await triggerDocumentsSync();
-    expect((await listJobs()).jobs[0]).toMatchObject({ matchScore: null, matchBreakdown: null, scoreStatus: 'pending' });
+    await putDocument('cv', 'cv2.pdf', makePdf('Base CV STUB_HEADLINE:v2'));
+    expect((await listJobs()).jobs[0]).toMatchObject({ matchScore: null, matchExplanation: null, matchBreakdown: null, scoreStatus: 'pending' });
     expect((await triggerScoring()).scored).toBe(1);
     const job = (await listJobs()).jobs[0];
     expect(job.scoreStatus).toBe('done');
     expect(typeof job.matchScore).toBe('number');
+  });
+
+  test('a replacement CV whose analysis failed: no score is shown', async () => {
+    await readyCv('v1');
+    await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
+    await triggerSync();
+    expect((await triggerScoring()).scored).toBe(1);
+    // No ready CV any more, so no score is shown, whatever was saved.
+    await putDocument('cv', 'cv2.pdf', makePdf('STUB_FAIL please'));
+    expect((await listJobs()).jobs[0]).toMatchObject({ matchScore: null, matchExplanation: null, matchBreakdown: null });
   });
 
   test('ties on score are newest first', async () => {

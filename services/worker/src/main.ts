@@ -15,8 +15,8 @@ console.log(`migrations applied: ${applied.join(', ') || 'none'}`);
 
 const app = buildServer({
   jobFolderDir: process.env.JOBLISTING_DIR ?? './Joblisting',
-  cvDir: process.env.CV_DIR ?? './PersonalDetailsCV',
-  coverLetterDir: process.env.COVER_LETTER_DIR ?? './PersonalDetailsCoverLetter',
+  // A Docker named volume in compose; never the old PersonalDetails* folders.
+  documentsDir: process.env.DOCUMENTS_DIR ?? '/data/documents',
   logger: true,
 });
 await app.listen({ host: '0.0.0.0', port: 3001 });

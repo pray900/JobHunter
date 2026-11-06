@@ -13,7 +13,7 @@ const mockFetch = vi.mocked(fetchJobs);
 beforeEach(() => {
   mockFetch.mockReset();
   mockDocs.mockReset();
-  mockDocs.mockResolvedValue({ cv: null, coverLetter: null, ignored: [] });
+  mockDocs.mockResolvedValue({ cv: null, coverLetter: null });
 });
 
 describe('JobsPage', () => {
@@ -109,7 +109,6 @@ describe('JobsPage', () => {
         updatedAt: '',
       },
       coverLetter: null,
-      ignored: [],
     });
     render(<JobsPage />, { wrapper: MemoryRouter });
     await screen.findByText('Alpha Role');

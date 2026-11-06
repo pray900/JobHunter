@@ -4,28 +4,36 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { buildServer } from '../src/server.js';
+import { createDocumentStore } from '../src/storage/documentFolder.js';
 import { makeDocx } from '../../../tests/helpers/makeDocx.js';
 import type { ScannedDocument } from '../src/documents/types.js';
 
 let root: string;
-let cv: string;
-let cl: string;
+let docs: string;
 const PDF = Buffer.from('%PDF-1.4\nfake body\n');
+const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'docroutes-'));
-  cv = path.join(root, 'cv');
-  cl = path.join(root, 'cl');
-  await fs.mkdir(cv);
-  await fs.mkdir(cl);
+  docs = path.join(root, 'documents');
 });
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-const app = () => buildServer({ jobFolderDir: root, cvDir: cv, coverLetterDir: cl });
+const app = () => buildServer({ jobFolderDir: root, documentsDir: docs });
+// Every file stored for a kind (any depth), except the pointer file.
+const storedFiles = async (kind: string) =>
+  (await fs.readdir(path.join(docs, kind), { recursive: true, withFileTypes: true }).catch(() => []))
+    .filter((e) => e.isFile() && e.name !== '.current.json')
+    .map((e) => path.join(e.parentPath, e.name));
+const storedNames = async (kind: string) => (await storedFiles(kind)).map((f) => path.basename(f)).sort();
+const storedBytes = async (kind: string) => fs.readFile((await storedFiles(kind))[0]);
+// Places a document in the store the way an upload does (bypassing the route's content checks).
+const place = (kind: 'cv' | 'cover_letter', name: string, bytes: Buffer) =>
+  createDocumentStore(docs).saveDocument(kind, name, bytes);
 
-async function upload(name: string, bytes: Buffer, opts: { kind?: string; replace?: boolean } = {}) {
+async function upload(name: string, bytes: Buffer, opts: { kind?: string; query?: string } = {}) {
   const boundary = 'XBOUNDARYX';
   const head = Buffer.from(
     `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
@@ -34,7 +42,7 @@ async function upload(name: string, bytes: Buffer, opts: { kind?: string; replac
   const a = app();
   const res = await a.inject({
     method: 'POST',
-    url: `/documents/${opts.kind ?? 'cv'}${opts.replace === undefined ? '' : `?replace=${opts.replace}`}`,
+    url: `/documents/${opts.kind ?? 'cv'}${opts.query ?? ''}`,
     headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
     payload,
   });
@@ -42,83 +50,123 @@ async function upload(name: string, bytes: Buffer, opts: { kind?: string; replac
   return res;
 }
 
-test('scan returns PDFs as base64 and DOCX as text for both kinds', async () => {
-  const docx = await makeDocx([{ text: 'Jane Doe' }, { text: 'Engineer' }]);
-  await fs.writeFile(path.join(cv, 'cv.pdf'), PDF);
-  await fs.writeFile(path.join(cl, 'letter.docx'), docx);
+async function scan(): Promise<ScannedDocument[]> {
   const a = app();
   const res = await a.inject({ method: 'POST', url: '/documents/scan' });
   await a.close();
   expect(res.statusCode).toBe(200);
-  const docs: ScannedDocument[] = res.json().documents;
-  const pdf = docs.find((d) => d.kind === 'cv')!;
-  expect(pdf).toMatchObject({
-    sourceRef: 'cv.pdf',
-    mediaType: 'application/pdf',
-    text: null,
-    warnings: [],
-    contentHash: createHash('sha256').update(PDF).digest('hex'),
-  });
-  expect(Buffer.from(pdf.pdfBase64!, 'base64').equals(PDF)).toBe(true);
-  const word = docs.find((d) => d.kind === 'cover_letter')!;
-  expect(word.mediaType).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-  expect(word.pdfBase64).toBeNull();
-  expect(word.text).toBe('Jane Doe\nEngineer');
-  expect(word.contentHash).toBe(createHash('sha256').update(docx).digest('hex'));
+  return res.json().documents;
+}
+
+test('scan of an empty store returns no documents', async () => {
+  expect(await scan()).toEqual([]);
 });
 
-test('unreadable docx gets unreadable_file warning', async () => {
-  await fs.writeFile(path.join(cv, 'bad.docx'), 'not a zip');
+test('scan returns the stored PDF as base64 and the stored DOCX as text', async () => {
+  const docx = await makeDocx([{ text: 'Jane Doe' }, { text: 'Engineer' }]);
+  await place('cv', 'cv.pdf', PDF);
+  await place('cover_letter', 'letter.docx', docx);
+  const documents = await scan();
+  expect(documents).toHaveLength(2);
+  const pdf = documents.find((d) => d.kind === 'cv')!;
+  expect(pdf).toEqual({
+    kind: 'cv',
+    sourceRef: 'cv.pdf',
+    mediaType: 'application/pdf',
+    contentHash: sha(PDF),
+    pdfBase64: PDF.toString('base64'),
+    text: null,
+    warnings: [],
+  });
+  const word = documents.find((d) => d.kind === 'cover_letter')!;
+  expect(word).toMatchObject({
+    sourceRef: 'letter.docx',
+    mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    pdfBase64: null,
+    text: 'Jane Doe\nEngineer',
+    contentHash: sha(docx),
+  });
+});
+
+test('scan reads only the stored document of each kind, never other files', async () => {
+  await place('cv', 'old.pdf', PDF);
+  await place('cv', 'new.pdf', Buffer.concat([PDF, Buffer.from('2')]));
+  await fs.mkdir(path.join(docs, 'cv', '0123456789abcdef'));
+  await fs.writeFile(path.join(docs, 'cv', '0123456789abcdef', 'stray.pdf'), PDF);
+  await fs.writeFile(path.join(root, 'outside.pdf'), PDF);
+  const documents = await scan();
+  expect(documents.map((d) => d.sourceRef)).toEqual(['new.pdf']);
+});
+
+test('GET /documents lists the stored documents without reading their content', async () => {
+  await place('cv', 'cv.pdf', PDF);
   const a = app();
-  const res = await a.inject({ method: 'POST', url: '/documents/scan' });
+  const res = await a.inject({ method: 'GET', url: '/documents' });
   await a.close();
-  expect(res.json().documents[0]).toMatchObject({ text: null, warnings: ['unreadable_file'] });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({ documents: [{ kind: 'cv', sourceRef: 'cv.pdf', contentHash: sha(PDF) }] });
 });
 
 test('docx with no readable text gets unreadable_file and no text', async () => {
-  await fs.writeFile(path.join(cv, 'empty.docx'), await makeDocx([{ text: '   ' }, { text: '' }]));
-  const a = app();
-  const res = await a.inject({ method: 'POST', url: '/documents/scan' });
-  await a.close();
-  expect(res.json().documents[0]).toMatchObject({ text: null, pdfBase64: null, warnings: ['unreadable_file'] });
+  await place('cv', 'empty.docx', await makeDocx([{ text: '   ' }, { text: '' }]));
+  expect((await scan())[0]).toMatchObject({ text: null, pdfBase64: null, warnings: ['unreadable_file'] });
 });
 
-test('missing cv folder -> 503 document_folder_missing', async () => {
-  await fs.rm(cv, { recursive: true });
-  const a = app();
-  const res = await a.inject({ method: 'POST', url: '/documents/scan' });
-  await a.close();
-  expect(res.statusCode).toBe(503);
-  expect(res.json()).toEqual({ error: 'document_folder_missing', kind: 'cv' });
+test('unreadable docx gets unreadable_file warning', async () => {
+  await place('cv', 'bad.docx', Buffer.from('PK\u0003\u0004 not really a zip'));
+  expect((await scan())[0]).toMatchObject({ text: null, warnings: ['unreadable_file'] });
 });
 
-test('upload refuses to overwrite', async () => {
+test('scan flags an over-5MB stored file as unreadable but keeps its hash', async () => {
+  const big = Buffer.concat([PDF, Buffer.alloc(5 * 1024 * 1024)]);
+  await place('cv', 'big.pdf', big);
+  expect((await scan())[0]).toMatchObject({
+    sourceRef: 'big.pdf',
+    pdfBase64: null,
+    text: null,
+    warnings: ['unreadable_file'],
+    contentHash: sha(big),
+  });
+});
+
+test('upload into an empty slot stores it', async () => {
+  const res = await upload('a.pdf', PDF);
+  expect(res.statusCode).toBe(201);
+  expect(res.json()).toEqual({ sourceRef: 'a.pdf' });
+  expect(await storedNames('cv')).toEqual(['a.pdf']);
+  expect((await storedBytes('cv')).equals(PDF)).toBe(true);
+});
+
+test('upload replaces the current document, whatever its name', async () => {
   expect((await upload('a.pdf', PDF)).statusCode).toBe(201);
-  const second = await upload('a.pdf', Buffer.concat([PDF, Buffer.from('2')]));
-  expect(second.statusCode).toBe(409);
-  expect(second.json()).toEqual({ error: 'document_exists' });
-  const third = await upload('a.pdf', Buffer.concat([PDF, Buffer.from('2')]), { replace: true });
-  expect(third.statusCode).toBe(201);
-  expect(third.json()).toEqual({ sourceRef: 'a.pdf' });
-  expect((await fs.readFile(path.join(cv, 'a.pdf'))).length).toBe(PDF.length + 1);
+  const same = await upload('a.pdf', Buffer.concat([PDF, Buffer.from('2')]));
+  expect(same.statusCode).toBe(201);
+  expect(await storedNames('cv')).toEqual(['a.pdf']);
+  expect((await storedBytes('cv')).length).toBe(PDF.length + 1);
+  const other = await upload('b.pdf', PDF, { query: '?replace=false' });
+  expect(other.statusCode).toBe(201);
+  expect(other.json()).toEqual({ sourceRef: 'b.pdf' });
+  expect(await storedNames('cv')).toEqual(['b.pdf']);
 });
 
-test('uploads docx to cover_letter folder', async () => {
+test('uploads docx to the cover_letter slot', async () => {
   const docx = await makeDocx([{ text: 'Hi' }]);
   const res = await upload('l.docx', docx, { kind: 'cover_letter' });
   expect(res.statusCode).toBe(201);
-  expect((await fs.readFile(path.join(cl, 'l.docx'))).equals(docx)).toBe(true);
+  expect((await storedBytes('cover_letter')).equals(docx)).toBe(true);
+  expect(await storedNames('cv')).toEqual([]);
 });
 
 test('rejects traversal and bad extensions', async () => {
   for (const name of ['../x.pdf', 'a/b.pdf', 'a\\b.pdf', 'x.exe', '.hidden.pdf', '~$x.docx']) {
     expect((await upload(name, PDF)).statusCode, name).toBe(400);
   }
-  expect(await fs.readdir(cv)).toEqual([]);
-  expect((await fs.readdir(root)).sort()).toEqual(['cl', 'cv']);
+  expect(await storedNames('cv')).toEqual([]);
+  expect((await fs.readdir(root)).filter((n) => n !== 'documents')).toEqual([]);
 });
 
-test('rejects non-pdf bytes, non-zip docx, empty and oversize', async () => {
+test('rejects non-pdf bytes, non-zip docx, empty and oversize; the current document is kept', async () => {
+  await upload('keep.pdf', PDF);
   const r = await upload('x.pdf', Buffer.from('hello'));
   expect(r.statusCode).toBe(400);
   expect(r.json()).toEqual({ error: 'bad_file' });
@@ -126,79 +174,26 @@ test('rejects non-pdf bytes, non-zip docx, empty and oversize', async () => {
   expect((await upload('x.pdf', Buffer.alloc(0))).statusCode).toBe(400);
   const big = Buffer.concat([PDF, Buffer.alloc(5 * 1024 * 1024)]);
   expect((await upload('big.pdf', big)).statusCode).toBe(400);
-  expect(await fs.readdir(cv)).toEqual([]);
+  expect(await storedNames('cv')).toEqual(['keep.pdf']);
 });
 
 test('unknown kind -> 404', async () => {
   expect((await upload('a.pdf', PDF, { kind: 'other' })).statusCode).toBe(404);
 });
 
-test('delete removes the file; unknown name -> 404', async () => {
-  await fs.writeFile(path.join(cv, 'a.pdf'), PDF);
+test('there is no delete route', async () => {
+  await upload('a.pdf', PDF);
   const a = app();
-  expect((await a.inject({ method: 'DELETE', url: '/documents/cv/a.pdf' })).statusCode).toBe(204);
-  expect((await a.inject({ method: 'DELETE', url: '/documents/cv/a.pdf' })).statusCode).toBe(404);
-  expect((await a.inject({ method: 'DELETE', url: '/documents/cv/..%2Fx.pdf' })).statusCode).toBe(404);
+  const res = await a.inject({ method: 'DELETE', url: '/documents/cv/a.pdf' });
   await a.close();
-  expect(await fs.readdir(cv)).toEqual([]);
+  expect(res.statusCode).toBe(404);
+  expect(await storedNames('cv')).toEqual(['a.pdf']);
 });
 
 test('sanitises odd characters but keeps the extension', async () => {
-  const res = await upload('CV – Sep*2026.pdf', PDF);
+  const res = await upload("Prayush's CV – Sep*2026.pdf", PDF);
   expect(res.statusCode).toBe(201);
   const { sourceRef } = res.json();
-  expect(sourceRef).toBe('CV  Sep2026.pdf');
-  expect(await fs.readdir(cv)).toEqual([sourceRef]);
-});
-
-test('scan flags an over-5MB file as unreadable but keeps its hash', async () => {
-  const big = Buffer.concat([PDF, Buffer.alloc(5 * 1024 * 1024)]);
-  await fs.writeFile(path.join(cv, 'big.pdf'), big);
-  const a = app();
-  const res = await a.inject({ method: 'POST', url: '/documents/scan' });
-  await a.close();
-  expect(res.json().documents[0]).toMatchObject({
-    sourceRef: 'big.pdf',
-    pdfBase64: null,
-    text: null,
-    warnings: ['unreadable_file'],
-    contentHash: createHash('sha256').update(big).digest('hex'),
-  });
-});
-
-test('delete and replace work on a hand-placed name with odd characters', async () => {
-  const name = "Prayush's CV \u2013 M\u00fcller.pdf";
-  await fs.writeFile(path.join(cv, name), PDF);
-  const a = app();
-  const del = await a.inject({ method: 'DELETE', url: `/documents/cv/${encodeURIComponent(name)}` });
-  expect(del.statusCode).toBe(204);
-  expect((await a.inject({ method: 'DELETE', url: `/documents/cv/${encodeURIComponent(name)}` })).statusCode).toBe(404);
-  await a.close();
-  await fs.writeFile(path.join(cv, name), PDF);
-  const res = await upload(name, Buffer.concat([PDF, Buffer.from('2')]), { replace: true });
-  expect(res.statusCode).toBe(201);
-  expect(res.json()).toEqual({ sourceRef: name });
-  expect(await fs.readdir(cv)).toEqual([name]);
-  expect((await fs.readFile(path.join(cv, name))).length).toBe(PDF.length + 1);
-});
-
-test('scan reports modifiedAt for every document', async () => {
-  await fs.writeFile(path.join(cv, 'old.pdf'), PDF);
-  await fs.writeFile(path.join(cv, 'new.pdf'), PDF);
-  await fs.writeFile(path.join(cl, 'broken.docx'), 'not a zip');
-  const older = new Date('2026-01-01T00:00:00.000Z');
-  const newer = new Date('2026-02-01T10:20:30.000Z');
-  await fs.utimes(path.join(cv, 'old.pdf'), older, older);
-  await fs.utimes(path.join(cv, 'new.pdf'), newer, newer);
-  await fs.utimes(path.join(cl, 'broken.docx'), older, older);
-  const a = app();
-  const res = await a.inject({ method: 'POST', url: '/documents/scan' });
-  await a.close();
-  const docs: ScannedDocument[] = res.json().documents;
-  const byRef = Object.fromEntries(docs.map((d) => [d.sourceRef, d.modifiedAt]));
-  expect(byRef).toEqual({
-    'old.pdf': older.toISOString(),
-    'new.pdf': newer.toISOString(),
-    'broken.docx': older.toISOString(),
-  });
+  expect(sourceRef).toBe('Prayushs CV  Sep2026.pdf');
+  expect(await storedNames('cv')).toEqual([sourceRef]);
 });

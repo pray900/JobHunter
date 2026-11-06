@@ -8,10 +8,9 @@ import {
   makePdf,
   resetState,
   stub,
-  triggerDocumentsSync,
   triggerScoring,
   triggerSync,
-  writeDocument,
+  putDocument,
   writeJobFile,
 } from './lib';
 
@@ -25,10 +24,9 @@ const scoreRequests = async () => (await stub.requests()).filter((b) => purposeO
 /** The base CV facts a scoring request sent, parsed from inside <base_cv> tags. */
 const sentCv = (body: any) => JSON.parse(/<base_cv>\n([\s\S]*)\n<\/base_cv>/.exec(body.messages[0].content)![1]);
 
-/** Puts one base CV in the folder and analyses it; the stub records `tag` as its headline. Returns the basis hash. */
+/** Uploads the base CV (which analyses it); the stub records `tag` as its headline. Returns the basis hash. */
 async function readyCv(tag: string): Promise<string> {
-  writeDocument('cv', 'cv.pdf', makePdf(`Base CV STUB_HEADLINE:${tag}`));
-  await triggerDocumentsSync();
+  await putDocument('cv', 'cv.pdf', makePdf(`Base CV STUB_HEADLINE:${tag}`));
   const [cv] = await db.query(`select content_hash, analysis_status from base_documents where kind='cv' and active`);
   expect(cv.analysis_status).toBe('done');
   return cv.content_hash;
@@ -90,9 +88,8 @@ describe('job match scoring', () => {
   test('no base CVs means no scoring calls', async () => {
     await addJob('a.docx', 'Job A');
     // A cover letter alone is not a basis, and neither is a CV whose analysis failed.
-    writeDocument('cover_letter', 'cl.pdf', makePdf('Cover letter'));
-    writeDocument('cv', 'bad.pdf', makePdf('STUB_FAIL please'));
-    await triggerDocumentsSync();
+    await putDocument('cover_letter', 'cl.pdf', makePdf('Cover letter'));
+    await putDocument('cv', 'bad.pdf', makePdf('STUB_FAIL please'));
     await stub.reset();
     expect(await triggerScoring()).toEqual({ ok: true, scored: 0, basisHash: null });
     expect(await stub.requests()).toEqual([]);

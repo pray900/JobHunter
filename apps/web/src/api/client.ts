@@ -37,10 +37,10 @@ export async function fetchJobs(): Promise<JobSummary[]> {
 
 export async function fetchDocuments(): Promise<DocumentsResponse> {
   const body = await getJson<Partial<DocumentsResponse> | null>('/api/documents');
-  if (!body || !('cv' in body) || !('coverLetter' in body) || !Array.isArray(body.ignored)) {
+  if (!body || !('cv' in body) || !('coverLetter' in body)) {
     throw new ApiError(502, 'GET /api/documents returned an unexpected shape');
   }
-  return body as DocumentsResponse;
+  return { cv: body.cv ?? null, coverLetter: body.coverLetter ?? null };
 }
 
 async function send(method: string, path: string, body?: FormData): Promise<Response> {
@@ -66,8 +66,4 @@ export async function uploadDocument(kind: DocumentKind, file: File): Promise<{ 
     // fall through
   }
   throw new ApiError(502, `POST ${path} returned an unexpected shape`);
-}
-
-export async function deleteDocument(id: string): Promise<void> {
-  await send('DELETE', `/api/documents?id=${encodeURIComponent(id)}`);
 }

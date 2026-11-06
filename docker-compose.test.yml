@@ -24,24 +24,17 @@ services:
     environment:
       DATABASE_URL: postgres://jobhunter:test@postgres:5432/jobhunter
       JOBLISTING_DIR: /data/joblisting
-      CV_DIR: /data/cv
-      COVER_LETTER_DIR: /data/cover-letter
+      DOCUMENTS_DIR: /data/documents
     volumes:
       - type: bind
         source: ./.tmp/e2e-joblisting
         target: /data/joblisting
         bind:
           create_host_path: false
-      - type: bind
-        source: ./.tmp/e2e-cv
-        target: /data/cv
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ./.tmp/e2e-cover-letter
-        target: /data/cover-letter
-        bind:
-          create_host_path: false
+      # The test stack's own document storage (removed by `down -v`).
+      - type: volume
+        source: documents_test_data
+        target: /data/documents
       - type: bind
         source: ./config
         target: /app/config
@@ -103,3 +96,4 @@ services:
 volumes:
   pg_test_data:
   n8n_test_data:
+  documents_test_data:

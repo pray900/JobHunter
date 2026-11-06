@@ -9,8 +9,6 @@ export interface ScannedDocument {
   kind: DocumentKind;
   sourceRef: string;
   contentHash: string;
-  // ISO time the file was last modified. Per kind, the newest readable file is the one used.
-  modifiedAt: string;
   mediaType: typeof PDF_MEDIA_TYPE | typeof DOCX_MEDIA_TYPE;
   pdfBase64: string | null;
   text: string | null;

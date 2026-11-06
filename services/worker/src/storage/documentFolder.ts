@@ -1,47 +1,27 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { constants as fsConstants, createReadStream } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { DocumentKind } from '../documents/types.js';
 
-export interface DocumentFile {
+export interface StoredDocument {
   name: string;
   // null when the file is over MAX_DOCUMENT_BYTES (never read into memory).
   bytes: Buffer | null;
   contentHash: string;
-  // The file's last modification time (ISO). Picks the one document per kind that is used.
-  modifiedAt: string;
 }
 
-export type DocumentDirs = Record<DocumentKind, string>;
+export interface CurrentDocument {
+  name: string;
+  contentHash: string;
+}
+
+// The pointer file's content: which stored copy is current.
+interface Pointer extends CurrentDocument {
+  id: string;
+}
 
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
-
-// The configured document folder does not exist. Callers must treat this as an error, not "no documents".
-export class DocumentFolderMissingError extends Error {
-  readonly kind: DocumentKind;
-  readonly dir: string;
-  constructor(kind: DocumentKind, dir: string) {
-    super(`document folder not found: ${dir}`);
-    this.name = 'DocumentFolderMissingError';
-    this.kind = kind;
-    this.dir = dir;
-  }
-}
-
-export class DocumentExistsError extends Error {
-  constructor(readonly fileName: string) {
-    super(`document already exists: ${fileName}`);
-    this.name = 'DocumentExistsError';
-  }
-}
-
-export class DocumentNotFoundError extends Error {
-  constructor(readonly fileName: string) {
-    super(`document not found: ${fileName}`);
-    this.name = 'DocumentNotFoundError';
-  }
-}
 
 export class InvalidDocumentNameError extends Error {
   constructor() {
@@ -50,7 +30,7 @@ export class InvalidDocumentNameError extends Error {
   }
 }
 
-// A listed file could not be read for a reason other than having been deleted.
+// The stored file could not be read for a reason other than having been removed.
 export class DocumentFileReadError extends Error {
   readonly fileName: string;
   readonly code: string | undefined;
@@ -67,8 +47,9 @@ const ACCEPTED = /\.(pdf|docx)$/i;
 const isAcceptedName = (name: string): boolean =>
   ACCEPTED.test(name) && !name.startsWith('~$') && !name.startsWith('.');
 
-// A name that is already safe to use verbatim: no separators, no `..`, only allowed characters.
+// Only these characters, no separators and no `..`: a name that is safe to use as a file name.
 const SAFE_NAME = /^[A-Za-z0-9 ._()-]+$/;
+const isSafeName = (name: string): boolean => isAcceptedName(name) && SAFE_NAME.test(name) && !name.includes('..');
 
 // Cleans an uploaded file name. Returns null when it cannot be made into a valid .pdf/.docx name.
 export function sanitiseDocumentName(raw: string): string | null {
@@ -81,16 +62,25 @@ export function sanitiseDocumentName(raw: string): string | null {
     .replace(/[^A-Za-z0-9 ._()-]/g, '')
     .replace(/\.{2,}/g, '.');
   const name = `${stem}${ext}`;
-  if (stem.replace(/[. ]/g, '') === '' || !isAcceptedName(name)) return null;
+  if (stem.replace(/[. ]/g, '') === '' || !isSafeName(name)) return null;
   return name;
 }
 
-export interface DocumentFolders {
-  listDocuments(kind: DocumentKind): Promise<DocumentFile[]>;
-  // Exact name of an existing accepted file in the folder, or null. Never matches path-like names.
-  findDocument(kind: DocumentKind, name: string): Promise<string | null>;
-  writeDocument(kind: DocumentKind, name: string, bytes: Buffer, opts: { replace: boolean }): Promise<void>;
-  deleteDocument(kind: DocumentKind, name: string): Promise<void>;
+export interface DocumentStore {
+  // The one stored document of this kind, with its content; null when the slot is empty.
+  readDocument(kind: DocumentKind): Promise<StoredDocument | null>;
+  // Name and content hash of the stored document, without reading the document itself.
+  currentDocument(kind: DocumentKind): Promise<CurrentDocument | null>;
+  // Stores the document and removes the previous one of this kind. A failed write keeps the previous one.
+  saveDocument(kind: DocumentKind, name: string, bytes: Buffer): Promise<void>;
+}
+
+export type DocumentLog = (message: string, context: Record<string, unknown>) => void;
+
+export interface DocumentStoreOptions {
+  log?: DocumentLog;
+  // Test seam for the write of the new file.
+  writeFile?: (file: string, bytes: Buffer) => Promise<void>;
 }
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
@@ -101,129 +91,125 @@ async function sha256File(filePath: string): Promise<string> {
   return hash.digest('hex');
 }
 
-const hasPathTricks = (name: string): boolean => /[\/\0]/.test(name) || name.includes('..');
+// Which stored copy in the kind's folder is the current document. Switched with one atomic rename.
+const POINTER = '.current.json';
+const COPY_ID = /^[0-9a-f]{16}$/;
 
-export type DocumentLog = (message: string, context: Record<string, unknown>) => void;
+// The only module that touches the stored CVs and cover letters on disk.
+// Layout: <root>/<kind>/<copy id>/<file name>, plus <root>/<kind>/.current.json naming the current copy.
+// Each save writes a new copy, so the previous document is never touched until the switch is done.
+export function createDocumentStore(root: string, opts: DocumentStoreOptions = {}): DocumentStore {
+  const log = opts.log ?? (() => {});
+  const writeFile = opts.writeFile ?? ((file: string, bytes: Buffer) => fs.writeFile(file, bytes, { flag: 'wx' }));
+  const dirOf = (kind: DocumentKind) => path.join(root, kind);
+  // Saves of one kind run one after another, and reads wait for a save in progress, so a replace
+  // never races another replace and a read never sees a half-finished one (the worker is one process).
+  const queues = new Map<DocumentKind, Promise<unknown>>();
+  const settled = async (kind: DocumentKind): Promise<void> => {
+    await (queues.get(kind) ?? Promise.resolve()).catch(() => {});
+  };
 
-// The only module that touches the CV and cover letter folders on disk.
-export function createDocumentFolders(dirs: DocumentDirs, log: DocumentLog = () => {}): DocumentFolders {
-  async function readEntries(kind: DocumentKind) {
-    const dir = dirs[kind];
+  async function readPointer(kind: DocumentKind): Promise<Pointer | null> {
+    let raw: string;
     try {
-      return await fs.readdir(dir, { withFileTypes: true });
+      raw = await fs.readFile(path.join(dirOf(kind), POINTER), 'utf8');
     } catch (err) {
-      if (hasCode(err, 'ENOENT')) throw new DocumentFolderMissingError(kind, dir);
+      if (hasCode(err, 'ENOENT')) return null;
       throw err;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<Pointer>;
+      if (
+        typeof parsed.id !== 'string' || !COPY_ID.test(parsed.id) ||
+        typeof parsed.name !== 'string' || !isSafeName(parsed.name) ||
+        typeof parsed.contentHash !== 'string'
+      ) {
+        return null;
+      }
+      return { id: parsed.id, name: parsed.name, contentHash: parsed.contentHash };
+    } catch {
+      return null;
     }
   }
 
-  async function findDocument(kind: DocumentKind, name: string): Promise<string | null> {
-    if (name === '' || hasPathTricks(name) || !isAcceptedName(name)) return null;
-    const entries = await readEntries(kind);
-    return entries.some((e) => e.isFile() && e.name === name) ? name : null;
+  async function removeQuietly(file: string, kind: DocumentKind): Promise<void> {
+    try {
+      await fs.rm(file, { recursive: true, force: true });
+    } catch (err) {
+      log('document cleanup failed', { kind, code: (err as NodeJS.ErrnoException)?.code });
+    }
   }
 
-  // Safe names are used as-is; anything else must be an exact existing entry (e.g. a hand-placed file).
-  async function resolveName(kind: DocumentKind, name: string): Promise<string> {
-    if (isAcceptedName(name) && SAFE_NAME.test(name) && !name.includes('..')) return name;
-    const found = await findDocument(kind, name);
-    if (found === null) throw new InvalidDocumentNameError();
-    return found;
+  async function save(kind: DocumentKind, name: string, bytes: Buffer): Promise<void> {
+    if (!isSafeName(name)) throw new InvalidDocumentNameError();
+    const dir = dirOf(kind);
+    const id = randomBytes(8).toString('hex');
+    const copyDir = path.join(dir, id);
+    const pointerTmp = path.join(dir, `.pointer-${id}.tmp`);
+    try {
+      // 1. Write the new document as a new copy (temp file, then rename); the previous one is not touched.
+      await fs.mkdir(copyDir, { recursive: true });
+      const tmp = path.join(copyDir, '.upload.tmp');
+      await writeFile(tmp, bytes);
+      await fs.rename(tmp, path.join(copyDir, name));
+      // 2. Switch: one atomic rename of the pointer makes the new copy the current document.
+      await fs.writeFile(pointerTmp, JSON.stringify({ id, name, contentHash: sha256(bytes) }), { flag: 'wx' });
+      await fs.rename(pointerTmp, path.join(dir, POINTER));
+    } catch (err) {
+      await removeQuietly(copyDir, kind);
+      await removeQuietly(pointerTmp, kind);
+      throw err;
+    }
+    // 3. Remove the previous document (and anything left over from an interrupted save). The new
+    // document is already current, so a failed clean-up is only logged; the next save retries it.
+    let entries: string[] = [];
+    try {
+      entries = await fs.readdir(dir);
+    } catch (err) {
+      log('document cleanup failed', { kind, code: (err as NodeJS.ErrnoException)?.code });
+    }
+    for (const entry of entries) {
+      if (entry !== id && entry !== POINTER) await removeQuietly(path.join(dir, entry), kind);
+    }
   }
 
   return {
-    findDocument,
-
-    async listDocuments(kind) {
-      const dir = dirs[kind];
-      const names = (await readEntries(kind))
-        .filter((e) => e.isFile())
-        .map((e) => e.name)
-        .filter(isAcceptedName)
-        .sort();
-      const files = await Promise.all(
-        names.map(async (name): Promise<DocumentFile | null> => {
-          const filePath = path.join(dir, name);
-          try {
-            const stat = await fs.stat(filePath);
-            const modifiedAt = stat.mtime.toISOString();
-            // Oversize files are hashed by streaming and never held in memory.
-            if (stat.size > MAX_DOCUMENT_BYTES) {
-              return { name, bytes: null, contentHash: await sha256File(filePath), modifiedAt };
-            }
-            const bytes = await fs.readFile(filePath);
-            if (bytes.length > MAX_DOCUMENT_BYTES) return { name, bytes: null, contentHash: sha256(bytes), modifiedAt };
-            return { name, bytes, contentHash: sha256(bytes), modifiedAt };
-          } catch (err) {
-            if (hasCode(err, 'ENOENT')) return null;
-            throw new DocumentFileReadError(name, err as NodeJS.ErrnoException);
-          }
-        }),
-      );
-      return files.filter((f): f is DocumentFile => f !== null);
-    },
-
-    async writeDocument(kind, rawName, bytes, { replace }) {
-      const dir = dirs[kind];
-      const name = await resolveName(kind, rawName);
-      const target = path.join(dir, name);
-      const tmp = path.join(dir, `.upload-${randomBytes(8).toString('hex')}.tmp`);
+    currentDocument: async (kind) => {
+      await settled(kind);
+      const current = await readPointer(kind);
+      if (!current) return null;
       try {
-        await fs.writeFile(tmp, bytes, { flag: 'wx' });
+        await fs.stat(path.join(dirOf(kind), current.id, current.name));
       } catch (err) {
-        if (hasCode(err, 'ENOENT')) throw new DocumentFolderMissingError(kind, dir);
+        if (hasCode(err, 'ENOENT')) return null;
         throw err;
       }
-      const removeTmp = async (): Promise<void> => {
-        try {
-          await fs.rm(tmp, { force: true });
-        } catch (err) {
-          log('temp file cleanup failed', { kind, code: (err as NodeJS.ErrnoException)?.code });
-        }
-      };
+      return { name: current.name, contentHash: current.contentHash };
+    },
+
+    async readDocument(kind) {
+      await settled(kind);
+      const current = await readPointer(kind);
+      if (!current) return null;
+      const { name } = current;
+      const filePath = path.join(dirOf(kind), current.id, name);
       try {
-        if (replace) {
-          await fs.rename(tmp, target);
-          return;
-        }
-        // link/copy with EXCL fail with EEXIST instead of overwriting, so concurrent uploads cannot clobber a file.
-        try {
-          await fs.link(tmp, target);
-        } catch (err) {
-          if (hasCode(err, 'EEXIST')) throw new DocumentExistsError(name);
-          // Some bind mounts (Docker Desktop on Windows) do not support hard links.
-          if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].some((c) => hasCode(err, c))) throw err;
-          try {
-            await fs.copyFile(tmp, target, fsConstants.COPYFILE_EXCL);
-          } catch (copyErr) {
-            if (hasCode(copyErr, 'EEXIST')) throw new DocumentExistsError(name);
-            throw copyErr;
-          }
-        }
-        await removeTmp();
+        const stat = await fs.stat(filePath);
+        // Oversize files are hashed by streaming and never held in memory.
+        if (stat.size > MAX_DOCUMENT_BYTES) return { name, bytes: null, contentHash: await sha256File(filePath) };
+        const bytes = await fs.readFile(filePath);
+        if (bytes.length > MAX_DOCUMENT_BYTES) return { name, bytes: null, contentHash: sha256(bytes) };
+        return { name, bytes, contentHash: sha256(bytes) };
       } catch (err) {
-        await removeTmp();
-        throw err;
+        if (hasCode(err, 'ENOENT')) return null;
+        throw new DocumentFileReadError(name, err as NodeJS.ErrnoException);
       }
     },
 
-    async deleteDocument(kind, rawName) {
-      const name = await resolveName(kind, rawName);
-      const target = path.join(dirs[kind], name);
-      let stat;
-      try {
-        stat = await fs.lstat(target);
-      } catch (err) {
-        if (hasCode(err, 'ENOENT')) throw new DocumentNotFoundError(name);
-        throw err;
-      }
-      if (!stat.isFile()) throw new DocumentNotFoundError(name);
-      try {
-        await fs.unlink(target);
-      } catch (err) {
-        if (hasCode(err, 'ENOENT')) throw new DocumentNotFoundError(name);
-        throw err;
-      }
+    saveDocument(kind, name, bytes) {
+      const run = settled(kind).then(() => save(kind, name, bytes));
+      queues.set(kind, run);
+      return run;
     },
   };
 }

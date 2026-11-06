@@ -4,28 +4,25 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { makeDocx } from '../helpers/makeDocx';
 import {
+  DOCUMENTS_DIR,
   N8N_URL,
   ROOT,
   SYNC_HEADERS,
   compose,
+  composeOutput,
   db,
   makePdf,
-  removeDocument,
+  putDocument,
   resetState,
+  storedDocuments,
   stub,
-  touchDocument,
   triggerDocumentsSync,
-  writeDocument,
 } from './lib';
 
+const OWNER = '00000000-0000-0000-0000-000000000001';
 const PDF = 'application/pdf';
 const normalise = (s: string) => s.replace(/\r\n/g, '\n').trim();
 const prompt = (name: string) => readFileSync(join(ROOT, 'n8n', 'prompts', name), 'utf8');
-const JAN = new Date('2026-01-01T00:00:00Z');
-const FEB = new Date('2026-02-01T00:00:00Z');
-const MAR = new Date('2026-03-01T00:00:00Z');
-const CV_IGNORED = { code: 'extra_file_ignored', detail: 'Only one CV is used; this file is ignored.' };
-const bigPdf = () => Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x20)]);
 
 const docRow = async (sourceRef: string) =>
   (await db.query(`select * from base_documents where source_ref=$1`, [sourceRef]))[0];
@@ -45,7 +42,10 @@ describe('base documents sync', () => {
   });
 
   test('webhook without X-JobHunter header is refused and runs nothing', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('CV A'));
+    await putDocument('cv', 'a.pdf', makePdf('CV A'));
+    // A run that got past the check would insert this stored document again and call Claude.
+    await db.query('truncate cost_log, base_documents');
+    await stub.reset();
     const res = await fetch(`${N8N_URL}/webhook/api/documents/sync`, { method: 'POST' });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'missing_jobhunter_header' });
@@ -53,9 +53,8 @@ describe('base documents sync', () => {
     expect(await stub.requests()).toEqual([]);
   });
 
-  test('new PDF CV is analysed, checked and active', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('CV A'));
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 1 });
+  test('an upload into the empty slot is analysed, checked and active straight away', async () => {
+    await putDocument('cv', 'a.pdf', makePdf('CV A'));
     const doc = await docRow('a.pdf');
     expect(doc).toMatchObject({
       kind: 'cv',
@@ -66,10 +65,8 @@ describe('base documents sync', () => {
       analysis_error: null,
       source_removed: false,
     });
-    expect(doc).not.toHaveProperty('label');
-    expect(doc).not.toHaveProperty('label_suggested');
     expect(doc.structured.workRights).toBeNull();
-    expect(doc.warnings).toContainEqual(expect.objectContaining({ code: 'missing_work_rights' }));
+    expect(doc.warnings).toEqual([expect.objectContaining({ code: 'missing_work_rights' })]);
     const costs = await db.query(`select * from cost_log`);
     expect(costs).toHaveLength(1);
     expect(costs[0]).toMatchObject({
@@ -81,53 +78,112 @@ describe('base documents sync', () => {
       output_tokens: 100,
     });
     expect(Number(costs[0].cost_usd)).toBeCloseTo(0.006, 6); // 1000 x $4 + 100 x $20 per 1M
+    expect(storedDocuments('cv')).toEqual(['a.pdf']);
   });
 
   test('cost is priced by the model that answered', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('CV A STUB_MODEL:claude-sonnet-5-5'));
-    await triggerDocumentsSync();
+    await putDocument('cv', 'a.pdf', makePdf('CV A STUB_MODEL:claude-sonnet-5-5'));
     const [cost] = await db.query(`select model, cost_usd from cost_log`);
     expect(cost.model).toBe('claude-sonnet-5-5');
     expect(Number(cost.cost_usd)).toBeCloseTo(0.003, 6); // 1000 x $2 + 100 x $10 per 1M
   });
 
   test('an answering model without a price is costed at the requested model price', async () => {
-    writeDocument('cover_letter', 'cl.pdf', makePdf('CL STUB_MODEL:claude-unpriced-1'));
-    await triggerDocumentsSync();
+    await putDocument('cover_letter', 'cl.pdf', makePdf('CL STUB_MODEL:claude-unpriced-1'));
     const [cost] = await db.query(`select model, cost_usd from cost_log`);
     expect(cost.model).toBe('claude-unpriced-1');
     expect(Number(cost.cost_usd)).toBeCloseTo(0.006, 6);
   });
 
   test('unchanged document is not analysed again', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('CV A'));
-    await triggerDocumentsSync();
+    await putDocument('cv', 'a.pdf', makePdf('CV A'));
+    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 0 });
     expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 0 });
     expect(await stub.requests()).toHaveLength(1);
   });
 
   test('overlapping syncs do not double-call Claude', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('CV A'));
+    await stub.failPurpose('analyse_cv');
+    await putDocument('cv', 'a.pdf', makePdf('CV A'));
+    await stub.reset();
+    // Past the 1-minute wait after attempt 1: both runs want to retry it, only one may.
+    await db.query(`update base_documents set analysis_claimed_at = analysis_claimed_at - interval '10 minutes'`);
     await Promise.all([triggerDocumentsSync(), triggerDocumentsSync()]);
     expect((await stub.requests()).map(purposeOf)).toEqual(['purpose: analyse_cv']);
-    expect(await db.query(`select id from base_documents`)).toHaveLength(1);
+    expect(await docRow('a.pdf')).toMatchObject({ analysis_status: 'done', analysis_attempts: 2 });
   });
 
-  test('changed file is analysed again', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('v1'));
-    await triggerDocumentsSync();
+  test('replace with the same name: same row, old content gone, the new content analysed', async () => {
+    await putDocument('cv', 'a.pdf', makePdf('v1'));
     const before = await docRow('a.pdf');
-    writeDocument('cv', 'a.pdf', makePdf('v2'));
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 1 });
+    await putDocument('cv', 'a.pdf', makePdf('v2'));
     const after = await docRow('a.pdf');
     expect(after).toMatchObject({ id: before.id, active: true, analysis_status: 'done', analysis_attempts: 1 });
     expect(after.content_hash).not.toBe(before.content_hash);
     expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('v1'), expect.stringContaining('v2')]);
+    expect(storedDocuments('cv')).toEqual(['a.pdf']);
+    expect(await db.query(`select id from base_documents`)).toHaveLength(1);
+  });
+
+  test('replace with a different name: the old document is gone and retired, the new one active and analysed', async () => {
+    await putDocument('cv', 'old.pdf', makePdf('OLD CV'));
+    await putDocument('cv', 'new.pdf', makePdf('NEW CV'));
+    expect(storedDocuments('cv')).toEqual(['new.pdf']);
+    expect(await docRow('new.pdf')).toMatchObject({ active: true, source_removed: false, analysis_status: 'done' });
+    expect(await docRow('old.pdf')).toMatchObject({ active: false, source_removed: true, analysis_status: 'done' });
+    expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('OLD CV'), expect.stringContaining('NEW CV')]);
+    expect(await db.query(`select source_ref from base_documents where active`)).toEqual([{ source_ref: 'new.pdf' }]);
+  });
+
+  test('uploading the same file again does not analyse it again', async () => {
+    const bytes = makePdf('CV A');
+    await putDocument('cv', 'a.pdf', bytes);
+    await putDocument('cv', 'a.pdf', bytes);
+    expect(await stub.requests()).toHaveLength(1);
+    expect(await docRow('a.pdf')).toMatchObject({ active: true, analysis_status: 'done', analysis_attempts: 1 });
+  });
+
+  test('uploading an earlier document again makes it current and reuses its analysis', async () => {
+    const first = makePdf('FIRST CV');
+    await putDocument('cv', 'first.pdf', first);
+    await putDocument('cv', 'second.pdf', makePdf('SECOND CV'));
+    await putDocument('cv', 'first.pdf', first);
+    expect(storedDocuments('cv')).toEqual(['first.pdf']);
+    expect(await docRow('first.pdf')).toMatchObject({ active: true, source_removed: false, analysis_status: 'done' });
+    expect(await docRow('second.pdf')).toMatchObject({ active: false, source_removed: true });
+    expect(await stub.requests()).toHaveLength(2);
+  });
+
+  test('a document that was replaced before its analysis finished is analysed when it comes back', async () => {
+    await stub.failPurpose('analyse_cv');
+    const bytes = makePdf('CV A');
+    await putDocument('cv', 'a.pdf', bytes);
+    await stub.reset();
+    await putDocument('cv', 'b.pdf', makePdf('CV B'));
+    await putDocument('cv', 'a.pdf', bytes);
+    expect(await docRow('a.pdf')).toMatchObject({ active: true, analysis_status: 'done', analysis_attempts: 1 });
+  });
+
+  test('replacing the CV leaves the cover letter alone', async () => {
+    await putDocument('cv', 'cv.pdf', makePdf('CV ONE'));
+    await putDocument('cover_letter', 'cl.pdf', makePdf('CL ONE'));
+    const letter = await docRow('cl.pdf');
+    await putDocument('cv', 'cv2.pdf', makePdf('CV TWO'));
+    expect(storedDocuments('cover_letter')).toEqual(['cl.pdf']);
+    expect(await docRow('cl.pdf')).toMatchObject({ id: letter.id, active: true, source_removed: false, analysis_status: 'done' });
+    expect(await db.query(`select kind, source_ref from base_documents where active order by kind`)).toEqual([
+      { kind: 'cover_letter', source_ref: 'cl.pdf' },
+      { kind: 'cv', source_ref: 'cv2.pdf' },
+    ]);
+    expect((await stub.requests()).map(purposeOf)).toEqual([
+      'purpose: analyse_cv',
+      'purpose: analyse_cover_letter',
+      'purpose: analyse_cv',
+    ]);
   });
 
   test('cover letter uses cover-letter prompt', async () => {
-    writeDocument('cover_letter', 'cl.docx', await makeDocx([{ text: 'Dear Ms Li,' }, { text: 'I would like to apply.' }]));
-    await triggerDocumentsSync();
+    await putDocument('cover_letter', 'cl.docx', await makeDocx([{ text: 'Dear Ms Li,' }, { text: 'I would like to apply.' }]));
     const doc = await docRow('cl.docx');
     expect(doc).toMatchObject({ kind: 'cover_letter', active: true, analysis_status: 'done' });
     expect(doc.structured).toMatchObject({ previousTarget: { company: 'Stub Company' }, toneNotes: expect.any(String) });
@@ -143,8 +199,7 @@ describe('base documents sync', () => {
 
   test('request is a PDF document block and sends fallbacks for opus', async () => {
     const bytes = makePdf('CV A');
-    writeDocument('cv', 'a.pdf', bytes);
-    await triggerDocumentsSync();
+    await putDocument('cv', 'a.pdf', bytes);
     const [{ headers, body }] = await stub.requestLog();
     expect(headers['anthropic-beta']).toBe('server-side-fallback-2026-07-01');
     expect(headers['anthropic-version']).toBe('2026-10-21');
@@ -166,118 +221,17 @@ describe('base documents sync', () => {
     expect(body.messages[body.messages.length - 1].role).toBe('user'); // no prefill
   });
 
-  test('two CVs: only the newest is analysed, the other is ignored', async () => {
-    writeDocument('cv', 'old.pdf', makePdf('OLD CV'), JAN);
-    writeDocument('cv', 'new.pdf', makePdf('NEW CV'), FEB);
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 1 });
-    const reqs = await stub.requests();
-    expect(reqs.map(purposeOf)).toEqual(['purpose: analyse_cv']);
-    expect(sentText(reqs[0])).toContain('NEW CV');
-    expect(await docRow('new.pdf')).toMatchObject({ active: true, analysis_status: 'done' });
-    expect(await docRow('old.pdf')).toMatchObject({
-      active: false,
-      analysis_status: 'skipped',
-      analysis_attempts: 0,
-      structured: null,
-      warnings: [CV_IGNORED],
-    });
-    // Nothing changed in the folders: nothing more is sent.
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 0 });
-    expect(await stub.requests()).toHaveLength(1);
-  });
-
-  test('same modification time: the first name in order is used', async () => {
-    writeDocument('cv', 'b.pdf', makePdf('CV B'), JAN);
-    writeDocument('cv', 'a.pdf', makePdf('CV A'), JAN);
-    await triggerDocumentsSync();
-    expect((await docRow('a.pdf')).active).toBe(true);
-    expect((await docRow('b.pdf')).active).toBe(false);
-  });
-
-  test('newer CV takes over', async () => {
-    writeDocument('cv', 'first.pdf', makePdf('FIRST CV'), JAN);
-    writeDocument('cv', 'second.pdf', makePdf('SECOND CV'), FEB);
-    await triggerDocumentsSync();
-    expect((await docRow('second.pdf')).structured).not.toBeNull();
-    touchDocument('cv', 'first.pdf', MAR); // same content, now the newest file
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 1 });
-    const reqs = await stub.requests();
-    expect(reqs.map(sentText)).toEqual([expect.stringContaining('SECOND CV'), expect.stringContaining('FIRST CV')]);
-    expect(await docRow('first.pdf')).toMatchObject({
-      active: true,
-      analysis_status: 'done',
-      analysis_attempts: 1,
-      warnings: [expect.objectContaining({ code: 'missing_work_rights' })],
-    });
-    // The one no longer used keeps no analysis facts and no analysis warnings.
-    expect(await docRow('second.pdf')).toMatchObject({
-      active: false,
-      analysis_status: 'skipped',
-      structured: null,
-      warnings: [CV_IGNORED],
-    });
-  });
-
-  test('CV and cover letter are each picked on their own', async () => {
-    writeDocument('cv', 'cv-old.pdf', makePdf('CV OLD'), JAN);
-    writeDocument('cv', 'cv-new.pdf', makePdf('CV NEW'), FEB);
-    writeDocument('cover_letter', 'cl-new.pdf', makePdf('CL NEW'), MAR);
-    writeDocument('cover_letter', 'cl-old.pdf', makePdf('CL OLD'), JAN);
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 4, analysed: 2 });
-    const sent = (await stub.requests()).map(sentText).join('\n');
-    expect(sent).toContain('CV NEW');
-    expect(sent).toContain('CL NEW');
-    expect(sent).not.toContain('OLD');
-    expect(await db.query(`select source_ref from base_documents where active order by kind`)).toEqual([
-      { source_ref: 'cl-new.pdf' },
-      { source_ref: 'cv-new.pdf' },
-    ]);
-    expect((await docRow('cl-old.pdf')).warnings).toEqual([
-      { code: 'extra_file_ignored', detail: 'Only one cover letter is used; this file is ignored.' },
-    ]);
-  });
-
-  test('removing the active CV makes the remaining one active', async () => {
-    writeDocument('cv', 'old.pdf', makePdf('OLD CV'), JAN);
-    writeDocument('cv', 'new.pdf', makePdf('NEW CV'), FEB);
-    await triggerDocumentsSync();
-    removeDocument('cv', 'new.pdf');
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 1, analysed: 1 });
-    expect(await docRow('new.pdf')).toMatchObject({ source_removed: true, active: false });
-    expect(await docRow('old.pdf')).toMatchObject({
-      active: true,
-      analysis_status: 'done',
-      warnings: [expect.objectContaining({ code: 'missing_work_rights' })],
-    });
-    expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('NEW CV'), expect.stringContaining('OLD CV')]);
-  });
-
-  test('an unreadable newest file is ignored and the readable one is used', async () => {
-    writeDocument('cv', 'big.pdf', bigPdf(), FEB);
-    writeDocument('cv', 'ok.pdf', makePdf('OK CV'), JAN);
-    await triggerDocumentsSync();
-    expect(await docRow('ok.pdf')).toMatchObject({ active: true, analysis_status: 'done' });
-    const big = await docRow('big.pdf');
-    expect(big).toMatchObject({ active: false, analysis_status: 'skipped', structured: null });
-    expect(big.warnings.map((w: any) => w.code)).toEqual(['unreadable_file', 'extra_file_ignored']);
-    expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('OK CV')]);
-  });
-
   test('no conflict check is ever called', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('CV A'), JAN);
-    writeDocument('cv', 'b.pdf', makePdf('CV B'), FEB);
-    await triggerDocumentsSync();
-    touchDocument('cv', 'a.pdf', MAR);
-    await triggerDocumentsSync();
+    await putDocument('cv', 'a.pdf', makePdf('CV A'));
+    await putDocument('cv', 'b.pdf', makePdf('CV B'));
     await triggerDocumentsSync();
     expect((await stub.requests()).map(purposeOf)).toEqual(['purpose: analyse_cv', 'purpose: analyse_cv']);
     expect(await db.query(`select to_regclass('base_document_checks') as t`)).toEqual([{ t: null }]);
   });
 
   test('a failed CV does not block the cover letter', async () => {
-    writeDocument('cv', 'bad.pdf', makePdf('STUB_FAIL please'));
-    writeDocument('cover_letter', 'cl.pdf', makePdf('CL'));
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 2, analysed: 1 });
+    await putDocument('cv', 'bad.pdf', makePdf('STUB_FAIL please'));
+    await putDocument('cover_letter', 'cl.pdf', makePdf('CL'));
     expect(await docRow('bad.pdf')).toMatchObject({
       active: true,
       analysis_status: 'failed',
@@ -289,16 +243,14 @@ describe('base documents sync', () => {
   });
 
   test('refusal counts as failure and its cost is logged', async () => {
-    writeDocument('cv', 'r.pdf', makePdf('STUB_REFUSE please'));
-    await triggerDocumentsSync();
+    await putDocument('cv', 'r.pdf', makePdf('STUB_REFUSE please'));
     const doc = await docRow('r.pdf');
     expect(doc).toMatchObject({ analysis_status: 'failed', analysis_error: expect.stringMatching(/declined/i), structured: null });
     expect(await db.query(`select base_document_id from cost_log`)).toEqual([{ base_document_id: doc.id }]);
   });
 
   test('failed analysis is retried with backoff then gives up', async () => {
-    writeDocument('cv', 'fail.pdf', makePdf('STUB_FAIL please'));
-    await triggerDocumentsSync();
+    await putDocument('cv', 'fail.pdf', makePdf('STUB_FAIL please'));
     // Within a minute of attempt 1: not retried.
     await triggerDocumentsSync();
     expect(await stub.requests()).toHaveLength(1);
@@ -310,11 +262,10 @@ describe('base documents sync', () => {
     expect(await stub.requests()).toHaveLength(3);
   });
 
-  test('over-5 MB file is skipped without a Claude call', async () => {
-    writeDocument('cv', 'big.pdf', bigPdf());
-    await triggerDocumentsSync();
-    expect(await docRow('big.pdf')).toMatchObject({
-      active: false,
+  test('a Word file with no text is the current document but is never sent to Claude', async () => {
+    await putDocument('cv', 'empty.docx', await makeDocx([{ text: '   ' }]));
+    expect(await docRow('empty.docx')).toMatchObject({
+      active: true,
       analysis_status: 'skipped',
       warnings: [expect.objectContaining({ code: 'unreadable_file' })],
       analysis_error: expect.any(String),
@@ -323,54 +274,27 @@ describe('base documents sync', () => {
     expect(await stub.requests()).toEqual([]);
   });
 
-  test('removed file is marked removed and is no longer active', async () => {
-    writeDocument('cv', 'a.pdf', makePdf('CV A'));
-    await triggerDocumentsSync();
-    await stub.reset();
-    removeDocument('cv', 'a.pdf');
-    expect(await triggerDocumentsSync()).toEqual({ ok: true, scanned: 0, analysed: 0 });
-    expect(await docRow('a.pdf')).toMatchObject({ source_removed: true, active: false, analysis_status: 'done' });
-    expect(await stub.requests()).toEqual([]);
+  test('documents are only kept in the worker volume, never in a host folder', () => {
+    const id = composeOutput(['ps', '-q', 'worker']).trim();
+    const mounts: { Type: string; Destination: string; Name?: string }[] = JSON.parse(
+      execFileSync('docker', ['inspect', '--format', '{{json .Mounts}}', id], { encoding: 'utf8' }),
+    );
+    const byTarget = Object.fromEntries(mounts.map((m) => [m.Destination, m]));
+    expect(Object.keys(byTarget).sort()).toEqual(['/app/config', DOCUMENTS_DIR, '/data/joblisting']);
+    expect(byTarget[DOCUMENTS_DIR]).toMatchObject({ Type: 'volume', Name: 'jobhunter-test_documents_test_data' });
   });
 
-  describe('missing cv folder', () => {
-    const ALT_WORKER = 'jobhunter-test-worker-no-cv-folder';
-    const removeAltWorker = () => {
-      try {
-        execFileSync('docker', ['rm', '-f', ALT_WORKER], { stdio: 'ignore' });
-      } catch {
-        // not running
-      }
-    };
-
+  describe('worker down', () => {
     afterEach(() => {
-      removeAltWorker();
       compose(['up', '-d', '--wait', 'worker']);
     });
 
-    test('missing cv folder stops the run, nothing changed', async () => {
-      writeDocument('cv', 'a.pdf', makePdf('CV A'));
-      await triggerDocumentsSync();
+    test('a failed read of the storage stops the run, nothing changed', async () => {
+      await putDocument('cv', 'a.pdf', makePdf('CV A'));
       await stub.reset();
-      // A run that got past the scan would claim this and call Claude, or mark it removed.
+      // A run that got past the read would claim this and call Claude, or retire it.
       await db.query(`update base_documents set analysis_status='pending'`);
       compose(['stop', 'worker']);
-      // The real worker image, but its CV folder does not exist.
-      execFileSync('docker', [
-        'run', '-d', '--rm', '--name', ALT_WORKER, '--network', 'jobhunter-test_default', '--network-alias', 'worker',
-        '-e', 'DATABASE_URL=postgres://jobhunter:test@postgres:5432/jobhunter',
-        '-e', 'JOBLISTING_DIR=/data/joblisting', '-e', 'CV_DIR=/data/no-such-cv-folder', '-e', 'COVER_LETTER_DIR=/tmp',
-        'jobhunter-test-worker',
-      ], { stdio: 'ignore' });
-      let status = '';
-      for (let i = 0; i < 100 && status !== '503'; i++) {
-        const out: string = execFileSync('docker', ['compose', '-f', join(ROOT, 'docker-compose.test.yml'), 'exec', '-T', 'n8n', 'node', '-e',
-          `fetch('http://worker:3001/documents/scan',{method:'POST'}).then(r=>console.log(r.status)).catch(()=>console.log(0))`], { encoding: 'utf8' });
-        status = out.trim();
-        if (status !== '503') await new Promise((r) => setTimeout(r, 300));
-      }
-      expect(status).toBe('503'); // n8n really reaches a worker reporting document_folder_missing
-
       const res = await fetch(`${N8N_URL}/webhook/api/documents/sync`, { method: 'POST', headers: SYNC_HEADERS });
       expect(res.status).toBe(502);
       expect(await res.json()).toEqual({ ok: false, error: 'scan_failed' });
@@ -440,31 +364,81 @@ describe('base documents sync', () => {
       expect(nodeByName('Ask Claude to analyse').parameters.options.timeout).toBe(280_000);
     });
 
-    test('active document rule: newest readable file per kind, ties by name', () => {
-      const pick = (documents: object[]) =>
-        new Function('$', nodeByName('Pick the active documents').parameters.jsCode)(() => ({
-          first: () => ({ json: { documents } }),
-        }))[0].json.active;
-      const doc = (kind: string, sourceRef: string, modifiedAt: string, warnings: string[] = []) => ({
-        kind, sourceRef, modifiedAt, warnings,
-      });
-      expect(
-        pick([
-          doc('cv', 'b.pdf', '2026-01-01T00:00:00.000Z'),
-          doc('cv', 'a.pdf', '2026-01-01T00:00:00.000Z'),
-          doc('cv', 'z.pdf', '2025-12-01T00:00:00.000Z'),
-          doc('cv', 'big.pdf', '2026-05-01T00:00:00.000Z', ['unreadable_file']),
-          doc('cover_letter', 'old.docx', '2026-01-01T00:00:00.000Z'),
-          doc('cover_letter', 'new.docx', '2026-04-01T00:00:00.000Z'),
-        ]),
-      ).toEqual([
-        { kind: 'cv', sourceRef: 'a.pdf' },
-        { kind: 'cover_letter', sourceRef: 'new.docx' },
-      ]);
-      expect(pick([doc('cv', 'big.pdf', '2026-05-01T00:00:00.000Z', ['unreadable_file'])])).toEqual([]);
-      expect(pick([])).toEqual([]);
-      // Only the active document is ever claimed for analysis.
+    test('only the active document is claimed, and documents are activated after the old one is retired', () => {
       expect(nodeByName('Claim pending analyses').parameters.query).toMatch(/and d\.active\b/);
+      expect(parentsOf('Activate stored documents')).toEqual(['Retire replaced documents']);
+      expect(ancestorsOf('Give up on stuck analyses').has('Activate stored documents')).toBe(true);
+    });
+
+    test('no folder scan, newest-file or ignored-file rule is left', () => {
+      expect(JSON.stringify(wf)).not.toMatch(/extra_file_ignored|modifiedAt|newest|folder/i);
+    });
+
+    test('the schedule reads the documents only when something is due', () => {
+      expect(parentsOf('Read stored documents').sort()).toEqual(['Has X-JobHunter header?', 'Run needed?']);
+      expect(parentsOf('Run needed?')).toEqual(['Anything to do?']);
+      expect(parentsOf('Anything to do?')).toEqual(['Worker answered?']);
+      expect(parentsOf('Worker answered?')).toEqual(['List stored documents']);
+      expect(parentsOf('List stored documents')).toEqual(['Schedule enabled?']);
+      expect(nodeByName('List stored documents').parameters).toMatchObject({ method: 'GET', url: '={{ $env.WORKER_URL }}/documents' });
+      // Only the "true" branches go on.
+      expect(wf.connections['Run needed?'].main[1]).toEqual([]);
+      expect(wf.connections['Worker answered?'].main[1]).toEqual([]);
+    });
+
+    describe('"Anything to do?" query', () => {
+      const due = async (stored: { kind: string; sourceRef: string; contentHash: string }[]) =>
+        (await db.query(nodeByName('Anything to do?').parameters.query, [OWNER, JSON.stringify(stored)]))[0].due;
+      const insert = (over: Record<string, unknown>) =>
+        db.query(
+          `insert into base_documents (owner_id, kind, source_ref, content_hash, media_type, analysis_status,
+                                       analysis_attempts, analysis_claimed_at, active, source_removed)
+           values ($1, $2, $3, $4, 'application/pdf', $5, $6, $7, $8, $9)`,
+          [OWNER, over.kind ?? 'cv', over.ref ?? 'a.pdf', over.hash ?? 'h1', over.status ?? 'done', over.attempts ?? 1,
+           over.claimedAt ?? null, over.active ?? true, over.removed ?? false],
+        );
+      const CV = { kind: 'cv', sourceRef: 'a.pdf', contentHash: 'h1' };
+      beforeEach(async () => {
+        await resetState();
+      });
+
+      test('nothing stored and nothing in the database: not due', async () => {
+        expect(await due([])).toBe(false);
+      });
+
+      test('an analysed current document that is still stored: not due', async () => {
+        await insert({});
+        await insert({ ref: 'old.pdf', hash: 'h0', active: false, removed: true });
+        expect(await due([CV])).toBe(false);
+      });
+
+      test('a stored document whose sync did not run, a changed one, or a missing one: due', async () => {
+        expect(await due([CV])).toBe(true);
+        await insert({});
+        expect(await due([{ ...CV, contentHash: 'h2' }])).toBe(true);
+        expect(await due([])).toBe(true);
+      });
+
+      test('analyses: pending, failed past its wait, stuck with attempts left are due; others not', async () => {
+        await insert({ status: 'pending', attempts: 0 });
+        expect(await due([CV])).toBe(true);
+        await db.query(`update base_documents set analysis_status='failed', analysis_attempts=1, analysis_claimed_at=now()`);
+        expect(await due([CV])).toBe(false);
+        await db.query(`update base_documents set analysis_claimed_at=now() - interval '2 minutes'`);
+        expect(await due([CV])).toBe(true);
+        await db.query(`update base_documents set analysis_attempts=2`);
+        expect(await due([CV])).toBe(false);
+        await db.query(`update base_documents set analysis_attempts=3, analysis_claimed_at=now() - interval '1 hour'`);
+        expect(await due([CV])).toBe(false);
+        await db.query(`update base_documents set analysis_status='in_progress', analysis_attempts=2`);
+        expect(await due([CV])).toBe(true);
+      });
+
+      test('gives up on a stuck analysis with all attempts used', async () => {
+        await insert({ status: 'in_progress', attempts: 3, claimedAt: new Date(Date.now() - 10 * 60_000) });
+        expect(await due([CV])).toBe(false);
+        expect(await docRow('a.pdf')).toMatchObject({ analysis_status: 'failed', analysis_error: expect.stringMatching(/3 attempts/) });
+      });
     });
 
     test('saves only apply to the claim made by this run', () => {
@@ -522,5 +496,17 @@ describe('shipped workflows', () => {
       // Failed runs are still kept for debugging.
       expect(settings.saveDataErrorExecution ?? 'all', file).toBe('all');
     }
+  });
+
+  test('no workflow refers to the removed document folders, ignored files or delete', () => {
+    for (const file of files) {
+      const text = readFileSync(join(dir, file), 'utf8');
+      expect(text, file).not.toMatch(/extra_file_ignored|CV_DIR|COVER_LETTER_DIR|PersonalDetails|\/data\/cv|cover-letter folder/);
+    }
+    const api = JSON.parse(readFileSync(join(dir, 'documents-api.json'), 'utf8'));
+    expect(api.nodes.filter((n: any) => n.type === 'n8n-nodes-base.webhook').map((n: any) => n.parameters.httpMethod).sort()).toEqual([
+      'GET',
+      'POST',
+    ]);
   });
 });

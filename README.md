@@ -19,10 +19,10 @@ You need Docker Desktop (running) and Git Bash. Run every command below from the
 
 1. Copy the settings file: `cp .env.example .env`
 2. Open `.env` and set:
-   - `ANTHROPIC_API_KEY` to your key. The other keys (`CV_DIR`, `COVER_LETTER_DIR`, `ANALYSE_MODEL`, `SCORE_MODEL`, `EXTRACT_MODEL`, `JOBLISTING_DIR`) already have working defaults.
+   - `ANTHROPIC_API_KEY` to your key. The other keys (`ANALYSE_MODEL`, `SCORE_MODEL`, `EXTRACT_MODEL`, `JOBLISTING_DIR`) already have working defaults.
    - `POSTGRES_PASSWORD` and `N8N_ENCRYPTION_KEY` to your own random values (replace `change-me`).
    - Leave `N8N_OWNER_EMAIL` and `N8N_OWNER_PASSWORD` empty; the bootstrap fills them in.
-3. Create the folders: `mkdir -p Joblisting PersonalDetailsCV PersonalDetailsCoverLetter` (or the folders you set in `JOBLISTING_DIR`, `CV_DIR`, `COVER_LETTER_DIR`). They must exist before you start the stack; see Where to put job files.
+3. Create the job folder: `mkdir -p Joblisting` (or the folder you set in `JOBLISTING_DIR`). It must exist before you start the stack; see Where to put job files.
 4. Start everything: `docker compose up -d --build`
 5. Load the credentials and workflows into n8n: `bash scripts/n8n-bootstrap.sh`
 
@@ -43,25 +43,22 @@ The folder must exist before `docker compose up`. The worker mount is declared w
 - The folder is checked every 60 seconds. A new file becomes a card, an edited file is read again, and a deleted or renamed file keeps its card but shows "Source file removed".
 - Word's temporary lock files (names starting with `~$`) are ignored.
 - If the folder is missing or cannot be read, the sync fails loudly and changes nothing. It never marks jobs as removed because of a broken scan.
-- `Joblisting/`, `PersonalDetailsCV/`, `PersonalDetailsCoverLetter/` and `.env` are git-ignored, so personal data is never committed.
+- `Joblisting/`, `.env` and the old `PersonalDetailsCV/` / `PersonalDetailsCoverLetter/` folders are git-ignored, so personal data is never committed.
 
 ## My documents (your CV and cover letter)
 
-JobHunter uses **one** base CV and **one** base cover letter. Open http://localhost:8080/documents (**My documents** in the top menu). There are two slots, one for the CV and one for the cover letter.
+JobHunter uses **one** base CV and **one** base cover letter, and they only come in through the app. Open http://localhost:8080/documents (**My documents** in the top menu). There are two slots, one for the CV and one for the cover letter.
 
-1. Click upload in a slot and choose a `.pdf` or `.docx` (up to 5 MB). You can also drop the file into `PersonalDetailsCV/` or `PersonalDetailsCoverLetter/` in the project root; the next sync (every 60 seconds) picks it up.
-2. Uploading **replaces** the current file. The old file is removed from the folder only after you confirm in the page.
-3. If a folder holds several accepted files, the **newest readable one is used**. The others are listed as "not used" and are never sent to Claude. Delete the ones you don't want from the page.
-   The newest file by Modified date is used. Windows keeps the original Modified date when you copy a file in, so if an older file stays "not used", upload it through the page instead.
-4. After reading, each slot shows warnings: **work rights** missing or unclear, **degree status** unclear, and **banned phrases** found in the letter (for example "leveraging", "fast-paced").
+1. Click **Upload CV** (or **Upload cover letter**) in an empty slot and choose a `.pdf` or `.docx` (up to 5 MB). It is read by Claude straight away; the slot shows "Analysing…", then "Ready".
+2. To change it, click **Replace** in the slot and confirm in the page. The new file replaces the current one in one step; if the upload fails, the current file stays. Uploading the same file again changes nothing and costs nothing.
+3. After reading, each slot shows warnings: **work rights** missing or unclear, **degree status** unclear, and **banned phrases** found in the letter (for example "leveraging", "fast-paced"). A Word file with no text in it shows "Couldn't read this file" and is never sent to Claude.
 
-Folders and files:
+Where the files are kept:
 
-- To use other folders, set `CV_DIR` and `COVER_LETTER_DIR` in `.env` and run `docker compose up -d` again.
-- Names starting with `~$` or `.` are ignored.
-- Unlike the job folder, the worker mounts these two folders read-write, because uploads and deletes write to them. The worker is the only code that does.
+- The worker keeps the uploaded files in its own storage, a Docker volume (`documents_data`, mounted at `/data/documents` inside the worker). Nothing on your disk outside Docker is read or written, and there is no delete: you can only replace a file.
 - Uploaded file names are cleaned to letters, digits, space and `. _ ( ) -`.
-- Both mounts use `create_host_path: false`, so create the folders before `docker compose up` (Docker Desktop on Windows may still create a missing one, so check the path).
+- `docker compose down` keeps the volume; `docker compose down -v` deletes it together with the database, after which you upload your CV and cover letter again.
+- The old `PersonalDetailsCV/` and `PersonalDetailsCoverLetter/` folders are no longer used. JobHunter never reads or changes them; you can delete them yourself. After updating, upload your CV and cover letter once on the My documents page.
 
 ## How match scores work
 
@@ -113,12 +110,12 @@ Real costs measured on 2026-11-07:
 
 | What | Model | Cost | When |
 | --- | --- | --- | --- |
-| Reading your CV | Opus 5.5 | about $0.06 | only when the CV file changes or is uploaded |
-| Reading your cover letter | Opus 5.5 | about $0.03 | only when the letter file changes or is uploaded |
+| Reading your CV | Opus 5.5 | about $0.06 | only when you upload a new or changed CV |
+| Reading your cover letter | Opus 5.5 | about $0.03 | only when you upload a new or changed letter |
 | Scoring one job | Sonnet 5.5 | about $0.016 | when the job or your CV changes |
 | Reading one job file | Haiku 5.5 | about $0.0003 | new or changed job file (and retries) |
 
-Reading the folders every 30 seconds costs nothing. A new CV re-scores every job once (10 per run). Check the real total any time with `docker compose exec postgres psql -U jobhunter -c "select sum(cost_usd) from cost_log"`.
+Reading the job folder every 30 seconds costs nothing, and the documents sync only reads your CV and letter after an upload or to retry a failed reading. A new CV re-scores every job once (10 per run). Check the real total any time with `docker compose exec postgres psql -U jobhunter -c "select sum(cost_usd) from cost_log"`.
 
 ## Tests
 
@@ -127,14 +124,14 @@ Run the commands from the project folder.
 - Unit tests: start the test database with `docker compose -f docker-compose.test.yml up -d postgres`, run `npm install`, then `npm test`. It runs the worker and web tests; the worker tests need that test database (`TEST_DATABASE_URL`, default `postgres://jobhunter:test@localhost:55433/jobhunter`), the web tests alone (`npm test -w apps/web`) need nothing. Stop the database with `docker compose -f docker-compose.test.yml down`.
 - End-to-end: `npm run e2e` (needs Docker running; it starts and removes its own separate stack).
 
-The test stack (`docker-compose.test.yml`, project `jobhunter-test`) uses host ports 55433 (postgres), 55678 (n8n), 58080 (web) and 58081 (fake Anthropic), all bound to 127.0.0.1, and `./.tmp/e2e-joblisting` as the job folder. It never touches your real data or key.
+The test stack (`docker-compose.test.yml`, project `jobhunter-test`) uses host ports 55433 (postgres), 55678 (n8n), 58080 (web) and 58081 (fake Anthropic), all bound to 127.0.0.1, and `./.tmp/e2e-joblisting` as the job folder; its uploaded documents go to its own volume (`documents_test_data`). It never touches your real data or key.
 
 
 ### End-to-end details
 
 `npm run e2e` brings up the `jobhunter-test` stack (`docker compose -f docker-compose.test.yml up -d --build --wait`), runs `scripts/n8n-bootstrap.sh`, runs `tests/e2e/*.e2e.test.ts`, then tears the stack down (`down -v`). Set `E2E_KEEP_STACK=1` to leave it running while iterating.
 
-The test stack includes `anthropic-stub` (host port 58081), a fake Anthropic Messages API (it also answers the CV, cover letter and scoring requests with canned data) that n8n reaches via `ANTHROPIC_BASE_URL`. It requires `x-api-key` and `anthropic-version: 2026-10-21` (else 400); user text containing `STUB_FAIL` returns 500, `STUB_REFUSE` returns `stop_reason: "refusal"`, anything else returns a canned extraction. `GET /v1/models` (used by the bootstrap key check) answers 200 for any key except `bad-key` (401). `GET /_requests` lists recorded Messages request bodies, `POST /_reset` clears them. Helpers live in `tests/e2e/lib.ts` (`stack`, `writeJobFile`, `removeJobFile`, `triggerSync`, `db`, `stub`, `api`).
+The test stack includes `anthropic-stub` (host port 58081), a fake Anthropic Messages API (it also answers the CV, cover letter and scoring requests with canned data) that n8n reaches via `ANTHROPIC_BASE_URL`. It requires `x-api-key` and `anthropic-version: 2026-10-21` (else 400); user text containing `STUB_FAIL` returns 500, `STUB_REFUSE` returns `stop_reason: "refusal"`, anything else returns a canned extraction. `GET /v1/models` (used by the bootstrap key check) answers 200 for any key except `bad-key` (401). `GET /_requests` lists recorded Messages request bodies, `POST /_reset` clears them. Helpers live in `tests/e2e/lib.ts` (`stack`, `writeJobFile`, `removeJobFile`, `triggerSync`, `putDocument` (uploads through the API), `storedDocuments`, `db`, `stub`, `api`).
 
 ### Bootstrap
 

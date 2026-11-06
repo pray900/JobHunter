@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -9,8 +9,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(here, '../..');
 const COMPOSE_FILE = join(ROOT, 'docker-compose.test.yml');
 export const JOB_DIR = join(ROOT, '.tmp', 'e2e-joblisting');
-export const CV_DIR = join(ROOT, '.tmp', 'e2e-cv');
-export const COVER_LETTER_DIR = join(ROOT, '.tmp', 'e2e-cover-letter');
+/** Where the worker keeps the uploaded documents, inside its container (the test stack's own volume). */
+export const DOCUMENTS_DIR = '/data/documents';
 
 export const N8N_URL = 'http://localhost:55678';
 export const STUB_URL = 'http://localhost:58081';
@@ -21,11 +21,14 @@ export function compose(args: string[]): void {
   execFileSync('docker', ['compose', '-f', COMPOSE_FILE, ...args], { cwd: ROOT, stdio: 'inherit' });
 }
 
+/** Runs a compose command and returns its stdout. */
+export function composeOutput(args: string[]): string {
+  return execFileSync('docker', ['compose', '-f', COMPOSE_FILE, ...args], { cwd: ROOT, encoding: 'utf8' });
+}
+
 export const stack = {
   async up(): Promise<void> {
     mkdirSync(JOB_DIR, { recursive: true });
-    mkdirSync(CV_DIR, { recursive: true });
-    mkdirSync(COVER_LETTER_DIR, { recursive: true });
     compose(['up', '-d', '--build', '--wait']);
     // Bootstrap is a bash script: run it through Git Bash / sh.
     execFileSync('bash', [join(ROOT, 'scripts', 'n8n-bootstrap.sh'), COMPOSE_FILE], {
@@ -54,25 +57,24 @@ export function removeJobFile(name: string): void {
 }
 
 export type DocumentKind = 'cv' | 'cover_letter';
-const documentDir = (kind: DocumentKind) => (kind === 'cv' ? CV_DIR : COVER_LETTER_DIR);
 
-/**
- * Writes a base CV / cover letter into its e2e folder (never the real PersonalDetails* folders).
- * `modifiedAt` sets the file's modification time: per kind only the newest file is used.
- */
-export function writeDocument(kind: DocumentKind, name: string, bytes: string | Buffer, modifiedAt?: Date): void {
-  mkdirSync(documentDir(kind), { recursive: true });
-  writeFileSync(join(documentDir(kind), name), bytes);
-  if (modifiedAt) touchDocument(kind, name, modifiedAt);
+/** Names of every file the worker has stored for a kind (any depth; the pointer file is left out). */
+export function storedDocuments(kind: DocumentKind): string[] {
+  const out = composeOutput([
+    'exec', '-T', 'worker', 'sh', '-c',
+    `test -d ${DOCUMENTS_DIR}/${kind} || exit 0; find ${DOCUMENTS_DIR}/${kind} -type f ! -name .current.json`,
+  ]);
+  return out
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+    .map((l) => l.split('/').pop()!)
+    .sort();
 }
 
-/** Sets a document's modification time without changing its content. */
-export function touchDocument(kind: DocumentKind, name: string, modifiedAt: Date): void {
-  utimesSync(join(documentDir(kind), name), modifiedAt, modifiedAt);
-}
-
-export function removeDocument(kind: DocumentKind, name: string): void {
-  rmSync(join(documentDir(kind), name), { force: true });
+/** Empties the worker's document storage (the test stack's volume only). */
+export function clearStoredDocuments(): void {
+  composeOutput(['exec', '-T', 'worker', 'sh', '-c', `rm -rf ${DOCUMENTS_DIR}/cv ${DOCUMENTS_DIR}/cover_letter`]);
 }
 
 /** A tiny file that starts with the PDF magic; the stub does not parse it, it only searches its text. */
@@ -85,12 +87,11 @@ const emptyDir = (dir: string) => {
   for (const f of readdirSync(dir)) rmSync(join(dir, f), { recursive: true, force: true });
 };
 
-/** Per-test reset: empty job and base-document tables, empty the e2e folders, clear the stub log. */
+/** Per-test reset: empty job and base-document tables, the e2e job folder and the document storage; clear the stub log. */
 export async function resetState(): Promise<void> {
   await db.query('truncate jobs, job_status_history, cost_log, base_documents');
   emptyDir(JOB_DIR);
-  emptyDir(CV_DIR);
-  emptyDir(COVER_LETTER_DIR);
+  clearStoredDocuments();
   await stub.reset();
 }
 
@@ -177,7 +178,13 @@ export async function uploadDocument(
   return fetch(`${WEB_URL}/api/documents/upload?kind=${kind}`, { method: 'POST', headers, body: form });
 }
 
-/** Deletes a document by id through the web proxy. */
-export async function deleteDocument(id: string, headers: Record<string, string> = SYNC_HEADERS): Promise<Response> {
-  return fetch(`${WEB_URL}/api/documents?id=${encodeURIComponent(id)}`, { method: 'DELETE', headers });
+/**
+ * Uploads a base CV / cover letter the way the app does and expects 201. The upload starts the
+ * documents sync and answers once it has finished, so the document is analysed when this returns.
+ */
+export async function putDocument(kind: DocumentKind, name: string, bytes: Buffer): Promise<string> {
+  const res = await uploadDocument(kind, name, bytes);
+  const body = await res.text();
+  if (res.status !== 201) throw new Error(`upload failed: ${res.status} ${body}`);
+  return JSON.parse(body).sourceRef;
 }

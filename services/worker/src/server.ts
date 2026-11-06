@@ -2,12 +2,12 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastif
 import { JobFileReadError, JobFolderMissingError, type ReadFile } from './storage/jobFolder.js';
 import { scanJobFolder } from './jobs/scan.js';
 import { registerDocumentRoutes } from './documents/routes.js';
-import { createDocumentFolders } from './storage/documentFolder.js';
+import { createDocumentStore } from './storage/documentFolder.js';
 
 export interface ServerDeps {
   jobFolderDir: string;
-  cvDir?: string;
-  coverLetterDir?: string;
+  // Where the uploaded CV and cover letter are kept (the worker's own storage). Default: the container volume.
+  documentsDir?: string;
   // Logger config; omitted in tests so output stays quiet. main.ts enables it.
   logger?: FastifyServerOptions['logger'];
   // Test seam forwarded to the job folder reader.
@@ -42,13 +42,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerDocumentRoutes(
     app,
-    createDocumentFolders(
-      {
-        cv: deps.cvDir ?? './PersonalDetailsCV',
-        cover_letter: deps.coverLetterDir ?? './PersonalDetailsCoverLetter',
-      },
-      (message, context) => app.log.warn(context, message),
-    ),
+    createDocumentStore(deps.documentsDir ?? '/data/documents', { log: (message, context) => app.log.warn(context, message) }),
     deps.bannedPhrasesFile ??
       process.env.BANNED_PHRASES_FILE ??
       '/app/config/banned-phrases.txt',

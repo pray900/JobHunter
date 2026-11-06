@@ -11,14 +11,12 @@ export function documentWarningText(w: DocumentWarning): string {
     case 'unreadable_file':
       return "Couldn't read this file";
     default:
-      // extra_file_ignored, and any code added later: the API's own detail text.
+      // Any code added later: the API's own detail text.
       return w.detail;
   }
 }
 
 export function uploadErrorText(status: number): string {
-  if (status === 409) return 'A file with that name is already in the folder. Rename your file and try again.';
   if (status === 400 || status === 413) return "That file can't be used. Upload a PDF or Word file under 5 MB.";
-  if (status === 503) return 'Your documents folder is missing. Check the folder path in .env.';
   return "Couldn't upload that file. Try again.";
 }

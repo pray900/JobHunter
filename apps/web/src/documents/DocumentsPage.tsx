@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, deleteDocument, fetchDocuments, uploadDocument } from '../api/client';
+import { ApiError, fetchDocuments, uploadDocument } from '../api/client';
 import type { BaseDocumentSummary, DocumentKind, DocumentsResponse } from '../api/types';
-import { ConfirmDialog, DocumentSlot } from './DocumentSlot';
-import { documentWarningText, uploadErrorText } from './labels';
+import { DocumentSlot } from './DocumentSlot';
+import { uploadErrorText } from './labels';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
@@ -15,7 +15,6 @@ export function DocumentsPage({ pollMs = 3000 }: { pollMs?: number }) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [deleting, setDeleting] = useState<BaseDocumentSummary | null>(null);
   const inFlight = useRef(false);
 
   const load = useCallback(async () => {
@@ -60,20 +59,6 @@ export function DocumentsPage({ pollMs = 3000 }: { pollMs?: number }) {
     }
   }
 
-  async function confirmDelete(d: BaseDocumentSummary) {
-    setDeleting(null);
-    setMessage(null);
-    setBusy(true);
-    try {
-      await deleteDocument(d.id);
-      await load();
-    } catch {
-      setMessage("Couldn't delete that file. Try again.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <main className="page">
       <header className="page-header">
@@ -96,50 +81,15 @@ export function DocumentsPage({ pollMs = 3000 }: { pollMs?: number }) {
       {docs === null && !loadFailed && <p className="muted">Loading documents…</p>}
 
       {docs !== null && (
-        <>
-          <div className="slots">
-            <DocumentSlot kind="cv" doc={docs.cv} busy={busy} onFile={(f) => void onFile('cv', f)} />
-            <DocumentSlot
-              kind="cover_letter"
-              doc={docs.coverLetter}
-              busy={busy}
-              onFile={(f) => void onFile('cover_letter', f)}
-            />
-          </div>
-
-          {docs.ignored.length > 0 && (
-            <section className="ignored">
-              <h2>Other files in your folders (not used)</h2>
-              <ul className="ignored-list">
-                {docs.ignored.map((d) => (
-                  <li key={d.id}>
-                    <div>
-                      <span className="ignored-name">{d.sourceRef}</span>
-                      {d.warnings.map((w, i) => (
-                        <div key={`${w.code}-${i}`} className="muted">
-                          {documentWarningText(w)}
-                        </div>
-                      ))}
-                    </div>
-                    <button type="button" className="btn" disabled={busy} onClick={() => setDeleting(d)}>
-                      Delete
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-        </>
-      )}
-
-      {deleting && (
-        <ConfirmDialog
-          message={`Delete ${deleting.sourceRef}? This removes the file from your folder.`}
-          confirmLabel="Delete file"
-          danger
-          onCancel={() => setDeleting(null)}
-          onConfirm={() => void confirmDelete(deleting)}
-        />
+        <div className="slots">
+          <DocumentSlot kind="cv" doc={docs.cv} busy={busy} onFile={(f) => void onFile('cv', f)} />
+          <DocumentSlot
+            kind="cover_letter"
+            doc={docs.coverLetter}
+            busy={busy}
+            onFile={(f) => void onFile('cover_letter', f)}
+          />
+        </div>
       )}
     </main>
   );

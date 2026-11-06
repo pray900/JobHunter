@@ -151,7 +151,7 @@ describe('POST /documents/checks', () => {
   });
 
   const app = () =>
-    buildServer({ jobFolderDir: root, cvDir: root, coverLetterDir: root, bannedPhrasesFile: phrasesFile });
+    buildServer({ jobFolderDir: root, documentsDir: root, bannedPhrasesFile: phrasesFile });
 
   test('returns the warnings for a CV', async () => {
     const a = app();
@@ -193,8 +193,7 @@ describe('POST /documents/checks', () => {
   test('missing banned-phrases file -> 500 without a stack trace in the body', async () => {
     const a = buildServer({
       jobFolderDir: root,
-      cvDir: root,
-      coverLetterDir: root,
+      documentsDir: root,
       bannedPhrasesFile: path.join(root, 'nope.txt'),
     });
     const res = await a.inject({

@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { ApiError, deleteDocument, fetchDocuments, uploadDocument } from '../api/client';
+import { ApiError, fetchDocuments, uploadDocument } from '../api/client';
 import type { BaseDocumentSummary, DocumentsResponse } from '../api/types';
 import { App } from '../App';
 import { DocumentsPage } from './DocumentsPage';
@@ -11,12 +11,10 @@ vi.mock('../api/client', async (orig) => ({
   ...(await orig<typeof import('../api/client')>()),
   fetchDocuments: vi.fn(),
   uploadDocument: vi.fn(),
-  deleteDocument: vi.fn(),
   fetchJobs: vi.fn().mockResolvedValue([]),
 }));
 const mockFetch = vi.mocked(fetchDocuments);
 const mockUpload = vi.mocked(uploadDocument);
-const mockDelete = vi.mocked(deleteDocument);
 
 function doc(over: Partial<BaseDocumentSummary>): BaseDocumentSummary {
   return {
@@ -30,12 +28,11 @@ function doc(over: Partial<BaseDocumentSummary>): BaseDocumentSummary {
     ...over,
   };
 }
-const empty: DocumentsResponse = { cv: null, coverLetter: null, ignored: [] };
+const empty: DocumentsResponse = { cv: null, coverLetter: null };
 
 beforeEach(() => {
   mockFetch.mockReset();
   mockUpload.mockReset();
-  mockDelete.mockReset();
 });
 
 const renderPage = (pollMs = 3000) =>
@@ -68,7 +65,6 @@ describe('DocumentsPage', () => {
         ],
       }),
       coverLetter: doc({ id: 'd2', kind: 'cover_letter', sourceRef: 'cover.docx', analysisStatus: 'in_progress' }),
-      ignored: [],
     });
     renderPage();
     expect(await screen.findByText('my-cv.pdf')).toBeInTheDocument();
@@ -94,7 +90,7 @@ describe('DocumentsPage', () => {
     renderPage();
     await userEvent.click(await screen.findByRole('button', { name: 'Replace' }));
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Replace my-cv.pdf? The old file is removed from your folder.')).toBeInTheDocument();
+    expect(within(dialog).getByText('Replace my-cv.pdf? The current file will be replaced.')).toBeInTheDocument();
     expect(mockUpload).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole('button', { name: 'Replace file' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -113,46 +109,47 @@ describe('DocumentsPage', () => {
     expect(mockUpload).not.toHaveBeenCalled();
   });
 
+  test('upload into an empty slot needs no confirm', async () => {
+    mockFetch.mockResolvedValue(empty);
+    mockUpload.mockResolvedValue({ sourceRef: 'cv.pdf' });
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Upload CV' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const file = new File(['x'], 'cv.pdf', { type: 'application/pdf' });
+    await userEvent.upload(screen.getByLabelText('Choose CV file'), file);
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledWith('cv', file));
+  });
+
   test('upload errors map to messages', async () => {
     mockFetch.mockResolvedValue(empty);
     renderPage();
     await screen.findByText('No CV yet');
-    mockUpload.mockRejectedValueOnce(new ApiError(409, 'x'));
-    await userEvent.upload(screen.getByLabelText('Choose CV file'), new File(['x'], 'a.pdf'));
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'A file with that name is already in the folder. Rename your file and try again.',
-    );
     mockUpload.mockRejectedValueOnce(new ApiError(400, 'x'));
     await userEvent.upload(screen.getByLabelText('Choose cover letter file'), new File(['x'], 'a.pdf'));
     expect(await screen.findByText("That file can't be used. Upload a PDF or Word file under 5 MB.")).toBeInTheDocument();
     mockUpload.mockRejectedValueOnce(new ApiError(413, 'x'));
     await userEvent.upload(screen.getByLabelText('Choose CV file'), new File(['x'], 'b.pdf'));
     expect(await screen.findByText("That file can't be used. Upload a PDF or Word file under 5 MB.")).toBeInTheDocument();
-    mockUpload.mockRejectedValueOnce(new ApiError(503, 'x'));
+    mockUpload.mockRejectedValueOnce(new ApiError(502, 'x'));
     await userEvent.upload(screen.getByLabelText('Choose CV file'), new File(['x'], 'c.pdf'));
-    expect(await screen.findByText('Your documents folder is missing. Check the folder path in .env.')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't upload that file. Try again.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/folder/i);
   });
 
-  test('lists ignored files and deletes after in-page confirm', async () => {
-    mockFetch.mockResolvedValue({
-      ...empty,
-      ignored: [
-        doc({ id: 'x1', sourceRef: 'old.pdf', warnings: [{ code: 'extra_file_ignored', detail: 'Only one CV is used.' }] }),
-        doc({ id: 'x2', sourceRef: 'bad.docx', warnings: [{ code: 'unreadable_file', detail: '' }] }),
-      ],
-    });
-    mockDelete.mockResolvedValue();
+  test('only the two slots: no other files and no delete', async () => {
+    mockFetch.mockResolvedValue({ cv: doc({}), coverLetter: doc({ id: 'd2', kind: 'cover_letter', sourceRef: 'cover.docx' }) });
     renderPage();
-    expect(await screen.findByText('Other files in your folders (not used)')).toBeInTheDocument();
-    expect(screen.getByText('old.pdf')).toBeInTheDocument();
-    expect(screen.getByText('Only one CV is used.')).toBeInTheDocument();
-    expect(screen.getByText("Couldn't read this file")).toBeInTheDocument();
-    await userEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Delete old.pdf? This removes the file from your folder.')).toBeInTheDocument();
-    expect(mockDelete).not.toHaveBeenCalled();
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete file' }));
-    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith('x1'));
+    await screen.findByText('my-cv.pdf');
+    expect(screen.getAllByRole('region')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/not used|other files|folder/i)).not.toBeInTheDocument();
+  });
+
+  test('an unreadable document shows why', async () => {
+    mockFetch.mockResolvedValue({ ...empty, cv: doc({ analysisStatus: 'skipped', warnings: [{ code: 'unreadable_file', detail: '' }] }) });
+    renderPage();
+    expect(await screen.findByText("Couldn't read this file")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Replace' })).toBeInTheDocument();
   });
 
   test('polls until analysis settles', async () => {

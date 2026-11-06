@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { ApiError, deleteDocument, fetchDocuments, fetchJobs, uploadDocument } from './client';
+import * as client from './client';
+import { ApiError, fetchDocuments, fetchJobs, uploadDocument } from './client';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -39,7 +40,7 @@ test('every request sends the X-JobHunter: 1 header (CSRF guard on the n8n webho
 });
 
 test('fetchDocuments returns the documents body and validates shape', async () => {
-  const body = { cv: null, coverLetter: null, ignored: [] };
+  const body = { cv: null, coverLetter: null };
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 })));
   expect(await fetchDocuments()).toEqual(body);
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"cv":null}', { status: 200 })));
@@ -58,12 +59,11 @@ test('uploadDocument posts multipart with the header and returns sourceRef', asy
   expect(init.headers['X-JobHunter']).toBe('1');
 });
 
-test('uploadDocument and deleteDocument surface the status', async () => {
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 409 })));
-  await expect(uploadDocument('cv', new File(['x'], 'cv.pdf'))).rejects.toMatchObject({ status: 409 });
-  const f = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-  vi.stubGlobal('fetch', f);
-  await deleteDocument('a b');
-  expect(f.mock.calls[0][0]).toBe('/api/documents?id=a%20b');
-  expect(f.mock.calls[0][1].method).toBe('DELETE');
+test('uploadDocument surfaces the status', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 400 })));
+  await expect(uploadDocument('cv', new File(['x'], 'cv.pdf'))).rejects.toMatchObject({ status: 400 });
+});
+
+test('documents can only be uploaded: there is no delete', () => {
+  expect(client).not.toHaveProperty('deleteDocument');
 });
