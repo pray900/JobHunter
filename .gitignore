@@ -1,0 +1,17 @@
+# Personal data — never commit
+Joblisting/
+PersonalDetailsCV/
+PersonalDetailsCoverLetter/
+output/
+
+# Brainstorming mockups
+.superpowers/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and builds
+node_modules/
+dist/
