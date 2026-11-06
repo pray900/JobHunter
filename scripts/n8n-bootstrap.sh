@@ -109,6 +109,44 @@ for (const f of fs.readdirSync("/workflows").filter((f) => f.endsWith(".json")).
 }' | tr -d '\r'
 }
 
+# n8n 2.x applies publish/unpublish through a publication outbox (table
+# workflow_publication_outbox) that the running n8n polls every 15 s. Importing a published
+# workflow unpublishes it and queues a record carrying the OLD version id. publish:workflow
+# only sets activeVersionId (it queues nothing). If the old record is applied after that,
+# n8n sees an active workflow and publishes the OLD version; while it is queued, the startup
+# re-publish of the new one is skipped too. Webhooks then serve the old version, and the
+# webhook probe below cannot tell versions apart.
+# wait_publication drained IDS...: waits until no outbox record of IDS is pending/in progress.
+# wait_publication published IDS...: also requires published version = active version =
+#   current (last imported) version for every id.
+# Reads n8n's SQLite database (the n8n default; this stack sets no DB_TYPE) read-only.
+# Fails closed (exit 1) after 120 s.
+wait_publication() {
+  n8n_exec node -e '
+const { DatabaseSync } = require("node:sqlite");
+const [mode, ...ids] = process.argv.slice(1);
+if ((process.env.DB_TYPE || "sqlite") !== "sqlite") { console.error("wait_publication: only the SQLite database is supported"); process.exit(1); }
+const db = new DatabaseSync((process.env.N8N_USER_FOLDER || "/home/node") + "/.n8n/database.sqlite", { readOnly: true });
+const inFlight = db.prepare("select count(*) as n from workflow_publication_outbox where workflowId = ? and status in (\x27pending\x27, \x27in_progress\x27)");
+const versions = db.prepare("select w.versionId as current, w.activeVersionId as active, p.publishedVersionId as published from workflow_entity w left join workflow_published_version p on p.workflowId = w.id where w.id = ?");
+const pending = (id) => {
+  if (inFlight.get(id).n > 0) return "publication still queued";
+  if (mode !== "published") return null;
+  const v = versions.get(id);
+  return v && v.active === v.current && v.published === v.current ? null : "published version is not the imported one";
+};
+(async () => {
+  const deadline = Date.now() + 120000;
+  for (const id of ids) {
+    let why;
+    while ((why = pending(id))) {
+      if (Date.now() > deadline) { console.error(id + ": " + why + " after 120s"); process.exit(1); }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+})();' "$@"
+}
+
 remove_temp_credentials() { n8n_exec rm -f /tmp/jh-credentials.json >/dev/null 2>&1 || true; }
 
 # Checks $ANTHROPIC_KEY with a free request (GET /v1/models) before it is saved into n8n,
@@ -212,11 +250,15 @@ trap - EXIT INT TERM
 #    published explicitly below. Workflow JSON must carry stable ids to stay idempotent.
 echo "[bootstrap] importing workflows"
 n8n_cli import:workflow --separate --input=/workflows
+IDS="$(shipped_workflow_ids)"
+# Let the running n8n apply the unpublish records the import queued (with the old version
+# ids) while the workflows really are unpublished; see wait_publication.
+# shellcheck disable=SC2086
+wait_publication drained $IDS || { echo "[bootstrap] n8n did not process the workflow import" >&2; exit 1; }
 
 # 4. Publish the shipped workflows only (n8n 2.x: publish:workflow; takes effect only
 #    after restart). Other workflows in n8n are not touched.
 echo "[bootstrap] publishing workflows"
-IDS="$(shipped_workflow_ids)"
 for id in $IDS; do
   n8n_cli publish:workflow --id="$id"
 done
@@ -225,6 +267,10 @@ if [ -n "$IDS" ]; then
   echo "[bootstrap] restarting n8n to register published workflows"
   dc restart n8n >/dev/null
   wait_healthy
+  # The version n8n serves is the one in workflow_published_version: wait until n8n has
+  # published the imported version of every shipped workflow.
+  # shellcheck disable=SC2086
+  wait_publication published $IDS || { echo "[bootstrap] n8n did not publish the imported workflow versions" >&2; exit 1; }
   # /healthz is up before published webhooks are registered. For every webhook node in
   # /workflows, probe with a method it does not accept: a registered path answers
   # "Did you mean to make a ... request?" (nothing is executed), an unregistered one

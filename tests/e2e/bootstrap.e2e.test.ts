@@ -1,9 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { ROOT } from './lib';
+import { N8N_URL, ROOT } from './lib';
 
 // Sourcing the bootstrap only defines its settings and functions: no stack is touched.
 // The env file is always a temp copy (JOBHUNTER_ENV_FILE), never the real .env.
@@ -128,4 +129,76 @@ describe('bootstrap Anthropic key check', () => {
     // Inside the else (main stack) branch, not after the fi.
     expect(main.slice(realKey, call)).not.toMatch(/^fi$/m);
   });
+});
+
+// A stack that already published the previous workflow JSON: ONE bootstrap run must make
+// the current JSON in n8n/workflows the version that serves requests. The "previous"
+// versions are copies of the shipped workflows whose responses carry `stale: true`.
+describe('bootstrap after a workflow JSON change', () => {
+  const TEST_COMPOSE = join(ROOT, 'docker-compose.test.yml');
+  const n8n = (args: string[], input?: string) =>
+    execFileSync('docker', ['compose', '-f', TEST_COMPOSE, 'exec', '-T', 'n8n', ...args], { cwd: ROOT, encoding: 'utf8', input });
+  const bootstrap = () => execFileSync('bash', [SCRIPT, TEST_COMPOSE], { cwd: ROOT, stdio: 'inherit' });
+
+  /** "<status> <body>" of GET api/jobs and of POST api/jobs/sync without the header (refused: nothing runs). */
+  const served = async () => {
+    // A new connection per request (agent: false): pooled keep-alive sockets die with the
+    // n8n restarts and would fail the request for reasons unrelated to the bootstrap.
+    const body = (path: string, method: string) =>
+      new Promise<string>((resolve) => {
+        const req = request(`${N8N_URL}/webhook/${path}`, { method, agent: false }, (res) => {
+          let text = '';
+          res.setEncoding('utf8');
+          res.on('data', (c) => (text += c));
+          res.on('end', () => resolve(`${res.statusCode} ${text}`));
+        });
+        req.on('error', (e) => resolve(String(e)));
+        req.end();
+      });
+    return { jobs: await body('api/jobs', 'GET'), sync: await body('api/jobs/sync', 'POST') };
+  };
+  const waitFor = async (ok: () => Promise<boolean>, ms: number) => {
+    for (const end = Date.now() + ms; Date.now() < end; ) {
+      if (await ok()) return true;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return false;
+  };
+
+  test('one run makes the current JSON the live version', async () => {
+    const previous = ['jobs-api.json', 'job-intake-sync.json'].map((f) => {
+      const wf = JSON.parse(readFileSync(join(ROOT, 'n8n', 'workflows', f), 'utf8'));
+      for (const n of wf.nodes) {
+        if (n.name === 'Respond with jobs') n.parameters.responseBody = '={{ { jobs: $json.jobs, stale: true } }}';
+        if (n.name === 'Respond: missing X-JobHunter header')
+          n.parameters.responseBody = '={{ { error: "missing_jobhunter_header", stale: true } }}';
+      }
+      return wf;
+    });
+    n8n(['sh', '-c', 'cat >/tmp/jh-previous.json'], JSON.stringify(previous));
+    n8n(['n8n', 'import:workflow', '--input=/tmp/jh-previous.json']);
+    n8n(['rm', '-f', '/tmp/jh-previous.json']);
+    for (const wf of previous) n8n(['n8n', 'publish:workflow', `--id=${wf.id}`]);
+    execFileSync('docker', ['compose', '-f', TEST_COMPOSE, 'restart', 'n8n'], { cwd: ROOT, stdio: 'inherit' });
+    const previousLive = async () => {
+      const s = await served();
+      return s.jobs.includes('"stale"') && s.sync.includes('"stale"');
+    };
+    expect(await waitFor(previousLive, 120_000), 'the previous versions are live before the bootstrap').toBe(true);
+
+    try {
+      bootstrap();
+      // Straight after the single run, without waiting: the current JSON answers.
+      const now = await served();
+      expect(now.jobs).toBe('200 {"jobs":[]}');
+      expect(now.sync).toBe('403 {"error":"missing_jobhunter_header"}');
+    } finally {
+      // Leave the current JSON live for later tests even if the assertions failed.
+      const current = async () => {
+        const s = await served();
+        return s.jobs.startsWith('200 ') && !s.jobs.includes('"stale"') && !s.sync.includes('"stale"');
+      };
+      if (!(await waitFor(current, 30_000))) bootstrap();
+    }
+  }, 600_000);
 });
