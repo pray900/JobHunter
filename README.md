@@ -10,6 +10,7 @@ Everything runs on your machine. The only thing that leaves it is the job ad tex
 - Postgres: `postgres:17`
 - Worker: Node 24
 - Extraction model: `claude-haiku-5-5` (set by `EXTRACT_MODEL`)
+- Match scoring model: `claude-sonnet-5-5` (set by `SCORE_MODEL`; paid, one call per job when the job or the base CV changes)
 
 ## Set it up from scratch
 

@@ -111,6 +111,13 @@ export async function triggerDocumentsSync(): Promise<{ ok: boolean; scanned: nu
   return res.json() as any;
 }
 
+/** Runs the job match scoring workflow and returns its JSON summary. */
+export async function triggerScoring(): Promise<{ ok: boolean; scored: number; basisHash: string | null }> {
+  const res = await fetch(`${N8N_URL}/webhook/api/jobs/score`, { method: 'POST', headers: SYNC_HEADERS });
+  if (!res.ok) throw new Error(`scoring failed: ${res.status} ${await res.text()}`);
+  return res.json() as any;
+}
+
 export const db = {
   async query<T extends pg.QueryResultRow = any>(sql: string, params: unknown[] = []): Promise<T[]> {
     const client = new pg.Client({ connectionString: DB_URL });
@@ -134,6 +141,10 @@ export const stub = {
   /** Every request whose system prompt starts with "purpose: <purpose>" answers 500 until reset. */
   async failPurpose(purpose: string): Promise<void> {
     await fetch(`${STUB_URL}/_fail_purpose`, { method: 'POST', body: JSON.stringify({ purpose }) });
+  },
+  /** Requests with this purpose are recorded at once but answered only after `ms` (until reset). */
+  async delayPurpose(purpose: string, ms: number): Promise<void> {
+    await fetch(`${STUB_URL}/_delay_purpose`, { method: 'POST', body: JSON.stringify({ purpose, ms }) });
   },
   async reset(): Promise<void> {
     await fetch(`${STUB_URL}/_reset`, { method: 'POST' });

@@ -73,6 +73,7 @@ services:
       ANTHROPIC_BASE_URL: https://api.anthropic.com
       EXTRACT_MODEL: ${EXTRACT_MODEL:-claude-haiku-5-5}
       ANALYSE_MODEL: ${ANALYSE_MODEL:-claude-opus-5-5}
+      SCORE_MODEL: ${SCORE_MODEL:-claude-sonnet-5-5}
       WORKER_URL: http://worker:3001
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       GENERIC_TIMEZONE: Australia/Sydney

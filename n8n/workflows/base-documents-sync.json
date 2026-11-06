@@ -482,7 +482,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 5. Ask Claude to analyse each document\nOne Messages API call per claimed (active) document with **structured output** (a JSON schema): base CVs get `analyse-cv.md` and the CV facts schema, cover letters `analyse-cover-letter.md` and the cover-letter schema. The prompts are copies of `n8n/prompts/*.md` — keep them the same.\nA PDF goes first as a `document` block (base64), a Word file as its text inside `<document>…</document>`; the instruction follows. Model `ANALYSE_MODEL`, effort `medium`, `max_tokens` 16000. Opus / Sonnet also send `anthropic-beta: server-side-fallback-2026-07-01` and `\"fallbacks\": \"default\"`.\nThe request may take up to **600 s** (Opus with a large PDF can be slow). The HTTP node never fails the run: errors come out as a normal item and are handled in stage 6.",
+        "content": "## 5. Ask Claude to analyse each document\nOne Messages API call per claimed (active) document with **structured output** (a JSON schema): base CVs get `analyse-cv.md` and the CV facts schema, cover letters `analyse-cover-letter.md` and the cover-letter schema. The prompts are copies of `n8n/prompts/*.md` — keep them the same.\nA PDF goes first as a `document` block (base64), a Word file as its text inside `<document>…</document>`; the instruction follows. Model `ANALYSE_MODEL`, effort `medium`, `max_tokens` 16000. Opus / Sonnet also send `anthropic-beta: server-side-fallback-2026-07-01` and `\"fallbacks\": \"default\"`.\nThe request may take up to **280 s** (Opus with a large PDF can be slow). That stays inside the 5-minute claim window, so a slow call is never reclaimed by a later run and paid for twice. The HTTP node never fails the run: errors come out as a normal item and are handled in stage 6.",
         "height": 520,
         "width": 760,
         "color": 4
@@ -566,7 +566,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.request) }}",
         "options": {
-          "timeout": 600000,
+          "timeout": 280000,
           "response": {
             "response": {
               "fullResponse": true,

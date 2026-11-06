@@ -435,8 +435,9 @@ describe('base documents sync', () => {
       expect(workOut({ has_usage: false, model: 'claude-opus-5-5' }).cost_usd).toBeNull();
     });
 
-    test('an analysis request may take up to 600 s', () => {
-      expect(nodeByName('Ask Claude to analyse').parameters.options.timeout).toBe(600_000);
+    test('an analysis request may take up to 280 s, inside the 5-minute claim window', () => {
+      // Longer than 5 minutes and a later run could reclaim the document and pay for it twice.
+      expect(nodeByName('Ask Claude to analyse').parameters.options.timeout).toBe(280_000);
     });
 
     test('active document rule: newest readable file per kind, ties by name', () => {

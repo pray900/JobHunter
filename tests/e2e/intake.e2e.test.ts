@@ -64,10 +64,12 @@ describe('job intake sync', () => {
     expect(await again.json()).toEqual({ ok: true, scanned: 2, extracted: 0 });
   });
 
-  test('unchanged file is not re-extracted', async () => {
+  test('unchanged file is not re-extracted and keeps its score', async () => {
     await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
     await triggerSync();
+    await db.query(`update jobs set score_status='done', score_attempts=1, match_score=82, match_basis_hash='basis'`);
     await triggerSync();
+    expect(await jobRow('a.docx')).toMatchObject({ score_status: 'done', score_attempts: 1, match_score: 82, match_basis_hash: 'basis' });
     expect(await stub.requests()).toHaveLength(1);
     expect(await db.query(`select id from jobs`)).toHaveLength(1);
     expect(await db.query(`select id from job_status_history`)).toHaveLength(1);
@@ -78,6 +80,13 @@ describe('job intake sync', () => {
     await triggerSync();
     const before = await jobRow('a.docx');
     await db.query(`update jobs set status='applied' where id=$1`, [before.id]);
+    // A score from an earlier run: a content change must throw it away so the job is scored again.
+    await db.query(
+      `update jobs set score_status='done', score_attempts=2, score_claimed_at=now(), match_score=82,
+         match_explanation='82%: old.', match_breakdown='{"matched":[],"missing":[],"notes":[]}', match_basis_hash='old-basis'
+       where id=$1`,
+      [before.id],
+    );
     // Commas, quotes and newlines in the body must survive query parameterisation.
     await writeJobFile('a.docx', [{ text: 'https://x.io/a2' }, { text: 'New body, with "commas", and more' }]);
     await triggerSync();
@@ -90,6 +99,13 @@ describe('job intake sync', () => {
       raw_text: 'New body, with "commas", and more',
       extraction_status: 'done',
       extraction_attempts: 1,
+      score_status: 'pending',
+      score_attempts: 0,
+      score_claimed_at: null,
+      match_score: null,
+      match_explanation: null,
+      match_breakdown: null,
+      match_basis_hash: null,
     });
     expect(rows[0].content_hash).not.toBe(before.content_hash);
     expect(await stub.requests()).toHaveLength(2);
@@ -268,13 +284,27 @@ describe('job intake sync', () => {
 
     test('unknown model stops the run before any job is claimed or Claude is called', () => {
       expect(() => runPriceLookup('claude-unknown-9')).toThrow(/No price for model "claude-unknown-9"/);
-      expect(runPriceLookup('claude-haiku-5-5')).toEqual([
-        { json: { model: 'claude-haiku-5-5', input_usd_per_mtok: 0.1, output_usd_per_mtok: 0.5 } },
-      ]);
+      expect(runPriceLookup('claude-haiku-5-5')[0].json).toMatchObject({
+        model: 'claude-haiku-5-5', input_usd_per_mtok: 0.1, output_usd_per_mtok: 0.5,
+      });
       // The price lookup is the only way into the claim, and the claim is the only way to Claude.
       expect(parentsOf('Claim pending extractions')).toEqual(['Look up model price']);
       expect(ancestorsOf('Ask Claude').has('Claim pending extractions')).toBe(true);
       expect(ancestorsOf('Look up model price').has('Ask Claude')).toBe(false);
+    });
+
+    test('cost uses the answering model price, else the requested one', () => {
+      const workOut = (json: object) =>
+        new Function('$json', '$', nodeByName('Work out cost').parameters.jsCode)(json, () => ({
+          first: () => runPriceLookup('claude-haiku-5-5')[0],
+        })).json;
+      const usage = { has_usage: true, input_tokens: 1000, output_tokens: 100 };
+      expect(workOut({ ...usage, model: 'claude-sonnet-5-5' }).cost_usd).toBeCloseTo(0.003, 9);
+      expect(workOut({ ...usage, model: 'claude-unpriced-1' }).cost_usd).toBeCloseTo(0.00015, 9);
+      expect(workOut({ ...usage, model: 'claude-haiku-5-5' }).cost_usd).toBeCloseTo(0.00015, 9);
+      expect(workOut({ has_usage: false, model: 'claude-haiku-5-5' }).cost_usd).toBeNull();
+      // The cost row records the model that answered (a server-side fallback can differ).
+      expect(nodeByName("Read Claude's answer").parameters.jsCode).toMatch(/body\.model/);
     });
 
     test('saves only apply to the claim made by this run', () => {

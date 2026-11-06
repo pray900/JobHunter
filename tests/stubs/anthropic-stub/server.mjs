@@ -40,6 +40,7 @@ const CANNED = {
 
 let requests = []; // { headers, body }
 let failPurposes = new Set();
+let delays = new Map(); // purpose -> ms to wait before answering
 
 const send = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -74,12 +75,23 @@ createServer((req, res) => {
     if (req.method === 'POST' && url === '/_reset') {
       requests = [];
       failPurposes = new Set();
+      delays = new Map();
       return send(res, 200, { ok: true });
     }
     // Test control: every request with this purpose answers 500 until /_reset.
     if (req.method === 'POST' && url === '/_fail_purpose') {
       try {
         failPurposes.add(JSON.parse(Buffer.concat(chunks).toString('utf8')).purpose);
+      } catch {
+        return err(res, 400, 'invalid JSON');
+      }
+      return send(res, 200, { ok: true });
+    }
+    // Test control: requests with this purpose are recorded at once but answered after `ms`.
+    if (req.method === 'POST' && url === '/_delay_purpose') {
+      try {
+        const { purpose, ms } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        delays.set(purpose, Number(ms));
       } catch {
         return err(res, 400, 'invalid JSON');
       }
@@ -115,13 +127,19 @@ createServer((req, res) => {
       const base = { id: 'msg_stub', type: 'message', role: 'assistant', model: answeredModel ?? body.model ?? 'stub' };
       if (text.includes('STUB_REFUSE'))
         return send(res, 200, { ...base, content: [], stop_reason: 'refusal', usage: { input_tokens: 1000, output_tokens: 100 } });
-      const answer = CANNED[purpose] ?? CANNED.extract_job;
-      return send(res, 200, {
-        ...base,
-        content: [{ type: 'text', text: JSON.stringify(answer) }],
-        stop_reason: 'end_turn',
-        usage: { input_tokens: 1000, output_tokens: 100 },
-      });
+      let answer = CANNED[purpose] ?? CANNED.extract_job;
+      // "STUB_HEADLINE:<text>" in a CV makes its recorded headline <text> (so tests can tell CVs apart).
+      const headline = /STUB_HEADLINE:(\S+)/.exec(text)?.[1];
+      if (purpose === 'analyse_cv' && headline) answer = { ...answer, headline };
+      const reply = () =>
+        send(res, 200, {
+          ...base,
+          content: [{ type: 'text', text: JSON.stringify(answer) }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1000, output_tokens: 100 },
+        });
+      const delay = delays.get(purpose);
+      return delay ? setTimeout(reply, delay) : reply();
     }
     err(res, 404, 'not found');
   });
