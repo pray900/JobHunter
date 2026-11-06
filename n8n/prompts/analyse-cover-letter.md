@@ -7,7 +7,7 @@ The document is attached before this instruction (a PDF, or the text of a Word f
 Return these fields:
 
 - previousTarget: who the letter was written for: company, addressee and role, each as written. null for any the letter does not name.
-- reusableParagraphs: every paragraph about Prayush himself (his experience, skills, results and motivation) that is not tied to that company, copied verbatim.
+- reusableParagraphs: EVERY body paragraph of the letter, copied verbatim and in the order they appear. Do not skip, merge, shorten or filter any paragraph, even one that names the company or looks generic. Exclude only the address block, the date, the salutation and the sign-off.
 - toneNotes: one or two plain sentences describing the letter's tone and structure (for example formal or conversational, length, how it opens and closes).
 
 Rules:

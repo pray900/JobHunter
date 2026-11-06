@@ -1,16 +1,17 @@
 # JobHunter
 
-A local app that turns Word job ads into job cards. Four parts run in Docker: Postgres (data), a TypeScript worker (reads the `.docx` files), n8n (the workflows that glue it together and call Claude) and a React web page.
+A local app that turns Word job ads into job cards and scores each one against your base CV. Four parts run in Docker: Postgres (data), a TypeScript worker (reads the `.docx` files), n8n (the workflows that glue it together and call Claude) and a React web page.
 
-Everything runs on your machine. The only thing that leaves it is the job ad text sent to Claude to pull out the title, employer and a short summary.
+Everything runs on your machine. The only things that leave it are the job ad text, your CV and your cover letter, which are sent to Claude (see Cost for when).
 
 ## Pinned versions
 
 - n8n: `n8nio/n8n:2.46.6` (latest stable on 2026-11-06)
 - Postgres: `postgres:17`
 - Worker: Node 24
-- Extraction model: `claude-haiku-5-5` (set by `EXTRACT_MODEL`)
-- Match scoring model: `claude-sonnet-5-5` (set by `SCORE_MODEL`; paid, one call per job when the job or the base CV changes)
+- Job extraction model: `claude-haiku-5-5` (`EXTRACT_MODEL`)
+- CV and cover letter reading model: `claude-opus-5-5` (`ANALYSE_MODEL`)
+- Match scoring model: `claude-sonnet-5-5` (`SCORE_MODEL`)
 
 ## Set it up from scratch
 
@@ -18,17 +19,17 @@ You need Docker Desktop (running) and Git Bash. Run every command below from the
 
 1. Copy the settings file: `cp .env.example .env`
 2. Open `.env` and set:
-   - `ANTHROPIC_API_KEY` to your key.
+   - `ANTHROPIC_API_KEY` to your key. The other keys (`CV_DIR`, `COVER_LETTER_DIR`, `ANALYSE_MODEL`, `SCORE_MODEL`, `EXTRACT_MODEL`, `JOBLISTING_DIR`) already have working defaults.
    - `POSTGRES_PASSWORD` and `N8N_ENCRYPTION_KEY` to your own random values (replace `change-me`).
    - Leave `N8N_OWNER_EMAIL` and `N8N_OWNER_PASSWORD` empty; the bootstrap fills them in.
-3. Create the job folder: `mkdir -p Joblisting` (or the folder you set in `JOBLISTING_DIR`). It must exist before you start the stack; see Where to put job files.
+3. Create the folders: `mkdir -p Joblisting PersonalDetailsCV PersonalDetailsCoverLetter` (or the folders you set in `JOBLISTING_DIR`, `CV_DIR`, `COVER_LETTER_DIR`). They must exist before you start the stack; see Where to put job files.
 4. Start everything: `docker compose up -d --build`
 5. Load the credentials and workflows into n8n: `bash scripts/n8n-bootstrap.sh`
 
    It creates your n8n login, saves it in `.env` (it only prints "n8n owner login saved in .env"), imports the workflows and publishes them. It is safe to run again, but it resets the shipped workflows to the repo JSON (see Bootstrap below).
 6. Open the job board: http://localhost:8080
 
-Until you add job files the board is empty. Match scores arrive in Plan 2, so every card says "Not scored yet" for now.
+Until you add job files the board is empty. Open **My documents** (top menu) and upload your CV first; until a CV is read, cards say "Not scored yet".
 
 Every service has `restart: unless-stopped`, so after a reboot Docker Desktop brings the stack back by itself once it starts. If it is not running, start it with `docker compose up -d`.
 
@@ -44,14 +45,30 @@ The folder must exist before `docker compose up`. The worker mount is declared w
 - If the folder is missing or cannot be read, the sync fails loudly and changes nothing. It never marks jobs as removed because of a broken scan.
 - `Joblisting/`, `PersonalDetailsCV/`, `PersonalDetailsCoverLetter/` and `.env` are git-ignored, so personal data is never committed.
 
-## Where to put your CV and cover letter
+## My documents (your CV and cover letter)
 
-Put your base CV in `PersonalDetailsCV/` and your base cover letter in `PersonalDetailsCoverLetter/` in the project root. JobHunter uses **one** CV and **one** cover letter: if a folder holds more than one accepted file, the most recently modified readable one is used and the others are marked "ignored" (never sent to Claude), so remove the ones you don't want. To use other folders, set `CV_DIR` and `COVER_LETTER_DIR` in `.env` and run `docker compose up -d` again.
+JobHunter uses **one** base CV and **one** base cover letter. Open http://localhost:8080/documents (**My documents** in the top menu). There are two slots, one for the CV and one for the cover letter.
 
-- Accepted files are `.pdf` and `.docx`, up to 5 MB each. Names starting with `~$` or `.` are ignored.
+1. Click upload in a slot and choose a `.pdf` or `.docx` (up to 5 MB). You can also drop the file into `PersonalDetailsCV/` or `PersonalDetailsCoverLetter/` in the project root; the next sync (every 30 seconds) picks it up.
+2. Uploading **replaces** the current file. The old file is removed from the folder only after you confirm in the page.
+3. If a folder holds several accepted files, the **newest readable one is used**. The others are listed as "not used" and are never sent to Claude. Delete the ones you don't want from the page.
+4. After reading, each slot shows warnings: **work rights** missing or unclear, **degree status** unclear, and **banned phrases** found in the letter (for example "leveraging", "fast-paced").
+
+Folders and files:
+
+- To use other folders, set `CV_DIR` and `COVER_LETTER_DIR` in `.env` and run `docker compose up -d` again.
+- Names starting with `~$` or `.` are ignored.
 - Unlike the job folder, the worker mounts these two folders read-write, because uploads and deletes write to them. The worker is the only code that does.
-- Uploaded file names are cleaned to letters, digits, space and `. _ ( ) -`. Uploading a name that already exists is refused unless you choose to replace it.
+- Uploaded file names are cleaned to letters, digits, space and `. _ ( ) -`.
 - Both mounts use `create_host_path: false`, so create the folders before `docker compose up` (Docker Desktop on Windows may still create a missing one, so check the path).
+
+## How match scores work
+
+Each job card shows a score from 0 to 100: how well your one base CV fits that job ad, with a **"Why this score?"** explanation (what matched, what is missing). The board sorts best match first.
+
+- A score is recomputed only when your CV changes or the job file changes. Otherwise it is kept and costs nothing.
+- Scoring runs every 30 seconds in the "Job match scoring" workflow. Each run scores at most **10 jobs**, and each job intake run reads at most **10 job files**, so a burst (a new CV, many new files) is spread over several runs instead of hitting Anthropic rate limits. The rest wait for the next run.
+- A failed score is retried up to 3 times in total (after 1, then 5 minutes).
 
 ## Open n8n
 
@@ -59,9 +76,11 @@ Go to http://localhost:5678. The login is in `.env`: `N8N_OWNER_EMAIL` and `N8N_
 
 In the left menu click **Workflows**, then open one. Each workflow has coloured sticky notes (`## 1. ...`, `## 2. ...`) that group the nodes into stages. Read them left to right. To see what a run did, open **Executions** in the workflow and click a run; each node shows the data it received and produced.
 
-The shipped workflows **don't save successful runs** (workflow settings `saveDataSuccessExecution: none`, `saveManualExecutions: false`), so the execution list only shows failed runs and the database doesn't fill up with a run every 30 seconds. While learning, switch it on per workflow: open the workflow, **⋯ → Settings**, set **Save successful production executions** to *Save* (and **Save manual executions** to *Save*). Re-running the bootstrap resets it.
+The shipped workflows **don't save successful runs** (workflow settings `saveDataSuccessExecution: none`, `saveManualExecutions: false`), so the execution list only shows failed runs and the database doesn't fill up with a run every 30 seconds. While learning, switch it on per workflow: open the workflow, **⋯ → Settings**, set **Save successful production executions** to *Save* (and **Save manual executions** to *Save*), then save. You will then see every run under **Executions**. Re-running the bootstrap resets it.
 
 ## Reading the workflows in n8n
+
+There are five shipped workflows: Job intake sync, Jobs API, Base documents sync (reads your CV and cover letter), Documents API (serves and changes the My documents page) and Job match scoring. The first two are described step by step below; open the other three in n8n and read their sticky notes the same way.
 
 ### Job intake sync
 
@@ -85,11 +104,20 @@ Serves the job board.
 - **1. Read the job list**: one SQL query returns the whole list as a JSON array, so an empty table gives `[]`. Best match first, unscored jobs last, newest first on ties.
 - **2. Reply**: answers `200 { jobs: [...] }`.
 
-Both webhooks ("GET api/jobs" here and "POST api/jobs/sync" in Job intake sync) set **Allowed Origins (CORS)** to `http://localhost:8080,http://localhost:5173` (the board and the Vite dev server), so other websites you visit cannot read your jobs through your browser. nginx also strips n8n's CORS headers from `/api/`, since the board calls it from its own origin.
+Both of these webhooks ("GET api/jobs" here and "POST api/jobs/sync" in Job intake sync) set **Allowed Origins (CORS)** to `http://localhost:8080,http://localhost:5173` (the board and the Vite dev server), so other websites you visit cannot read your jobs through your browser. nginx also strips n8n's CORS headers from `/api/`, since the board calls it from its own origin.
 
 ## Cost
 
-Each new job costs about $0.0005 in Claude calls at Haiku 5.5 prices. Reading the folder every 30 seconds costs nothing; Claude is only called for new or changed files (and retries of failed ones). Check the real total any time with `docker compose exec postgres psql -U jobhunter -c "select sum(cost_usd) from cost_log"`.
+Real costs measured on 2026-11-07:
+
+| What | Model | Cost | When |
+| --- | --- | --- | --- |
+| Reading your CV | Opus 5.5 | about $0.06 | only when the CV file changes or is uploaded |
+| Reading your cover letter | Opus 5.5 | about $0.03 | only when the letter file changes or is uploaded |
+| Scoring one job | Sonnet 5.5 | about $0.016 | when the job or your CV changes |
+| Reading one job file | Haiku 5.5 | about $0.0003 | new or changed job file (and retries) |
+
+Reading the folders every 30 seconds costs nothing. A new CV re-scores every job once (10 per run). Check the real total any time with `docker compose exec postgres psql -U jobhunter -c "select sum(cost_usd) from cost_log"`.
 
 ## Tests
 
@@ -105,7 +133,7 @@ The test stack (`docker-compose.test.yml`, project `jobhunter-test`) uses host p
 
 `npm run e2e` brings up the `jobhunter-test` stack (`docker compose -f docker-compose.test.yml up -d --build --wait`), runs `scripts/n8n-bootstrap.sh`, runs `tests/e2e/*.e2e.test.ts`, then tears the stack down (`down -v`). Set `E2E_KEEP_STACK=1` to leave it running while iterating.
 
-The test stack includes `anthropic-stub` (host port 58081), a fake Anthropic Messages API that n8n reaches via `ANTHROPIC_BASE_URL`. It requires `x-api-key` and `anthropic-version: 2026-10-21` (else 400); user text containing `STUB_FAIL` returns 500, `STUB_REFUSE` returns `stop_reason: "refusal"`, anything else returns a canned extraction. `GET /v1/models` (used by the bootstrap key check) answers 200 for any key except `bad-key` (401). `GET /_requests` lists recorded Messages request bodies, `POST /_reset` clears them. Helpers live in `tests/e2e/lib.ts` (`stack`, `writeJobFile`, `removeJobFile`, `triggerSync`, `db`, `stub`, `api`).
+The test stack includes `anthropic-stub` (host port 58081), a fake Anthropic Messages API (it also answers the CV, cover letter and scoring requests with canned data) that n8n reaches via `ANTHROPIC_BASE_URL`. It requires `x-api-key` and `anthropic-version: 2026-10-21` (else 400); user text containing `STUB_FAIL` returns 500, `STUB_REFUSE` returns `stop_reason: "refusal"`, anything else returns a canned extraction. `GET /v1/models` (used by the bootstrap key check) answers 200 for any key except `bad-key` (401). `GET /_requests` lists recorded Messages request bodies, `POST /_reset` clears them. Helpers live in `tests/e2e/lib.ts` (`stack`, `writeJobFile`, `removeJobFile`, `triggerSync`, `db`, `stub`, `api`).
 
 ### Bootstrap
 
@@ -119,7 +147,7 @@ The test stack includes `anthropic-stub` (host port 58081), a fake Anthropic Mes
 6. `n8n publish:workflow --id=<id>` for each workflow `id` in `n8n/workflows/*.json` (2.x replaced `update:workflow --active`; `publish:workflow --all` is no longer supported). Workflows you created yourself in n8n are not published or changed.
 7. If any shipped workflows exist, restarts the n8n container (publish only takes effect on restart), waits for `/healthz`, waits until n8n's published version of each shipped workflow is the one just imported (read from n8n's SQLite database), then probes every webhook path found in `n8n/workflows/*.json` (with a non-matching HTTP method, so nothing runs) until n8n reports it registered; exits non-zero on timeout. CLI failures abort the script.
 
-After pulling workflow changes, one bootstrap run makes them live. Re-running the bootstrap resets the shipped workflows ("Job intake sync" and "Jobs API") to the JSON in `n8n/workflows/`, so edits you made to them in the n8n editor are overwritten. Export your edits first (in the workflow, **...** > **Download**, or `docker compose exec n8n n8n export:workflow --id=<id>`). Your own workflows are left alone. Workflows removed from `n8n/workflows/` are not deleted from n8n.
+After pulling workflow changes, one bootstrap run makes them live. Re-running the bootstrap resets the shipped workflows (all five) to the JSON in `n8n/workflows/`, so edits you made to them in the n8n editor are overwritten. Export your edits first (in the workflow, **...** > **Download**, or `docker compose exec n8n n8n export:workflow --id=<id>`). Your own workflows are left alone. Workflows removed from `n8n/workflows/` are not deleted from n8n.
 
 ## Troubleshooting
 
