@@ -86,7 +86,9 @@
         "httpMethod": "POST",
         "path": "api/jobs/sync",
         "responseMode": "responseNode",
-        "options": {}
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
       },
       "webhookId": "b80ab409-63d7-4aa6-aa15-32e00ec0d72f"
     },

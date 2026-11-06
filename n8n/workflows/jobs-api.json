@@ -26,7 +26,7 @@
         "httpMethod": "GET",
         "path": "api/jobs",
         "responseMode": "responseNode",
-        "options": {}
+        "options": { "allowedOrigins": "http://localhost:8080,http://localhost:5173" }
       },
       "webhookId": "5c0a3f7e-91d2-4b6e-a8c4-7e2d1b9f3a10"
     },
