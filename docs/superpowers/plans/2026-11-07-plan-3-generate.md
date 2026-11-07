@@ -208,3 +208,7 @@ Use the frontend-design skill (CLAUDE.md UI rules: dark default, neutral greys, 
 
 - **Cover-letter numbers:** in the cover letter only, numbers and dates that appear in the job ad (or the target title/employer) are allowed and are not `unknown_fact`. The CV still allows only numbers and dates from the base CV.
 - **Leakage from other jobs:** other jobs' employer/advertiser/title names match **case-sensitively** (whole word), so ordinary words ("insight into") are not flagged. The base cover letter's previous company/addressee/role stay case-insensitive, and also ignore punctuation ("Ms Li" = "Ms. Li").
+
+### Amendment (Prayush, 2026-11-07, after the Task 5 review)
+
+- **Pass rule (Task 5 step 5):** a round passes only when the reviewer's verdict is `pass` **and every review item passes**, no `hard` check remains, no fact ruling is `invented`, no spelling ruling is `misspelt`, **and every `review`-severity check (`unmatched_skill`, `possible_misspelling`) has a ruling**. An unruled review check counts as not passed, is listed in `unresolved`, counts in the best-round score, and is sent to the writer in the next round's failed checks.
