@@ -257,6 +257,7 @@ Prayush supplied 3 job files and real base documents. Use them (redacted where n
 
 ### 7.3 My documents
 - **Changed 2026-11-07: one slot for the base CV and one for the base cover letter.** **Changed again 2026-11-07 (Prayush): documents come only through the app's upload — no folders.** Upload fills an empty slot; Replace swaps the file in one step (in-page confirmation). *(Claude's calls:)* files are kept in the app's own storage (a Docker volume, behind the worker's storage module); no Delete button (replace only); the old `PersonalDetailsCV/` and `PersonalDetailsCoverLetter/` folders are no longer read and are left untouched.
+- **Decided 2026-11-07 (Prayush): "yes try again if upload failed".** Uploading again a file whose analysis failed 3 times (`failed`) resets it and analyses it afresh, even if the content is identical; only an upload does this, never the schedule or a plain sync.
 - Warnings: missing work-rights line, unclear degree status, banned phrases.
 - Every generated version records which base document (and its version) it came from.
 

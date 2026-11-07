@@ -53,6 +53,8 @@ JobHunter uses **one** base CV and **one** base cover letter, and they only come
 2. To change it, click **Replace** in the slot and confirm in the page. The new file replaces the current one in one step; if the upload fails, the current file stays. Uploading the same file again changes nothing and costs nothing.
 3. After reading, each slot shows warnings: **work rights** missing or unclear, **degree status** unclear, and **banned phrases** found in the letter (for example "leveraging", "fast-paced"). A Word file with no text in it shows "Couldn't read this file" and is never sent to Claude.
 
+If reading your CV or letter failed 3 times, uploading it again tries again (about $0.06 for a CV, $0.03 for a letter).
+
 Where the files are kept:
 
 - The worker keeps the uploaded files in its own storage, a Docker volume (`documents_data`, mounted at `/data/documents` inside the worker). Nothing on your disk outside Docker is read or written, and there is no delete: you can only replace a file.

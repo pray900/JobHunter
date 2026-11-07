@@ -262,6 +262,63 @@ describe('base documents sync', () => {
     expect(await stub.requests()).toHaveLength(3);
   });
 
+  test('re-uploading identical content of a failed document retries it; a plain sync never does', async () => {
+    const bytes = makePdf('CV A');
+    await stub.failPurpose('analyse_cv');
+    await putDocument('cv', 'a.pdf', bytes);
+    for (let i = 0; i < 2; i++) {
+      await db.query(`update base_documents set analysis_claimed_at = analysis_claimed_at - interval '10 minutes'`);
+      await triggerDocumentsSync();
+    }
+    expect(await docRow('a.pdf')).toMatchObject({ analysis_status: 'failed', analysis_attempts: 3 });
+    expect(await stub.requests()).toHaveLength(3);
+
+    // Syncs alone (also with an invalid flag, the other kind's flag, or past the wait) leave the failed row alone: no new paid call.
+    await db.query(`update base_documents set analysis_claimed_at = analysis_claimed_at - interval '10 minutes'`);
+    await triggerDocumentsSync();
+    for (const q of ['?retryFailedKind=resume', '?retryFailedKind=%27%3B%20drop', '?retryFailedKind=cover_letter', '?retryFailedKind=']) {
+      const res = await fetch(`${N8N_URL}/webhook/api/documents/sync${q}`, { method: 'POST', headers: SYNC_HEADERS });
+      expect(res.status).toBe(200);
+    }
+    await stub.reset();
+    await triggerDocumentsSync();
+    expect(await stub.requests()).toEqual([]);
+    expect(await docRow('a.pdf')).toMatchObject({ analysis_status: 'failed', analysis_attempts: 3 });
+  });
+
+  test('re-uploading identical content of a failed document starts a fresh analysis', async () => {
+    const bytes = makePdf('CV A');
+    await stub.failPurpose('analyse_cv');
+    await putDocument('cv', 'a.pdf', bytes);
+    for (let i = 0; i < 2; i++) {
+      await db.query(`update base_documents set analysis_claimed_at = analysis_claimed_at - interval '10 minutes'`);
+      await triggerDocumentsSync();
+    }
+    expect(await docRow('a.pdf')).toMatchObject({ analysis_status: 'failed', analysis_attempts: 3 });
+    await stub.reset();
+    await putDocument('cv', 'a.pdf', bytes);
+    expect(await docRow('a.pdf')).toMatchObject({
+      active: true,
+      analysis_status: 'done',
+      analysis_attempts: 1,
+      analysis_error: null,
+    });
+    expect((await stub.requests()).map(purposeOf)).toEqual(['purpose: analyse_cv']);
+  });
+
+  test('re-uploading a failed CV does not touch a failed cover letter', async () => {
+    await stub.failPurpose('analyse_cv');
+    await stub.failPurpose('analyse_cover_letter');
+    await putDocument('cv', 'a.pdf', makePdf('CV A'));
+    await putDocument('cover_letter', 'cl.pdf', makePdf('CL'));
+    await db.query(`update base_documents set analysis_status='failed', analysis_attempts=3`);
+    await stub.reset();
+    await putDocument('cv', 'a.pdf', makePdf('CV A'));
+    expect(await docRow('a.pdf')).toMatchObject({ analysis_status: 'done' });
+    expect(await docRow('cl.pdf')).toMatchObject({ analysis_status: 'failed', analysis_attempts: 3 });
+    expect((await stub.requests()).map(purposeOf)).toEqual(['purpose: analyse_cv']);
+  });
+
   test('a Word file with no text is the current document but is never sent to Claude', async () => {
     await putDocument('cv', 'empty.docx', await makeDocx([{ text: '   ' }]));
     expect(await docRow('empty.docx')).toMatchObject({

@@ -355,7 +355,7 @@
         360
       ],
       "parameters": {
-        "content": "## 4. Sync, then answer\n**Trigger documents sync** calls this n8n's own `POST api/documents/sync` (with the X-JobHunter header) so the new file becomes the active document and its analysis starts; the replaced row is marked removed. It waits at most 15 seconds and carries on either way (a slow analysis keeps running; the app polls the status). Worst case per request stays under nginx's 30 s: write 8 s + sync 15 s = 23 s. Then `201 { sourceRef }`.",
+        "content": "## 4. Sync, then answer\n**Trigger documents sync** calls this n8n's own `POST api/documents/sync` (with the X-JobHunter header and `?retryFailedKind=<uploaded kind>`, which makes the sync analyse a failed document of that kind again even if the file is identical; only uploads send it) so the new file becomes the active document and its analysis starts; the replaced row is marked removed. It waits at most 15 seconds and carries on either way (a slow analysis keeps running; the app polls the status). Worst case per request stays under nginx's 30 s: write 8 s + sync 15 s = 23 s. Then `201 { sourceRef }`.",
         "height": 420,
         "width": 480,
         "color": 6
@@ -372,7 +372,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "=http://localhost:{{ $env.N8N_PORT || 5678 }}/webhook/api/documents/sync",
+        "url": "=http://localhost:{{ $env.N8N_PORT || 5678 }}/webhook/api/documents/sync?retryFailedKind={{ $('Check upload').first().json.kind }}",
         "options": {
           "timeout": 15000,
           "response": {
