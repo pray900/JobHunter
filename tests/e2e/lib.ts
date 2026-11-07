@@ -152,6 +152,16 @@ export async function triggerScoring(): Promise<{ ok: boolean; scored: number; b
   return res.json() as any;
 }
 
+/**
+ * Runs the Generate documents workflow once (claims at most one pending run) and returns its answer
+ * once the run has finished. Tests only: the stub answers at once, so this stays well inside 30 s.
+ */
+export async function triggerGeneration(): Promise<{ ok: boolean; claimed: number }> {
+  const res = await fetch(`${N8N_URL}/webhook/api/generation/run`, { method: 'POST', headers: SYNC_HEADERS });
+  if (!res.ok) throw new Error(`generation failed: ${res.status} ${await res.text()}`);
+  return res.json() as any;
+}
+
 export const db = {
   async query<T extends pg.QueryResultRow = any>(sql: string, params: unknown[] = []): Promise<T[]> {
     const client = new pg.Client({ connectionString: DB_URL });

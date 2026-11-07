@@ -87,6 +87,10 @@ services:
       EXTRACT_MODEL: claude-haiku-5-5
       ANALYSE_MODEL: claude-opus-5-5
       SCORE_MODEL: claude-sonnet-5-5
+      WRITER_MODEL: claude-opus-5-5
+      # Another model than the writer here, so the tests see each call priced by its own model.
+      REVIEW_MODEL: claude-sonnet-5-5
+      GENERATION_MAX_ROUNDS: "3"
       WORKER_URL: http://worker:3001
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       GENERIC_TIMEZONE: Australia/Sydney

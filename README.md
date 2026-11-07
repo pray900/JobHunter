@@ -12,6 +12,8 @@ Everything runs on your machine. The only things that leave it are the job ad te
 - Job extraction model: `claude-haiku-5-5` (`EXTRACT_MODEL`)
 - CV and cover letter reading model: `claude-opus-5-5` (`ANALYSE_MODEL`)
 - Match scoring model: `claude-sonnet-5-5` (`SCORE_MODEL`)
+- CV and cover letter writer: `claude-opus-5-5` (`WRITER_MODEL`)
+- Independent reviewer: `claude-opus-5-5` (`REVIEW_MODEL`); at most `GENERATION_MAX_ROUNDS` (default 3, at most 5) write-and-review rounds per Generate
 
 ## Set it up from scratch
 
@@ -80,7 +82,7 @@ The shipped workflows **don't save successful runs** (workflow settings `saveDat
 
 ## Reading the workflows in n8n
 
-There are five shipped workflows: Job intake sync, Jobs API, Base documents sync (reads your CV and cover letter), Documents API (serves and changes the My documents page) and Job match scoring. The first two are described step by step below; open the other three in n8n and read their sticky notes the same way.
+There are six shipped workflows: Job intake sync, Jobs API, Base documents sync (reads your CV and cover letter), Documents API (serves and changes the My documents page), Job match scoring and Generate documents (writes, checks and reviews a tailored CV and cover letter after a Generate click). The first two are described step by step below; open the others in n8n and read their sticky notes the same way.
 
 ### Job intake sync
 
@@ -116,6 +118,10 @@ Real costs measured on 2026-11-07:
 | Reading your cover letter | Opus 5.5 | about $0.03 | only when you upload a new or changed letter |
 | Scoring one job | Sonnet 5.5 | about $0.016 | when the job or your CV changes |
 | Reading one job file | Haiku 5.5 | about $0.0003 | new or changed job file (and retries) |
+| Writing a CV and cover letter (one round) | Opus 5.5 | about $0.13 (estimate, not yet measured) | only after you click Generate |
+| Reviewing them (one round) | Opus 5.5 | about $0.12 (estimate, not yet measured) | once per writing round |
+
+A Generate click costs one round (about $0.25) when the first draft passes the review, and at most `GENERATION_MAX_ROUNDS` rounds (3: about $0.75). A failed attempt (an API error, or n8n restarted mid-run) is retried from round 1 after 1, then 5 minutes, at most 3 attempts, so the worst case for one click is 18 calls (about $2.25). Nothing is written or reviewed without a click: the "Generate documents" workflow only picks up runs that a Generate click queued, and every call's cost is logged with its job and generation run.
 
 Reading the job folder every 30 seconds costs nothing, and the documents sync only reads your CV and letter after an upload or to retry a failed reading. A new CV re-scores every job once (10 per run). Check the real total any time with `docker compose exec postgres psql -U jobhunter -c "select sum(cost_usd) from cost_log"`.
 

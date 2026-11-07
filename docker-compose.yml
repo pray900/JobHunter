@@ -81,6 +81,9 @@ services:
       EXTRACT_MODEL: ${EXTRACT_MODEL:-claude-haiku-5-5}
       ANALYSE_MODEL: ${ANALYSE_MODEL:-claude-opus-5-5}
       SCORE_MODEL: ${SCORE_MODEL:-claude-sonnet-5-5}
+      WRITER_MODEL: ${WRITER_MODEL:-claude-opus-5-5}
+      REVIEW_MODEL: ${REVIEW_MODEL:-claude-opus-5-5}
+      GENERATION_MAX_ROUNDS: ${GENERATION_MAX_ROUNDS:-3}
       WORKER_URL: http://worker:3001
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       GENERIC_TIMEZONE: Australia/Sydney
