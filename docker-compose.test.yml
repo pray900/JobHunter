@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgres://jobhunter:test@postgres:5432/jobhunter
       JOBLISTING_DIR: /data/joblisting
       DOCUMENTS_DIR: /data/documents
+      GOTENBERG_URL: http://gotenberg:3000
     volumes:
       - type: bind
         source: ./.tmp/e2e-joblisting
@@ -51,6 +52,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      gotenberg:
+        condition: service_healthy
 
   anthropic-stub:
     build:
@@ -59,6 +62,17 @@ services:
       - "127.0.0.1:58081:8080"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  gotenberg:
+    # Renders DOCX to PDF for the worker. No host port: only the worker reaches it.
+    image: gotenberg/gotenberg:8.21.1
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 5s
       timeout: 3s
       retries: 20

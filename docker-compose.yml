@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgres://jobhunter:${POSTGRES_PASSWORD}@postgres:5432/jobhunter
       JOBLISTING_DIR: /data/joblisting
       DOCUMENTS_DIR: /data/documents
+      GOTENBERG_URL: http://gotenberg:3000
     volumes:
       # Long syntax with create_host_path: false, so a missing job folder fails loudly
       # instead of Compose silently creating an empty one.
@@ -54,6 +55,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      gotenberg:
+        condition: service_healthy
+
+  gotenberg:
+    restart: unless-stopped
+    # Renders DOCX to PDF for the worker. No host port: only the worker reaches it.
+    image: gotenberg/gotenberg:8.21.1
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   n8n:
     restart: unless-stopped

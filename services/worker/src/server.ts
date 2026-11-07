@@ -2,6 +2,8 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastif
 import { JobFileReadError, JobFolderMissingError, type ReadFile } from './storage/jobFolder.js';
 import { scanJobFolder } from './jobs/scan.js';
 import { registerDocumentRoutes } from './documents/routes.js';
+import { registerGenerationRoutes } from './generation/routes.js';
+import type { FetchLike } from './render/pdf.js';
 import { createDocumentStore } from './storage/documentFolder.js';
 
 export interface ServerDeps {
@@ -14,6 +16,10 @@ export interface ServerDeps {
   readFile?: ReadFile;
   // One banned phrase per line. Defaults to BANNED_PHRASES_FILE or the container path.
   bannedPhrasesFile?: string;
+  // Gotenberg base URL for PDF rendering. Defaults to GOTENBERG_URL or the compose service.
+  gotenbergUrl?: string;
+  // Test seam for calls to Gotenberg.
+  fetch?: FetchLike;
 }
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
@@ -47,6 +53,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       process.env.BANNED_PHRASES_FILE ??
       '/app/config/banned-phrases.txt',
   );
+
+  registerGenerationRoutes(app, {
+    gotenbergUrl: deps.gotenbergUrl ?? process.env.GOTENBERG_URL ?? 'http://gotenberg:3000',
+    fetch: deps.fetch,
+  });
 
   return app;
 }

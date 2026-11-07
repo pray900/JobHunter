@@ -1,6 +1,6 @@
 # JobHunter
 
-A local app that turns Word job ads into job cards and scores each one against your base CV. Four parts run in Docker: Postgres (data), a TypeScript worker (reads the `.docx` files), n8n (the workflows that glue it together and call Claude) and a React web page.
+A local app that turns Word job ads into job cards and scores each one against your base CV. Five parts run in Docker: Postgres (data), a TypeScript worker (reads the `.docx` files), Gotenberg (makes PDFs), n8n (the workflows that glue it together and call Claude) and a React web page.
 
 Everything runs on your machine. The only things that leave it are the job ad text, your CV and your cover letter, which are sent to Claude (see Cost for when).
 
@@ -118,6 +118,10 @@ Real costs measured on 2026-11-07:
 | Reading one job file | Haiku 5.5 | about $0.0003 | new or changed job file (and retries) |
 
 Reading the job folder every 30 seconds costs nothing, and the documents sync only reads your CV and letter after an upload or to retry a failed reading. A new CV re-scores every job once (10 per run). Check the real total any time with `docker compose exec postgres psql -U jobhunter -c "select sum(cost_usd) from cost_log"`.
+
+## PDF and Word output
+
+The worker renders tailored CVs and cover letters with the Standard ATS template (A4, one column, Arial, no tables or text boxes) to Word through the `docx` library. PDFs are made by converting that Word file with Gotenberg (`gotenberg/gotenberg:8.21.1`), a fifth container with no host port and `restart: unless-stopped`. The worker finds it through `GOTENBERG_URL` (default `http://gotenberg:3000`). If Gotenberg is down, the PDF request answers `502 pdf_render_failed` and Word output still works.
 
 ## Tests
 
