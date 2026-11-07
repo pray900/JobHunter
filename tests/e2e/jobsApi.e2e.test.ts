@@ -50,9 +50,9 @@ describe('jobs API', () => {
     const { jobs } = await listJobs();
     expect(jobs).toHaveLength(1);
     expect(Object.keys(jobs[0]).sort()).toEqual(
-      ['advertiser', 'createdAt', 'employer', 'extractionStatus', 'id', 'matchBreakdown', 'matchExplanation', 'matchScore', 'scoreStatus', 'shortDescription', 'sourceRef', 'sourceRemoved', 'status', 'title', 'url', 'warnings'].sort(),
+      ['advertiser', 'createdAt', 'employer', 'extractionStatus', 'generation', 'hasVersion', 'id', 'matchBreakdown', 'matchExplanation', 'matchScore', 'scoreStatus', 'shortDescription', 'sourceRef', 'sourceRemoved', 'status', 'title', 'url', 'warnings'].sort(),
     );
-    expect(jobs[0]).toMatchObject({ sourceRef: 'a.docx', url: 'https://x.io/a', status: 'new', matchScore: null, matchExplanation: null, matchBreakdown: null, scoreStatus: 'pending', sourceRemoved: false });
+    expect(jobs[0]).toMatchObject({ sourceRef: 'a.docx', url: 'https://x.io/a', status: 'new', matchScore: null, matchExplanation: null, matchBreakdown: null, scoreStatus: 'pending', sourceRemoved: false, generation: null, hasVersion: false });
     expect(Array.isArray(jobs[0].warnings)).toBe(true);
     expect(new Date(jobs[0].createdAt).toISOString()).toBe(jobs[0].createdAt);
   });

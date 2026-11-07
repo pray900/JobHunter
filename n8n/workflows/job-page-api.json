@@ -1,0 +1,1081 @@
+{
+  "id": "jh-job-page-api",
+  "name": "Job page API",
+  "active": false,
+  "nodes": [
+    {
+      "id": "186fcad2-edfc-5e0f-acd0-e5bfe7450f0f",
+      "name": "Sticky Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -300
+      ],
+      "parameters": {
+        "content": "## Job page API\nFive endpoints behind the job page. **Nothing here calls Claude.** The three that change data (`generate`, `status`, `notes`) first check the `X-JobHunter: 1` header, so a web page on another site cannot trigger them. Ids are checked as UUIDs inside the SQL before use. Every answer is quick (well under 30 s).\n\n- `POST api/jobs/generate` queues a run\n- `GET api/jobs/detail` the job page data\n- `POST api/jobs/status`, `POST api/jobs/notes`\n- `GET api/jobs/download` Word or PDF",
+        "height": 280,
+        "width": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "598f2cf1-ddc4-5855-9a22-5e7471f1e5e8",
+      "name": "POST api/jobs/generate",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/jobs/generate",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "0b7f2a14-6c3d-4e58-9a01-3d5c7e1b8f21"
+    },
+    {
+      "id": "bf25c408-ff0f-53b0-947e-ba964a29a67d",
+      "name": "Has X-JobHunter header? (generate)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e34ef06d-6f0f-5564-9a6f-d0e1d9f72ad6",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "1"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "3d64ec6d-1070-5bd4-9e33-247a8325ba95",
+      "name": "Respond: missing X-JobHunter header",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"missing_jobhunter_header\" } }}",
+        "options": {
+          "responseCode": 403
+        }
+      }
+    },
+    {
+      "id": "545ebe88-ffba-55da-a96b-579f48e57d8f",
+      "name": "Sticky Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        -300
+      ],
+      "parameters": {
+        "content": "## Generate\nOnly **records** a request: one `pending` generation run. The Generate documents workflow picks it up on its schedule.\nThe insert is a single statement. The partial unique index (one active run per job) decides a double click or a second tab: `on conflict do nothing` returns no row, and the answer is `409 generation_in_progress`. Not ready: the job's details are not read yet (`422 job_not_ready`) or there is no analysed base CV (`422 base_cv_not_ready`). Nothing is queued then.",
+        "height": 300,
+        "width": 480,
+        "color": 4
+      }
+    },
+    {
+      "id": "08c5cf1a-6333-505c-8b2c-b1dd1b3acd78",
+      "name": "Queue one run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\n-- One statement: the insert only happens when the job and the base CV are ready. A second active\n-- run for the job violates the partial unique index; on conflict do nothing then returns no row.\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\nj as (\n  select jobs.id, jobs.extraction_status from jobs, p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid\n), cv as (\n  select 1 as one from base_documents\n  where owner_id = $1::uuid and kind = 'cv' and active and analysis_status = 'done' and not source_removed\n  limit 1\n), ins as (\n  insert into generation_runs (owner_id, job_id)\n  select $1::uuid, j.id from j\n  where j.extraction_status = 'done' and exists (select 1 from cv)\n  on conflict do nothing\n  returning id\n)\nselect (select id from ins) as run_id,\n       exists (select 1 from j) as job_found,\n       coalesce((select extraction_status from j), '') as extraction_status,\n       exists (select 1 from cv) as cv_ready;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', String(($json.query || {}).id || '') ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      }
+    },
+    {
+      "id": "042c4dba-59f7-562f-b7c4-aebd1486a6b4",
+      "name": "Answer generate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Turns the insert's outcome into the HTTP answer.\nconst r = $json;\nif (r.run_id) return { json: { code: 202, body: { runId: r.run_id } } };\nif (!r.job_found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nif (r.extraction_status !== 'done') return { json: { code: 422, body: { error: 'job_not_ready' } } };\nif (!r.cv_ready) return { json: { code: 422, body: { error: 'base_cv_not_ready' } } };\n// Ready, but no row: the job already has an active run.\nreturn { json: { code: 409, body: { error: 'generation_in_progress' } } };"
+      }
+    },
+    {
+      "id": "5651f2b3-d74c-5f09-a985-3dc8a1ae3ad6",
+      "name": "Respond: generate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.code }}"
+        }
+      }
+    },
+    {
+      "id": "8330f63c-1dc4-5351-9e7f-2267525eb509",
+      "name": "GET api/jobs/detail",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        500
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "api/jobs/detail",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "1c8a3b25-7d4e-4f69-8b12-4e6d8f2c9a32"
+    },
+    {
+      "id": "1cda44ca-e2b1-5568-8745-9b463a1adc9b",
+      "name": "Sticky Note 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        220,
+        280
+      ],
+      "parameters": {
+        "content": "## Job page data\n`GET api/jobs/detail?id=` answers the job, its latest generation run and its latest document version (with the cost of that run). A match score is shown only when it was worked out from the CV in use now, the same rule as the job list. The run's `error` is returned only when it is one of the Generate workflow's own messages; anything else (raw error text) becomes a fixed generic message.",
+        "height": 300,
+        "width": 520,
+        "color": 4
+      }
+    },
+    {
+      "id": "8a341cef-3a16-54cd-a6ac-c27087899e51",
+      "name": "Read job page",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        220,
+        500
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below)\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the generate query).\n-- Same score rule as the job list: shown only when worked out from the CV in use now.\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\ncur as (\n  select content_hash from base_documents\n  where owner_id = $1::uuid and kind = 'cv' and active and analysis_status = 'done' and not source_removed\n  limit 1\n), j as (\n  select jobs.*,\n    (jobs.match_basis_hash is not null\n      and jobs.match_basis_hash = (select content_hash from cur)) as basis_ok\n  from jobs, p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid\n), g as (\n  select r.* from generation_runs r, j where r.job_id = j.id\n  order by r.created_at desc, r.id desc limit 1\n), v as (\n  select d.*, b.source_ref as base_cv_source_ref from document_versions d\n  join j on d.job_id = j.id\n  left join base_documents b on b.id = d.base_cv_id\n  order by d.version_no desc limit 1\n)\nselect\n  exists (select 1 from j) as found,\n  (select json_build_object(\n    'id', j.id, 'title', j.title, 'employer', j.employer, 'advertiser', j.advertiser, 'url', j.url,\n    'status', j.status, 'rawText', j.raw_text,\n    'matchScore',       case when j.basis_ok then j.match_score end,\n    'matchExplanation', case when j.basis_ok then j.match_explanation end,\n    'matchBreakdown',   case when j.basis_ok then j.match_breakdown end,\n    'warnings', j.warnings, 'companyNotes', j.company_notes) from j) as job,\n  (select json_build_object(\n    'status', g.status, 'stage', g.stage, 'round', g.round, 'attempts', g.attempts, 'error', g.error) from g) as generation,\n  (select json_build_object(\n    'id', v.id, 'versionNo', v.version_no, 'label', v.label,\n    'createdAt', to_char(v.created_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),\n    'templateId', v.template_id, 'cv', v.cv, 'coverLetter', v.cover_letter, 'reasons', v.reasons,\n    'keywordCoverage', v.keyword_coverage, 'review', v.review, 'checks', v.checks,\n    'baseCvSourceRef', v.base_cv_source_ref,\n    'costUsd', coalesce((select sum(c.cost_usd) from cost_log c where c.generation_run_id = v.run_id), 0)::float8\n  ) from v) as version;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', String(($json.query || {}).id || '') ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      }
+    },
+    {
+      "id": "e770c4d9-1dec-57db-b098-5db9fc689d89",
+      "name": "Answer detail",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        500
+      ],
+      "parameters": {
+        "jsCode": "// Builds the answer. A generation error is shown only when it is one of the Generate workflow's own\n// user-facing messages (grep \"error\" in generate-documents.json). Anything else may hold raw error\n// text, so it is replaced by a fixed message.\nconst r = $json;\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nconst FIXED = new Set([\n  'The job was not found.',\n  \"The job's details have not been read yet.\",\n  \"Your base CV isn't ready.\",\n  'Your base CV file could not be read; it will be tried again.',\n  'The last attempt stopped before it finished; it will be tried again.',\n  'Generation stopped and gave up after 3 attempts.',\n  'Claude declined to write the documents.',\n  'Claude declined to review the documents.',\n  \"Claude's answer was cut off (max_tokens).\",\n  \"The writer's answer was not in the expected format.\",\n  \"The reviewer's answer was not in the expected format.\",\n  \"The writer's documents were not in the expected format.\",\n]);\nconst PATTERNS = [\n  /^The request to Claude failed \\((HTTP \\d{3}|no response)\\)\\.$/,\n  /^Claude stopped unexpectedly \\(([a-z_]{1,40}|no stop reason)\\)\\.$/,\n  /^The document checks could not run \\((HTTP \\d{3}|no response)\\)\\.$/,\n];\nconst GENERIC = 'Something went wrong while generating. Try again.';\nlet generation = r.generation || null;\nif (generation && generation.error != null) {\n  const e = String(generation.error);\n  generation = { ...generation, error: FIXED.has(e) || PATTERNS.some((p) => p.test(e)) ? e : GENERIC };\n}\nreturn { json: { code: 200, body: { job: r.job, generation, version: r.version || null } } };"
+      }
+    },
+    {
+      "id": "eebd4f84-0096-5c55-96c1-50bf56f532cd",
+      "name": "Respond: detail",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        500
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.code }}"
+        }
+      }
+    },
+    {
+      "id": "ece66de6-1ede-572b-8ba2-431f8ad5105c",
+      "name": "POST api/jobs/status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        900
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/jobs/status",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "2d9b4c36-8e5f-4a7b-9c23-5f7e9a3d0b43"
+    },
+    {
+      "id": "d86d18e7-e883-5807-9776-704f8fbf5f02",
+      "name": "Has X-JobHunter header? (status)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        900
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9c7a8ec1-ec4b-5632-8126-730832ace9ab",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "1"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "9f23b827-3938-5604-8fb2-87d9f5c644ef",
+      "name": "Sticky Note 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        700
+      ],
+      "parameters": {
+        "content": "## Change status\nAny of the five statuses is allowed from the page. A history row is written only when the status really changes (the row is locked while it is compared, so two clicks cannot both record the same change). A bad status is `400 bad_status`.",
+        "height": 240,
+        "width": 460,
+        "color": 4
+      }
+    },
+    {
+      "id": "3930fcea-9353-56a4-a8e8-e022ac51e4d8",
+      "name": "Change status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        440,
+        900
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below), [3] the new status (text)\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the generate query).\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\ncur as (\n  select jobs.id, jobs.status from jobs, p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid\n  for update of jobs\n), upd as (\n  update jobs set status = $3::text, updated_at = now()\n  from cur\n  where jobs.id = cur.id\n    and $3::text in ('new', 'cv_ready', 'applied', 'interviewing', 'closed')\n    and cur.status is distinct from $3::text\n  returning jobs.id, cur.status as old_status\n), hist as (\n  insert into job_status_history (job_id, from_status, to_status)\n  select id, old_status, $3::text from upd\n  returning 1\n)\nselect exists (select 1 from cur) as found,\n       ($3::text in ('new', 'cv_ready', 'applied', 'interviewing', 'closed')) as valid;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', String(($json.query || {}).id || ''), typeof (($json.body || {}).status) === 'string' ? $json.body.status : '' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      }
+    },
+    {
+      "id": "7b34e85b-5eb3-5aa9-8b23-87985fe32462",
+      "name": "Answer status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        900
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\nconst status = typeof (($('POST api/jobs/status').first().json.body || {}).status) === 'string' ? $('POST api/jobs/status').first().json.body.status : '';\nif (!r.valid) return { json: { code: 400, body: { error: 'bad_status' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nreturn { json: { code: 200, body: { status } } };"
+      }
+    },
+    {
+      "id": "754e35e4-59f7-54bf-8178-e3499158d4ef",
+      "name": "Respond: status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        900
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.code }}"
+        }
+      }
+    },
+    {
+      "id": "f893c146-7b94-5019-b6e9-c4b0f77a47e4",
+      "name": "POST api/jobs/notes",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/jobs/notes",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "3eac5d47-9f60-4b8c-8d34-60a8ab4e1c54"
+    },
+    {
+      "id": "54a93a11-379d-5bdf-9314-b9c26f3436ca",
+      "name": "Has X-JobHunter header? (notes)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        1300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "528c978a-5dd4-57a6-b173-a307f7911162",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "1"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "7dd2be47-856a-52f3-9f7f-98f51ff25155",
+      "name": "Sticky Note 5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        1100
+      ],
+      "parameters": {
+        "content": "## Company notes\nFree text, a string of at most 4000 characters. Anything else is `400 bad_notes` and nothing is saved.",
+        "height": 200,
+        "width": 400,
+        "color": 4
+      }
+    },
+    {
+      "id": "7d48548c-13f6-56a8-9ded-4d8850ae3bd3",
+      "name": "Save notes",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        440,
+        1300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below), [3] the notes (text), [4] whether the notes\n-- are a string of at most 4000 characters\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the generate query).\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\nupd as (\n  update jobs set company_notes = $3::text, updated_at = now()\n  from p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid and $4::boolean\n  returning jobs.id\n)\nselect exists (select 1 from jobs, p where jobs.id = p.id and jobs.owner_id = $1::uuid) as found;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', String(($json.query || {}).id || ''), typeof (($json.body || {}).notes) === 'string' ? $json.body.notes : '', typeof (($json.body || {}).notes) === 'string' && Array.from($json.body.notes).length <= 4000 ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      }
+    },
+    {
+      "id": "6dda582d-ea3f-5a7f-9386-9d6869939eaf",
+      "name": "Answer notes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        1300
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\nconst notes = ($('POST api/jobs/notes').first().json.body || {}).notes;\nif (typeof notes !== 'string' || Array.from(notes).length > 4000) return { json: { code: 400, body: { error: 'bad_notes' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nreturn { json: { code: 200, body: { notes } } };"
+      }
+    },
+    {
+      "id": "62521332-6e2a-54d1-a8a1-3c10b9cab855",
+      "name": "Respond: notes",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        1300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.code }}"
+        }
+      }
+    },
+    {
+      "id": "8bf4d4ee-022d-51dd-801c-52d9fa714dd8",
+      "name": "GET api/jobs/download",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1700
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "api/jobs/download",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "4fbd6e58-a071-4c9d-9e45-71b9bc5f2d65"
+    },
+    {
+      "id": "90813029-98d4-5d9a-a0cf-4851c1765f15",
+      "name": "Sticky Note 6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        220,
+        1480
+      ],
+      "parameters": {
+        "content": "## Download\n`GET api/jobs/download?id=&doc=cv|cover_letter&format=docx|pdf` renders the latest stored version on demand through the worker (`/generation/render`); no file is kept. The answer is the file with `Content-Disposition: attachment`. File name: `{name} - CV - {target}` or `{name} - Cover letter - {target}`, target = employer, else advertiser, else Job; only letters, digits, space and `. _ ( ) -` are kept, at most 100 characters before the extension. No version: `404 no_version`. Bad parameters: `400 bad_request`.",
+        "height": 260,
+        "width": 600,
+        "color": 4
+      }
+    },
+    {
+      "id": "2f07b214-9ef7-539f-80dd-efd850b4e74d",
+      "name": "Check download request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        1700
+      ],
+      "parameters": {
+        "jsCode": "// Validates the query. Anything unexpected is a 400 before the database is touched.\nconst q = $json.query || {};\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst ok = typeof q.id === 'string' && UUID.test(q.id)\n  && (q.doc === 'cv' || q.doc === 'cover_letter')\n  && (q.format === 'docx' || q.format === 'pdf');\nif (!ok) return { json: { ok: false, code: 400, body: { error: 'bad_request' } } };\nreturn { json: { ok: true, id: q.id, doc: q.doc, format: q.format } };"
+      }
+    },
+    {
+      "id": "989aa739-ea4b-5d34-987e-8821d3e68c03",
+      "name": "Download request valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        1700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5afc76c2-ca73-5c95-933b-44c550fbdab7",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "37cf7d79-d782-5004-a1f6-570e7476d274",
+      "name": "Respond: download error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        1900
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.code }}"
+        }
+      }
+    },
+    {
+      "id": "ec286f05-fef0-5912-94ef-9f0bdc525c5c",
+      "name": "Read latest version",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        660,
+        1700
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, already checked as a UUID)\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the generate query).\nselect exists (select 1 from jobs where id = $2::uuid and owner_id = $1::uuid) as found,\n  (select row_to_json(t) from (\n    select d.template_id as \"templateId\", d.cv, d.cover_letter as \"coverLetter\",\n           j.employer, j.advertiser\n    from document_versions d join jobs j on j.id = d.job_id\n    where d.job_id = $2::uuid and j.owner_id = $1::uuid\n    order by d.version_no desc limit 1\n  ) t) as version;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $json.id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      }
+    },
+    {
+      "id": "309022d7-27dc-5f74-8353-12af339a0a47",
+      "name": "Build render request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        1700
+      ],
+      "parameters": {
+        "jsCode": "// The worker request, the download file name and the response headers.\nconst req = $('Check download request').first().json;\nconst r = $json;\nif (!r.found) return { json: { render: false, code: 404, body: { error: 'job_not_found' } } };\nif (!r.version) return { json: { render: false, code: 404, body: { error: 'no_version' } } };\nconst v = r.version;\nconst clean = (s) => String(s).replace(/[^A-Za-z0-9 ._()-]/g, '');\nconst target = [v.employer, v.advertiser].map((s) => (typeof s === 'string' ? clean(s).trim() : '')).find((s) => s) || 'Job';\nconst person = clean((v.cv && typeof v.cv.name === 'string' ? v.cv.name : '') || '').trim() || 'CV';\nconst kind = req.doc === 'cv' ? 'CV' : 'Cover letter';\nlet base = clean(`${person} - ${kind} - ${target}`).replace(/^[ .]+/, '').slice(0, 100).trim();\nif (!base) base = 'Document';\nconst file = `${base}.${req.format}`;\nconst type = req.format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';\nreturn { json: {\n  render: true,\n  body: { templateId: v.templateId, doc: req.doc, format: req.format, cv: v.cv, coverLetter: req.doc === 'cover_letter' ? v.coverLetter : null },\n  disposition: `attachment; filename=\"${file}\"; filename*=UTF-8''${encodeURIComponent(file)}`,\n  contentType: type,\n} };"
+      }
+    },
+    {
+      "id": "83272c41-ef0f-51e7-9614-1a653f060efe",
+      "name": "Is there a version to render?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        1700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d68701ec-b8f0-5ef9-a77d-062cf1ac589f",
+              "leftValue": "={{ $json.render }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "d6d4ffca-c708-56d8-8cb4-e8d1bea444ca",
+      "name": "Render via worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        1700
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WORKER_URL }}/generation/render",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 25000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "file"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "7458ec06-b0db-5758-972a-7242d948be6e",
+      "name": "Was it rendered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        1700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "31ec9c4d-bbc8-576b-825a-d8e62fe3cfc6",
+              "leftValue": "={{ $json.statusCode }}",
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              },
+              "rightValue": 200
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "422c623c-a0bc-5f21-b02e-b201f4c9c8ec",
+      "name": "Respond: file",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        1700
+      ],
+      "parameters": {
+        "respondWith": "binary",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "={{ $('Build render request').first().json.contentType }}"
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "={{ $('Build render request').first().json.disposition }}"
+              },
+              {
+                "name": "X-Content-Type-Options",
+                "value": "nosniff"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "575a06d9-1e2e-5186-98df-10af7fb5e475",
+      "name": "Respond: render failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        1900
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"render_failed\" } }}",
+        "options": {
+          "responseCode": 502
+        }
+      }
+    }
+  ],
+  "connections": {
+    "POST api/jobs/generate": {
+      "main": [
+        [
+          {
+            "node": "Has X-JobHunter header? (generate)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header? (generate)": {
+      "main": [
+        [
+          {
+            "node": "Queue one run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue one run": {
+      "main": [
+        [
+          {
+            "node": "Answer generate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer generate": {
+      "main": [
+        [
+          {
+            "node": "Respond: generate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET api/jobs/detail": {
+      "main": [
+        [
+          {
+            "node": "Read job page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read job page": {
+      "main": [
+        [
+          {
+            "node": "Answer detail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer detail": {
+      "main": [
+        [
+          {
+            "node": "Respond: detail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST api/jobs/status": {
+      "main": [
+        [
+          {
+            "node": "Has X-JobHunter header? (status)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header? (status)": {
+      "main": [
+        [
+          {
+            "node": "Change status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Change status": {
+      "main": [
+        [
+          {
+            "node": "Answer status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer status": {
+      "main": [
+        [
+          {
+            "node": "Respond: status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST api/jobs/notes": {
+      "main": [
+        [
+          {
+            "node": "Has X-JobHunter header? (notes)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header? (notes)": {
+      "main": [
+        [
+          {
+            "node": "Save notes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save notes": {
+      "main": [
+        [
+          {
+            "node": "Answer notes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer notes": {
+      "main": [
+        [
+          {
+            "node": "Respond: notes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET api/jobs/download": {
+      "main": [
+        [
+          {
+            "node": "Check download request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check download request": {
+      "main": [
+        [
+          {
+            "node": "Download request valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download request valid?": {
+      "main": [
+        [
+          {
+            "node": "Read latest version",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: download error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read latest version": {
+      "main": [
+        [
+          {
+            "node": "Build render request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build render request": {
+      "main": [
+        [
+          {
+            "node": "Is there a version to render?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is there a version to render?": {
+      "main": [
+        [
+          {
+            "node": "Render via worker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: download error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render via worker": {
+      "main": [
+        [
+          {
+            "node": "Was it rendered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Was it rendered?": {
+      "main": [
+        [
+          {
+            "node": "Respond: file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: render failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "tags": []
+}
