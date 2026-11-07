@@ -182,6 +182,18 @@ describe('POST /documents/checks', () => {
     });
   });
 
+  test('M9: without an explicit file the banned phrases come from the config dir', async () => {
+    const a = buildServer({ jobFolderDir: root, documentsDir: root, configDir: root });
+    const res = await a.inject({
+      method: 'POST',
+      url: '/documents/checks',
+      payload: { kind: 'cover_letter', facts: letterFacts({ toneNotes: 'Spearheaded tone.' }) },
+    });
+    await a.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().warnings).toEqual([expect.objectContaining({ code: 'banned_phrase' })]);
+  });
+
   test('unknown kind -> 400 bad_request', async () => {
     const a = app();
     const res = await a.inject({ method: 'POST', url: '/documents/checks', payload: { kind: 'resume', facts: {} } });

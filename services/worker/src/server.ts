@@ -1,3 +1,4 @@
+import path from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { JobFileReadError, JobFolderMissingError, type ReadFile } from './storage/jobFolder.js';
 import { scanJobFolder } from './jobs/scan.js';
@@ -25,6 +26,8 @@ export interface ServerDeps {
 }
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
+  // One config folder for every list; the banned phrases file follows it unless set explicitly.
+  const configDir = deps.configDir ?? process.env.CONFIG_DIR ?? '/app/config';
   const app = Fastify({ logger: deps.logger ?? false });
   app.get('/health', async () => ({ ok: true }));
 
@@ -51,15 +54,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerDocumentRoutes(
     app,
     createDocumentStore(deps.documentsDir ?? '/data/documents', { log: (message, context) => app.log.warn(context, message) }),
-    deps.bannedPhrasesFile ??
-      process.env.BANNED_PHRASES_FILE ??
-      '/app/config/banned-phrases.txt',
+    deps.bannedPhrasesFile ?? process.env.BANNED_PHRASES_FILE ?? path.join(configDir, 'banned-phrases.txt'),
   );
 
   registerGenerationRoutes(app, {
     gotenbergUrl: deps.gotenbergUrl ?? process.env.GOTENBERG_URL ?? 'http://gotenberg:3000',
     fetch: deps.fetch,
-    configDir: deps.configDir,
+    configDir,
   });
 
   return app;

@@ -25,7 +25,7 @@ const baseStructured = {
   projects: [{ name: 'Side Project', bullets: ['Small CLI tool.'] }],
   skills: ['TypeScript', 'SQL', 'Salesforce', 'Reporting'],
   metrics: ['3+ years building services', 'Cut report time by 40%'],
-  contact: { location: 'Sydney NSW', email: 'jordan@example.com', phone: '0400 000 000', links: [] },
+  contact: { location: 'Sydney NSW', email: 'jordan@example.com', phone: '0400 000 000', links: ['https://github.com/jordan-testcase'] },
 };
 
 const goodCv: TailoredCv = {
@@ -213,7 +213,8 @@ describe('runChecks', () => {
       ...goodCv,
       contact: { ...goodCv.contact, email: 'jordan99@example.com', phone: '0412 345 678', links: [{ label: 'Site', url: 'https://example.com/p/4821' }] },
     };
-    const r = await runChecks(input({ cv }), opts());
+    const baseCv = { structured: { ...baseStructured, contact: { ...baseStructured.contact, email: 'jordan99@example.com', phone: '0412 345 678', links: ['https://example.com/p/4821'] } } };
+    const r = await runChecks(input({ cv, baseCv }), opts());
     expect(find(r, 'unknown_fact')).toEqual([]);
   });
 
@@ -278,7 +279,8 @@ describe('runChecks', () => {
       return new Response('', { status: 200 });
     }) as unknown as typeof fetch;
     const cv = { ...goodCv, contact: { ...goodCv.contact, links } };
-    const r = await runChecks(input({ cv }), opts({ fetch: fetchSeam }));
+    const baseCv = { structured: { ...baseStructured, contact: { ...baseStructured.contact, links: links.map((l) => l.url) } } };
+    const r = await runChecks(input({ cv, baseCv }), opts({ fetch: fetchSeam }));
     expect(find(r, 'link_unreachable').map((c) => c.detail)).toEqual([expect.stringContaining('gone.example')]);
     expect(find(r, 'link_unreachable')[0].severity).toBe('warning');
     expect(find(r, 'link_invalid')).toEqual([expect.objectContaining({ severity: 'hard', where: 'cv.contact.links[3]' })]);
@@ -295,4 +297,141 @@ describe('runChecks', () => {
     expect(rt.some((c) => c.doc === 'cv')).toBe(true);
     expect(rt.some((c) => c.doc === 'cover_letter')).toBe(true);
   });
+
+  // ---------- fix round 1 ----------
+  const twoRoles = {
+    ...baseStructured,
+    roles: [
+      { title: 'Software Engineer (Intern)', employer: 'Acme Pty Ltd', dates: 'Mar 2022 - Dec 2024', bullets: ['Built an invoicing service.'] },
+      { title: 'Data Analyst', employer: 'Betaco', dates: 'Jan 2019 - Feb 2022', bullets: ['Cut report time by 40%.'] },
+    ],
+  };
+  const exp = (over: object) => ({ ...goodCv, experience: [{ ...goodCv.experience[0], title: 'Software Engineer (Intern)', ...over }] });
+
+  test('I1: correct AU inflections are not flagged as US spelling', async () => {
+    const r = await runChecks(input({ coverLetter: letter(['I fulfilled the brief, was fulfilling it, and literally read the literal text.']) }), opts());
+    expect(find(r, 'us_spelling')).toEqual([]);
+  });
+
+  test('I2: shifted dates and a title from another role are unknown_fact', async () => {
+    const base = { structured: twoRoles };
+    const ok = await runChecks(input({ cv: exp({}), baseCv: base }), opts());
+    expect(find(ok, 'unknown_fact')).toEqual([]);
+    const dates = await runChecks(input({ cv: exp({ dates: 'Jan 2019 - Dec 2024' }), baseCv: base }), opts());
+    expect(find(dates, 'unknown_fact').map((c) => c.where)).toContain('cv.experience[0].dates');
+    const title = await runChecks(input({ cv: exp({ title: 'Data Analyst' }), baseCv: base }), opts());
+    expect(find(title, 'unknown_fact').map((c) => c.where)).toContain('cv.experience[0].title');
+    const dropped = await runChecks(input({ cv: exp({ dates: 'Mar 2022' }), baseCv: base }), opts());
+    expect(find(dropped, 'unknown_fact').map((c) => c.where)).toContain('cv.experience[0].dates');
+    const edu = await runChecks(
+      input({ cv: { ...goodCv, education: [{ ...goodCv.education[0], dates: '2016 - 2021' }] } }),
+      opts(),
+    );
+    expect(find(edu, 'unknown_fact').map((c) => c.where)).toContain('cv.education[0].dates');
+  });
+
+  test('I3: dropping a bracketed title qualifier is unknown_fact; a bracket on an employer is ignored', async () => {
+    const base = { structured: twoRoles };
+    const r = await runChecks(input({ cv: exp({ title: 'Software Engineer' }), baseCv: base }), opts());
+    expect(find(r, 'unknown_fact').map((c) => c.where)).toContain('cv.experience[0].title');
+    const bracketed = { ...twoRoles, roles: [{ ...twoRoles.roles[0], employer: 'Acme Pty Ltd (Sydney)' }, twoRoles.roles[1]] };
+    const ok = await runChecks(input({ cv: exp({}), baseCv: { structured: bracketed } }), opts());
+    expect(find(ok, 'unknown_fact')).toEqual([]);
+  });
+
+  test('I4: a work-rights line the base lacks, or words differently, is unknown_fact', async () => {
+    const none = await runChecks(
+      input({ cv: { ...goodCv, workRights: 'Full working rights in Australia' }, baseCv: { structured: { ...baseStructured, workRights: null } } }),
+      opts(),
+    );
+    expect(find(none, 'unknown_fact')).toEqual([expect.objectContaining({ severity: 'hard', where: 'cv.workRights' })]);
+    const reworded = await runChecks(
+      input({
+        cv: { ...goodCv, workRights: 'Australian Citizen.' },
+        baseCv: { structured: { ...baseStructured, workRights: 'Full working rights (485 visa)' } },
+      }),
+      opts(),
+    );
+    expect(find(reworded, 'unknown_fact').map((c) => c.where)).toContain('cv.workRights');
+    const punct = await runChecks(
+      input({ cv: { ...goodCv, workRights: 'Australian  citizen.' } }),
+      opts(),
+    );
+    expect(find(punct, 'unknown_fact')).toEqual([]);
+  });
+
+  test('I5: the letter may use numbers and dates from the job ad; the CV may not', async () => {
+    const job = { title: 'Developer APS 6', employer: 'Newco', advertiser: null, rawText: 'Join our 2027 graduate program from Feb 2027.' };
+    const ok = await runChecks(input({ job, coverLetter: letter(['I am applying for the Developer APS 6 role in your 2027 program starting Feb 2027.']) }), opts());
+    expect(find(ok, 'unknown_fact')).toEqual([]);
+    const cv = await runChecks(input({ job, cv: { ...goodCv, summary: 'Engineer ready for the 2027 program.' } }), opts());
+    expect(find(cv, 'unknown_fact').map((c) => c.doc)).toEqual(['cv']);
+  });
+
+  test('I6: other-job names match case-sensitively; the previous target ignores case and punctuation', async () => {
+    const honest = await runChecks(
+      input({
+        otherJobs: [{ title: 'Data Engineer', employer: 'Insight', advertiser: null }],
+        coverLetter: letter(['I want insight into your platform, where a data engineer helped me.']),
+      }),
+      opts(),
+    );
+    expect(find(honest, 'company_leakage')).toEqual([]);
+    expect(find(honest, 'title_leakage')).toEqual([]);
+    const leaked = await runChecks(
+      input({ otherJobs: [{ title: null, employer: 'Insight', advertiser: null }], coverLetter: letter(['I admire Insight.']) }),
+      opts(),
+    );
+    expect(find(leaked, 'company_leakage').length).toBe(1);
+    const base = { structured: { previousTarget: { company: 'Oldco', addressee: 'Ms. Li', role: null } } };
+    const noStop = await runChecks(input({ baseCoverLetter: base, coverLetter: { ...LETTER, salutation: 'Dear ms li,' } }), opts());
+    expect(find(noStop, 'company_leakage').map((c) => c.where)).toEqual(['coverLetter.salutation']);
+  });
+
+  test('M1: percentages and contact digits are not interchangeable with plain numbers', async () => {
+    const base = { structured: { ...baseStructured, contact: { ...baseStructured.contact, location: 'Sydney NSW 2000' } } };
+    const r = await runChecks(input({ baseCv: base, coverLetter: letter(['I served 2,000 users and 40 teams.']) }), opts());
+    const d = find(r, 'unknown_fact').map((c) => c.detail).join(' ');
+    expect(d).toMatch(/2,000/);
+    expect(d).toMatch(/40/);
+  });
+
+  test('M3: a technology missing from the base CV is a review item', async () => {
+    const cv = { ...goodCv, summary: 'Engineer with 3+ years building services on Kubernetes.' };
+    const r = await runChecks(input({ cv }), opts());
+    expect(find(r, 'unmatched_skill')).toEqual([expect.objectContaining({ severity: 'review', detail: expect.stringContaining('Kubernetes') })]);
+  });
+
+  test('M6: changed contact details are unknown_fact', async () => {
+    const cv = { ...goodCv, contact: { ...goodCv.contact, email: 'other@example.com', phone: '0499 999 999' } };
+    const r = await runChecks(input({ cv }), opts());
+    const where = find(r, 'unknown_fact').map((c) => c.where);
+    expect(where).toEqual(expect.arrayContaining(['cv.contact.email', 'cv.contact.phone']));
+  });
+
+  test('M7: links to private hosts or not in the base are not fetched', async () => {
+    const seen: string[] = [];
+    const fetchSeam = (async (url: string) => {
+      seen.push(url);
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+    const links = [
+      { label: 'A', url: 'http://gotenberg:3000/forms' },
+      { label: 'B', url: 'http://169.254.169.254/latest' },
+      { label: 'C', url: 'https://unlisted.example/x' },
+    ];
+    const baseCv = { structured: { ...baseStructured, contact: { ...baseStructured.contact, links: [links[0].url, links[1].url] } } };
+    const r = await runChecks(input({ cv: { ...goodCv, contact: { ...goodCv.contact, links } }, baseCv }), opts({ fetch: fetchSeam }));
+    expect(seen).toEqual([]);
+    expect(find(r, 'link_invalid').map((c) => c.where)).toEqual(['cv.contact.links[0]', 'cv.contact.links[1]']);
+    expect(find(r, 'unknown_fact').map((c) => c.where)).toEqual(['cv.contact.links[2]']);
+  });
+
+  test('M8: a link written in prose is validated against the base and the job ad', async () => {
+    const r = await runChecks(input({ coverLetter: letter(['See https://invented.example/portfolio for samples.']) }), opts());
+    expect(find(r, 'unknown_fact').map((c) => c.where)).toContain('coverLetter.paragraphs[0]');
+    const ok = await runChecks(input({ coverLetter: letter(['See https://github.com/jordan-testcase for samples.']) }), opts());
+    expect(find(ok, 'unknown_fact')).toEqual([]);
+  });
+
 });

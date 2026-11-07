@@ -87,7 +87,8 @@ const E_DROP_SUFFIXES = ['e', 'es', 'ed', 'ing', 'er', 'ers', 'ation', 'ations']
 const PLAIN_SUFFIXES = ['', 's', 'ed', 'ing', 'al', 'ally', 'er', 'ers'];
 
 // "optimize optimise" also covers optimized, optimizing, optimization ...; an explicit line always wins.
-export function buildUsToAu(lines: string[]): Map<string, string> {
+// Derived forms are kept only when the US form is not a real word and the AU form is (fulfilled/fulfiled, literal/litreal).
+export function buildUsToAu(lines: string[], accepts?: (word: string) => boolean): Map<string, string> {
   const pairs = lines.map((l) => l.split(/\s+/)).filter((p) => p.length === 2 && p[0].toLowerCase() !== p[1].toLowerCase());
   const map = new Map<string, string>();
   for (const [us, au] of pairs) {
@@ -99,6 +100,9 @@ export function buildUsToAu(lines: string[]): Map<string, string> {
       for (const s of PLAIN_SUFFIXES) map.set(us.toLowerCase() + s, au.toLowerCase() + s);
     }
   }
+  if (accepts) {
+    for (const [us, au] of [...map]) if (accepts(us) || !accepts(au)) map.delete(us);
+  }
   for (const [us, au] of pairs) map.set(us.toLowerCase(), au.toLowerCase());
   return map;
 }
@@ -109,7 +113,8 @@ export function loadConfig(dir: string): Promise<CheckConfig> {
     cached = (async () => {
       const read = (f: string) => readFile(path.join(dir, f), 'utf8');
       const [banned, au, tech] = await Promise.all([read('banned-phrases.txt'), read('au-spelling.txt'), read('tech-casing.txt')]);
-      return { banned: parseBannedPhrases(banned), usToAu: buildUsToAu(listLines(au)), tech: listLines(tech) };
+      const spell = await getSpell();
+      return { banned: parseBannedPhrases(banned), usToAu: buildUsToAu(listLines(au), (w) => spell.correct(w)), tech: listLines(tech) };
     })();
     configCache.set(dir, cached);
     cached.catch(() => configCache.delete(dir));
@@ -147,12 +152,22 @@ function monthYears(text: string): { key: string; shown: string }[] {
 }
 function numbers(text: string): { key: string; shown: string }[] {
   return [...text.matchAll(NUMBER)].map((m) => ({
-    key: `${m[1].replace(/,/g, '')}${m[2] ?? ''}${(m[3] ?? '').replace('%', '').toLowerCase()}`,
+    key: `${m[1].replace(/,/g, '')}${m[2] ?? ''}${(m[3] ?? '').replace('%', 'pct').toLowerCase()}`,
     shown: m[0],
   }));
 }
 
+// Month-years, bare years and "present", in order: two date strings that say the same thing give the same tokens.
+const DATE_TOKEN = new RegExp(`(?<![\\p{L}])(${MONTHS})\\.?,?\\s+(\\d{4})(?!\\d)|(?<!\\d)(\\d{4})(?!\\d)|\\b(present|current|ongoing|now)\\b`, 'giu');
+function dateTokens(text: string): string {
+  return [...text.matchAll(DATE_TOKEN)]
+    .map((m) => (m[1] ? `${m[1].slice(0, 3).toLowerCase()} ${m[2]}` : (m[3] ?? 'present')))
+    .join('|');
+}
+const punctFree = (s: string): string => norm(s).replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+
 const LEGAL_SUFFIX = /\b(pty|ltd|limited|inc|llc|plc)\b\.?/g;
+// Employers only: brackets and legal suffixes are not part of the name. Job titles use norm() so "(Intern)" counts.
 const orgKey = (s: string): string =>
   norm(s).replace(/\([^)]*\)/g, ' ').replace(LEGAL_SUFFIX, ' ').replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -163,10 +178,12 @@ interface BaseFacts {
   corpusAu: string;
   numberKeys: Set<string>;
   monthYearKeys: Set<string>;
-  employers: Set<string>;
   titles: Set<string>;
+  roles: { employer: string; title: string; dates: string }[];
+  education: { institution: string; qualification: string; statusText: string; dates: string }[];
   words: Set<string>;
-  workRights: boolean;
+  workRights: string | null;
+  contact: { email: string; phone: string; links: Set<string> };
 }
 
 function asRecord(x: unknown): Record<string, unknown> {
@@ -180,19 +197,35 @@ function wordSet(text: string, into: Set<string>): void {
 function baseFacts(structured: object, usToAu: Map<string, string>): BaseFacts {
   const s = asRecord(structured);
   const raw = collectStrings(structured).join('\n');
-  const corpus = norm(raw);
-  const roles = Array.isArray(s.roles) ? s.roles.map(asRecord) : [];
+  // Contact digits (phone, postcode) are not achievements: numbers and dates come from everything else.
+  const { contact: contactRaw, ...rest } = s;
+  const factsRaw = collectStrings(rest).join('\n');
+  const roles = (Array.isArray(s.roles) ? s.roles : []).map(asRecord);
+  const education = (Array.isArray(s.education) ? s.education : []).map(asRecord);
+  const contact = asRecord(contactRaw);
   const words = new Set<string>();
   wordSet(raw, words);
+  const corpus = norm(raw);
   return {
     corpus,
     corpusAu: toAu(corpus, usToAu),
-    numberKeys: new Set(numbers(stripLinks(raw)).map((n) => n.key)),
-    monthYearKeys: new Set(monthYears(raw).map((m) => m.key)),
-    employers: new Set(roles.map((r) => orgKey(String(r.employer ?? ''))).filter(Boolean)),
-    titles: new Set(roles.map((r) => orgKey(String(r.title ?? ''))).filter(Boolean)),
+    numberKeys: new Set(numbers(stripLinks(factsRaw)).map((n) => n.key)),
+    monthYearKeys: new Set(monthYears(factsRaw).map((m) => m.key)),
+    titles: new Set(roles.map((r) => norm(String(r.title ?? ''))).filter(Boolean)),
+    roles: roles.map((r) => ({ employer: orgKey(String(r.employer ?? '')), title: norm(String(r.title ?? '')), dates: dateTokens(String(r.dates ?? '')) })),
+    education: education.map((e) => ({
+      institution: norm(String(e.institution ?? '')),
+      qualification: norm(String(e.qualification ?? '')),
+      statusText: punctFree(String(e.statusText ?? '')),
+      dates: dateTokens(String(e.dates ?? '')),
+    })),
     words,
-    workRights: typeof s.workRights === 'string' && s.workRights.trim() !== '',
+    workRights: typeof s.workRights === 'string' && s.workRights.trim() !== '' ? s.workRights : null,
+    contact: {
+      email: norm(String(contact.email ?? '')),
+      phone: String(contact.phone ?? '').replace(/\D/g, ''),
+      links: new Set(collectStrings(contact.links).map((l) => norm(l).replace(/\/+$/, ''))),
+    },
   };
 }
 
@@ -225,19 +258,23 @@ function bannedChecks(segments: Segment[], banned: string[]): CheckResult[] {
   return out;
 }
 
+// Names from the previous application match ignoring case and punctuation ("Ms Li" = "Ms. Li"). Names from other jobs match
+// as stored, case-sensitively, so a common word ("insight") is not mistaken for an employer called "Insight".
+const looseText = (s: string): string => norm(s).replace(/[.,;:]/g, '');
+
 function leakageChecks(input: CheckInput, segments: Segment[], base: BaseFacts): CheckResult[] {
   const prev = asRecord(asRecord(input.baseCoverLetter?.structured).previousTarget);
-  const candidates: { name: string; kind: 'company' | 'title'; source: string }[] = [];
-  const push = (name: unknown, kind: 'company' | 'title', source: string) => {
-    if (typeof name === 'string' && name.trim().length >= 3) candidates.push({ name: name.trim(), kind, source });
+  const candidates: { name: string; kind: 'company' | 'title'; source: string; loose: boolean }[] = [];
+  const push = (name: unknown, kind: 'company' | 'title', source: string, loose: boolean) => {
+    if (typeof name === 'string' && name.trim().length >= 3) candidates.push({ name: name.trim(), kind, source, loose });
   };
-  push(prev.company, 'company', 'previousTarget.company');
-  push(prev.addressee, 'company', 'previousTarget.addressee');
-  push(prev.role, 'title', 'previousTarget.role');
+  push(prev.company, 'company', 'previousTarget.company', true);
+  push(prev.addressee, 'company', 'previousTarget.addressee', true);
+  push(prev.role, 'title', 'previousTarget.role', true);
   for (const j of input.otherJobs) {
-    push(j.employer, 'company', 'another job employer');
-    push(j.advertiser, 'company', 'another job advertiser');
-    push(j.title, 'title', 'another job title');
+    push(j.employer, 'company', 'another job employer', false);
+    push(j.advertiser, 'company', 'another job advertiser', false);
+    push(j.title, 'title', 'another job title', false);
   }
   const target = [input.job.title, input.job.employer, input.job.advertiser].filter((t): t is string => !!t).map(norm);
   const out: CheckResult[] = [];
@@ -246,9 +283,9 @@ function leakageChecks(input: CheckInput, segments: Segment[], base: BaseFacts):
     const n = norm(c.name);
     if (target.some((t) => t === n || phraseRegex(t).test(n) || phraseRegex(n).test(t))) continue;
     if (phraseRegex(n).test(base.corpus)) continue;
-    const re = phraseRegex(c.name);
+    const re = c.loose ? phraseRegex(looseText(c.name)) : new RegExp(phraseRegex(c.name).source, 'u');
     for (const seg of segments) {
-      if (!re.test(seg.text)) continue;
+      if (!re.test(c.loose ? looseText(seg.text) : seg.text)) continue;
       const key = `${c.kind}|${n}|${seg.where}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -303,26 +340,108 @@ function techCasingChecks(segments: Segment[], tech: string[], spell: Spell): Ch
   return out;
 }
 
-function factChecks(cvSegs: Segment[], letterSegs: Segment[], base: BaseFacts): CheckResult[] {
+const unknown = (doc: DocKind, where: string, detail: string): CheckResult => ({ code: 'unknown_fact', severity: 'hard', doc, where, detail });
+const PROSE_URL = /https?:\/\/[^\s)>\]"']+/gi;
+
+// Numbers and dates a text may use: the base CV's; the letter may also use the job ad's own.
+function numberAndDateFacts(seg: Segment, text: string, base: BaseFacts, extra?: { numbers: Set<string>; dates: Set<string> }): CheckResult[] {
   const out: CheckResult[] = [];
+  const seenNum = new Set<string>();
+  for (const n of numbers(text)) {
+    if (base.numberKeys.has(n.key) || extra?.numbers.has(n.key) || seenNum.has(n.key)) continue;
+    seenNum.add(n.key);
+    out.push(unknown(seg.doc, seg.where, `The number "${n.shown}" is not in the base CV.`));
+  }
+  for (const d of monthYears(text)) {
+    if (base.monthYearKeys.has(d.key) || extra?.dates.has(d.key)) continue;
+    out.push(unknown(seg.doc, seg.where, `The date "${d.shown}" is not in the base CV.`));
+  }
+  return out;
+}
+
+function roleFacts(cv: TailoredCv, base: BaseFacts): CheckResult[] {
+  const out: CheckResult[] = [];
+  cv.experience.forEach((e, i) => {
+    const p = `cv.experience[${i}]`;
+    const candidates = base.roles.filter((r) => r.employer === orgKey(e.employer));
+    const datesSeg: Segment = { doc: 'cv', where: `${p}.dates`, text: e.dates, kind: 'body' };
+    if (candidates.length === 0) {
+      out.push(unknown('cv', `${p}.employer`, `The employer "${e.employer}" is not in the base CV.`));
+      if (!base.titles.has(norm(e.title))) out.push(unknown('cv', `${p}.title`, `The job title "${e.title}" is not in the base CV.`));
+      out.push(...numberAndDateFacts(datesSeg, e.dates, base));
+      return;
+    }
+    const exact = candidates.find((r) => r.title === norm(e.title));
+    if (!exact) out.push(unknown('cv', `${p}.title`, `The job title "${e.title}" is not the title the base CV gives for "${e.employer}".`));
+    const dk = dateTokens(e.dates);
+    if (!(exact ? [exact] : candidates).some((r) => r.dates === dk)) {
+      out.push(unknown('cv', `${p}.dates`, `The dates "${e.dates}" differ from the base CV's dates for "${e.employer}".`));
+    }
+  });
+  cv.education.forEach((e, i) => {
+    const p = `cv.education[${i}]`;
+    const candidates = base.education.filter((b) => b.institution === norm(e.institution));
+    if (candidates.length === 0) {
+      out.push(unknown('cv', `${p}.institution`, `The institution "${e.institution}" is not in the base CV.`));
+      return;
+    }
+    const exact = candidates.find((b) => b.qualification === norm(e.qualification));
+    if (!exact) out.push(unknown('cv', `${p}.qualification`, `The qualification "${e.qualification}" is not the one the base CV gives for "${e.institution}".`));
+    const pool = exact ? [exact] : candidates;
+    if (!pool.some((b) => b.dates === dateTokens(e.dates))) out.push(unknown('cv', `${p}.dates`, `The dates "${e.dates}" differ from the base CV.`));
+    if (!pool.some((b) => b.statusText === punctFree(e.statusText))) out.push(unknown('cv', `${p}.statusText`, 'The completion wording differs from the base CV.'));
+  });
+  return out;
+}
+
+function contactAndRightsFacts(cv: TailoredCv, base: BaseFacts): CheckResult[] {
+  const out: CheckResult[] = [];
+  if (cv.workRights && cv.workRights.trim() !== '') {
+    if (base.workRights === null) {
+      out.push(unknown('cv', 'cv.workRights', 'The base CV has no work-rights line, so one cannot be added.'));
+    } else if (punctFree(cv.workRights) !== punctFree(base.workRights)) {
+      out.push(unknown('cv', 'cv.workRights', 'The work-rights wording differs from the base CV.'));
+    }
+  }
+  if (cv.contact.email && norm(cv.contact.email) !== base.contact.email) out.push(unknown('cv', 'cv.contact.email', 'The e-mail address differs from the base CV.'));
+  if (cv.contact.phone && cv.contact.phone.replace(/\D/g, '') !== base.contact.phone) out.push(unknown('cv', 'cv.contact.phone', 'The phone number differs from the base CV.'));
+  return out;
+}
+
+function factChecks(input: CheckInput, cvSegs: Segment[], letterSegs: Segment[], base: BaseFacts): CheckResult[] {
+  const out: CheckResult[] = [...roleFacts(input.cv, base), ...contactAndRightsFacts(input.cv, base)];
+  const jobText = [input.job.title, input.job.employer, input.job.advertiser, input.job.rawText].filter((t): t is string => !!t).join('\n');
+  const jobAllowed = { numbers: new Set(numbers(stripLinks(jobText)).map((n) => n.key)), dates: new Set(monthYears(jobText).map((m) => m.key)) };
+  const jobNorm = norm(jobText);
   for (const seg of [...cvSegs, ...letterSegs]) {
     if (seg.kind !== 'body') continue;
+    // Role and education dates are compared with their own base entry in roleFacts.
     const text = stripLinks(seg.text);
-    const seenNum = new Set<string>();
-    for (const n of numbers(text)) {
-      if (base.numberKeys.has(n.key) || seenNum.has(n.key)) continue;
-      seenNum.add(n.key);
-      out.push({ code: 'unknown_fact', severity: 'hard', doc: seg.doc, where: seg.where, detail: `The number "${n.shown}" is not in the base CV.` });
+    if (!seg.field) out.push(...numberAndDateFacts(seg, text, base, seg.doc === 'cover_letter' ? jobAllowed : undefined));
+    for (const url of seg.text.match(PROSE_URL) ?? []) {
+      const clean = url.replace(/[.,;:]+$/, '');
+      const key = norm(clean).replace(/\/+$/, '');
+      if (!base.contact.links.has(key) && !base.corpus.includes(key) && !jobNorm.includes(key)) {
+        out.push(unknown(seg.doc, seg.where, `The link "${clean}" is not in the base CV or the job ad.`));
+      }
     }
-    for (const d of monthYears(text)) {
-      if (base.monthYearKeys.has(d.key)) continue;
-      out.push({ code: 'unknown_fact', severity: 'hard', doc: seg.doc, where: seg.where, detail: `The date "${d.shown}" is not in the base CV.` });
-    }
-    if (seg.field === 'employer' && !base.employers.has(orgKey(seg.text))) {
-      out.push({ code: 'unknown_fact', severity: 'hard', doc: seg.doc, where: seg.where, detail: `The employer "${seg.text}" is not in the base CV.` });
-    }
-    if (seg.field === 'title' && !base.titles.has(orgKey(seg.text))) {
-      out.push({ code: 'unknown_fact', severity: 'hard', doc: seg.doc, where: seg.where, detail: `The job title "${seg.text}" is not in the base CV.` });
+  }
+  return out;
+}
+
+// A technology named in the CV prose that the base CV never mentions: the reviewer decides whether it is real.
+function techNotInBaseChecks(cvSegs: Segment[], tech: string[], spell: Spell, base: BaseFacts, usToAu: Map<string, string>): CheckResult[] {
+  const out: CheckResult[] = [];
+  for (const canonical of tech) {
+    if (has(base.corpusAu, toAu(norm(canonical), usToAu))) continue;
+    const plainWord = spell.correct(canonical.toLowerCase());
+    const re = new RegExp(phraseRegex(canonical).source, 'giu');
+    for (const seg of cvSegs) {
+      if (seg.kind !== 'body' || seg.where.startsWith('cv.skills')) continue;
+      const hit = [...stripLinks(seg.text).matchAll(re)].some((m) => !(plainWord && m[0] === m[0].toLowerCase()));
+      if (!hit) continue;
+      out.push({ code: 'unmatched_skill', severity: 'review', doc: 'cv', where: seg.where, detail: `The technology "${canonical}" is not in the base CV.` });
+      break;
     }
   }
   return out;
@@ -374,11 +493,20 @@ function misspellingChecks(segments: Segment[], spell: Spell, allowed: Set<strin
 
 const REACHABLE = new Set([401, 403, 429, 999]);
 
+// The worker must not be pointed at its own network by text a model wrote: only public, dotted host names.
+function isPublicHost(url: string): boolean {
+  const host = new URL(url).hostname.toLowerCase();
+  if (host.startsWith('[') || !host.includes('.') || /\.(local|internal|localdomain|lan|home|corp)$/.test(host)) return false;
+  const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) return false;
+  return true;
+}
+
 async function isReachable(url: string, f: FetchLike): Promise<boolean> {
   let status = 0;
   for (const method of ['HEAD', 'GET']) {
     try {
-      const res = await f(url, { method, redirect: 'follow', signal: AbortSignal.timeout(5000) });
+      const res = await f(url, { method, redirect: 'manual', signal: AbortSignal.timeout(5000) });
       void res.body?.cancel().catch(() => undefined);
       status = res.status;
     } catch {
@@ -392,7 +520,7 @@ async function isReachable(url: string, f: FetchLike): Promise<boolean> {
   return false;
 }
 
-async function linkChecks(cv: TailoredCv, f: FetchLike): Promise<CheckResult[]> {
+async function linkChecks(cv: TailoredCv, base: BaseFacts, f: FetchLike): Promise<CheckResult[]> {
   const out: CheckResult[] = [];
   const toProbe: { url: string; where: string }[] = [];
   cv.contact.links.forEach((l, i) => {
@@ -405,7 +533,13 @@ async function linkChecks(cv: TailoredCv, f: FetchLike): Promise<CheckResult[]> 
     }
     if (protocol !== 'http:' && protocol !== 'https:' && protocol !== 'mailto:') {
       out.push({ code: 'link_invalid', severity: 'hard', doc: 'cv', where, detail: `"${l.url}" is not an http(s) or mailto link.` });
-    } else if (protocol !== 'mailto:') {
+    } else if (protocol === 'mailto:') {
+      return;
+    } else if (!isPublicHost(l.url)) {
+      out.push({ code: 'link_invalid', severity: 'hard', doc: 'cv', where, detail: `"${l.url}" is not a public web address.` });
+    } else if (!base.contact.links.has(norm(l.url).replace(/\/+$/, ''))) {
+      out.push(unknown('cv', where, `The link "${l.url}" is not in the base CV.`));
+    } else {
       toProbe.push({ url: l.url, where });
     }
   });
@@ -499,10 +633,12 @@ export async function runChecks(
   for (const s of [input.job.title, input.job.employer, input.job.advertiser]) if (s) wordSet(s, exempt);
   const baseRecord = asRecord(input.baseCv.structured);
   for (const e of Array.isArray(baseRecord.education) ? baseRecord.education : []) wordSet(String(asRecord(e).institution ?? ''), exempt);
+  for (const e of Array.isArray(baseRecord.education) ? baseRecord.education : []) wordSet(String(asRecord(e).qualification ?? ''), exempt);
   for (const r of Array.isArray(baseRecord.roles) ? baseRecord.roles : []) wordSet(String(asRecord(r).employer ?? ''), exempt);
   checks.push(...usSpellingChecks(all, config.usToAu, exempt));
   checks.push(...techCasingChecks(all, config.tech, spell));
-  checks.push(...factChecks(cvSegs, letterSegs, base));
+  checks.push(...factChecks(input, cvSegs, letterSegs, base));
+  checks.push(...techNotInBaseChecks(cvSegs, config.tech, spell, base, config.usToAu));
   checks.push(...keywordChecks(input, config.usToAu));
   checks.push(...skillChecks(input.cv, base, config.usToAu));
 
@@ -511,10 +647,10 @@ export async function runChecks(
   for (const s of [input.job.title, input.job.employer, input.job.advertiser, ...config.tech, ...input.keywordsCovered]) if (s) wordSet(s, allowed);
   checks.push(...misspellingChecks(all, spell, allowed));
 
-  if (!base.workRights) {
+  if (base.workRights === null) {
     checks.push({ code: 'missing_work_rights', severity: 'warning', doc: 'cv', detail: 'The base CV has no work-rights line.' });
   }
-  checks.push(...(await linkChecks(input.cv, f)));
+  checks.push(...(await linkChecks(input.cv, base, f)));
 
   return { checks, cvPages: cvRender.pages, letterPages: letterRender.pages };
 }
