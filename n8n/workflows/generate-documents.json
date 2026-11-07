@@ -338,7 +338,8 @@
           "name": "JobHunter Postgres"
         }
       },
-      "alwaysOutputData": true
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -376,7 +377,8 @@
       "position": [
         2040,
         200
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -415,9 +417,9 @@
     },
     {
       "parameters": {
-        "content": "## 5. The round loop — 5a. Write\nEach round is **write → code checks → review**, at most `GENERATION_MAX_ROUNDS` (3) rounds per attempt. The loop is a plain back-edge: **Another round?** (far right) goes back to **Heartbeat: writing** with the next round number. All of a round's results are written to the run's `rounds` column (*Record the round*), and the next round and the save read them **back from that row**, never from an earlier pass through these nodes.\n\n**Heartbeats.** Before each step (writing, checking, reviewing), when the round is recorded and when the version is saved, the run's row is updated **only while it still carries this execution's claim token** (`claimed_at`). The update renews the claim (its new `claimed_at` is the token from then on) and shows the stage and round on the job page. **No row = the claim was lost** (the run was reclaimed after looking stuck, or finished elsewhere): **Still our claim?** goes to the end and this execution writes nothing more: no round, no version, no status. Each paid call comes straight after a heartbeat, so a lost execution makes at most the one call it already had in flight.\n\n**5a. Write**: the writer call (`WRITER_MODEL`, effort `medium`, `max_tokens` 16000, 280 s timeout, structured output with the writer schema). It gets the base CV file, `<job_ad>`, `<job_facts>`, `<base_cv_facts>`, `<base_cover_letter>`, `<company_notes>` and, from round 2, `<previous_round>`: the previous documents, the failed checks (hard, plus review checks the reviewer ruled against), warnings, failed checklist items, those rulings and the reviewer's objections. It never sees the reviewer's prompt.\nWhenever Claude reports usage, the cost is logged (`write_documents`, with the job and run ids), priced by the model that answered, **whether or not this execution still holds the claim**: the call was paid for.",
+        "content": "## 5. The round loop — 5a. Write\nEach round is **write → code checks → review**, at most `GENERATION_MAX_ROUNDS` (3) rounds per attempt. The loop is a plain back-edge: **Another round?** (far right) goes back to **Heartbeat: writing** with the next round number. All of a round's results are written to the run's `rounds` column (*Record the round*), and the next round and the save read them **back from that row**, never from an earlier pass through these nodes.\n\n**Heartbeats.** Before each step (writing, checking, reviewing), when the round is recorded and when the version is saved, the run's row is updated **only while it still carries this execution's claim token** (`claimed_at`). The update renews the claim (its new `claimed_at` is the token from then on) and shows the stage and round on the job page. **No row = the claim was lost** (the run was reclaimed after looking stuck, or finished elsewhere): **Still our claim?** goes to the end and this execution writes nothing more: no round, no version, no status. Each paid call comes straight after a heartbeat, so a lost execution makes at most the one call it already had in flight.\n\n**5a. Write**: the writer call (`WRITER_MODEL`, effort `medium`, `max_tokens` 16000, 280 s timeout, structured output with the writer schema). It gets the base CV file, `<job_ad>`, `<job_facts>`, `<base_cv_facts>`, `<base_cover_letter>`, `<company_notes>` and, from round 2, `<previous_round>`: the previous documents, the failed checks (hard, plus review checks the reviewer ruled against), warnings, failed checklist items, those rulings and the reviewer's objections. It never sees the reviewer's prompt.\nWhenever Claude reports usage, the cost is logged (`write_documents`, with the job and run ids), priced by the model that answered, **whether or not this execution still holds the claim**: the call was paid for. It is one chain (*Writer reported usage?* → *Log writer cost* → *Writer answer (after cost)* → *Did the writer answer?*), so the cost row is always written before anything else happens.",
         "height": 900,
-        "width": 1660,
+        "width": 2040,
         "color": 5
       },
       "id": "97f18111-651d-4e8d-a6ed-263d61be099b",
@@ -491,7 +493,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// The writer's request for this round. On a revision the previous round comes from the run's row\n// in the database (returned by the heartbeat), not from an earlier pass through the loop.\nconst beat = $json; // id, claimed_at (the renewed claim token), round, rounds\nconst { inputs } = $('Prepare inputs').first().json;\nconst prompts = $('Writer and reviewer prompts').first().json;\nconst price = $('Look up model prices').first().json.writer;\nconst rounds = Array.isArray(beat.rounds) ? beat.rounds : [];\nif (rounds.length !== beat.round - 1) {\n  throw new Error(`Round ${beat.round} found ${rounds.length} recorded rounds in the run; stopping before calling Claude.`);\n}\nconst prev = rounds[rounds.length - 1] ?? null;\n\nconst tagged = (name, value) =>\n  `<${name}>\\n${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}\\n</${name}>`;\nconst parts = [\n  tagged('job_ad', inputs.job_ad),\n  tagged('job_facts', inputs.job_facts),\n  tagged('base_cv_facts', inputs.base_cv_facts),\n  tagged('base_cover_letter', inputs.base_cover_letter ?? 'none'),\n  tagged('company_notes', inputs.company_notes),\n];\nif (prev) {\n  const review = prev.review;\n  const invented = review.factRulings.filter((r) => r.ruling === 'invented');\n  const misspelt = review.spellingRulings.filter((r) => r.ruling === 'misspelt');\n  // A review check the reviewer ruled against: an unmatched skill ruled invented, a word ruled misspelt.\n  const ruledAgainst = (c) => {\n    const detail = String(c.detail ?? '').toLowerCase();\n    const named = (s) => detail === String(s).toLowerCase() || detail.includes(`\"${String(s).toLowerCase()}\"`);\n    if (c.code === 'unmatched_skill') return invented.some((r) => named(r.text));\n    if (c.code === 'possible_misspelling') return misspelt.some((r) => named(r.word));\n    return false;\n  };\n  parts.push(\n    tagged('previous_round', {\n      documents: prev.writer,\n      failedChecks: prev.checks.filter((c) => c.severity === 'hard' || (c.severity === 'review' && ruledAgainst(c))),\n      warnings: prev.checks.filter((c) => c.severity === 'warning'),\n      failedItems: review.items.filter((i) => !i.pass),\n      rulingsAgainst: { facts: invented, spelling: misspelt },\n      objections: review.objections,\n    }),\n  );\n}\nconst today = $now.toFormat('d LLLL yyyy');\nparts.push(\n  prev\n    ? `Today's date is ${today}. Revise the documents in <previous_round>: fix every objection and failed check, and change nothing else.`\n    : `Today's date is ${today}. Write the tailored CV and cover letter for this job.`,\n);\n\nconst headers = { 'anthropic-version': '2026-10-21', 'content-type': 'application/json' };\nif (price.fallbacks) headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';\nconst request = {\n  model: price.model,\n  max_tokens: 16000,\n  output_config: { effort: 'medium', format: { type: 'json_schema', schema: prompts.writer_schema } },\n  system: prompts.writer_prompt,\n  messages: [{ role: 'user', content: [inputs.cv_block, { type: 'text', text: parts.join('\\n\\n') }] }],\n};\nif (price.fallbacks) request.fallbacks = 'default';\nreturn { json: { run_id: beat.id, claimed_at: beat.claimed_at, round: beat.round, job_id: inputs.job_id, headers, request } };"
+        "jsCode": "// The writer's request for this round. On a revision the previous round comes from the run's row\n// in the database (returned by the heartbeat), not from an earlier pass through the loop.\nconst beat = $json; // id, claimed_at (the renewed claim token), round, rounds\nconst { inputs } = $('Prepare inputs').first().json;\nconst prompts = $('Writer and reviewer prompts').first().json;\nconst price = $('Look up model prices').first().json.writer;\nconst rounds = Array.isArray(beat.rounds) ? beat.rounds : [];\nif (rounds.length !== beat.round - 1) {\n  throw new Error(`Round ${beat.round} found ${rounds.length} recorded rounds in the run; stopping before calling Claude.`);\n}\nconst prev = rounds[rounds.length - 1] ?? null;\n\nconst tagged = (name, value) =>\n  `<${name}>\\n${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}\\n</${name}>`;\nconst parts = [\n  tagged('job_ad', inputs.job_ad),\n  tagged('job_facts', inputs.job_facts),\n  tagged('base_cv_facts', inputs.base_cv_facts),\n  tagged('base_cover_letter', inputs.base_cover_letter ?? 'none'),\n  tagged('company_notes', inputs.company_notes),\n];\nif (prev) {\n  const review = prev.review;\n  const invented = review.factRulings.filter((r) => r.ruling === 'invented');\n  const misspelt = review.spellingRulings.filter((r) => r.ruling === 'misspelt');\n  // A review check still open: the reviewer ruled against it (an unmatched skill ruled invented, a word\n  // ruled misspelt) or did not rule on it at all. Only an honest_rephrase / ok ruling that names it settles it.\n  const settled = (c) => {\n    const detail = String(c.detail ?? '').toLowerCase();\n    const named = (s) => detail === String(s).toLowerCase() || detail.includes(`\"${String(s).toLowerCase()}\"`);\n    if (c.code === 'unmatched_skill') return review.factRulings.some((r) => r.ruling === 'honest_rephrase' && named(r.text));\n    if (c.code === 'possible_misspelling') return review.spellingRulings.some((r) => r.ruling === 'ok' && named(r.word));\n    return false;\n  };\n  parts.push(\n    tagged('previous_round', {\n      documents: prev.writer,\n      failedChecks: prev.checks.filter((c) => c.severity === 'hard' || (c.severity === 'review' && !settled(c))),\n      warnings: prev.checks.filter((c) => c.severity === 'warning'),\n      failedItems: review.items.filter((i) => !i.pass),\n      rulingsAgainst: { facts: invented, spelling: misspelt },\n      objections: review.objections,\n    }),\n  );\n}\nconst today = $now.toFormat('d LLLL yyyy');\nparts.push(\n  prev\n    ? `Today's date is ${today}. Revise the documents in <previous_round>: fix every objection and failed check, and change nothing else.`\n    : `Today's date is ${today}. Write the tailored CV and cover letter for this job.`,\n);\n\nconst headers = { 'anthropic-version': '2026-10-21', 'content-type': 'application/json' };\nif (price.fallbacks) headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';\nconst request = {\n  model: price.model,\n  max_tokens: 16000,\n  output_config: { effort: 'medium', format: { type: 'json_schema', schema: prompts.writer_schema } },\n  system: prompts.writer_prompt,\n  messages: [{ role: 'user', content: [inputs.cv_block, { type: 'text', text: parts.join('\\n\\n') }] }],\n};\nif (price.fallbacks) request.fallbacks = 'default';\nreturn { json: { run_id: beat.id, claimed_at: beat.claimed_at, round: beat.round, job_id: inputs.job_id, headers, request } };"
       },
       "id": "bfdcdd59-dec3-49fc-a671-85a92e781482",
       "name": "Build writer request",
@@ -500,7 +502,8 @@
       "position": [
         2980,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -543,7 +546,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Flattens the writer's HTTP response into simple fields the IF nodes can check, and works out the cost.\nconst res = $json; // statusCode + body, or { error } when the request itself failed\nconst { headers, request, ...state } = $('Build writer request').first().json; // this round: run_id, claimed_at, round, job_id\nconst lookup = $('Look up model prices').first().json;\nconst body = res.body && typeof res.body === 'object' ? res.body : {};\nconst isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);\nconst isString = (v) => typeof v === 'string';\nconst isStringList = (v) => Array.isArray(v) && v.every(isString);\nconst isList = (v, item) => Array.isArray(v) && v.every((x) => isObject(x) && item(x));\n\n// The answer is the first \"text\" block (skip any \"thinking\" blocks before it).\nconst textBlock = (body.content ?? []).find((block) => block.type === 'text');\nlet answer = null;\ntry {\n  answer = JSON.parse(textBlock?.text ?? '');\n} catch {\n  answer = null;\n}\n// The CV and letter themselves are checked field by field by the worker (stage 5b).\nconst validJson =\n  isObject(answer) && answer.templateId === 'standard-ats' && isString(answer.templateReason) &&\n  isObject(answer.cv) && isObject(answer.coverLetter) &&\n  isObject(answer.keywordCoverage) && isStringList(answer.keywordCoverage.covered) &&\n  isList(answer.keywordCoverage.missing, (m) => isString(m.keyword) && isString(m.why)) &&\n  isList(answer.changes, (c) => [c.target, c.what, c.why].every(isString)) &&\n  isList(answer.stretches, (s) => [s.target, s.text, s.why].every(isString));\n\nconst httpOk = typeof res.statusCode === 'number' && res.statusCode >= 200 && res.statusCode < 300;\nconst stopReason = body.stop_reason ?? null;\nlet error = null;\nif (!httpOk) error = typeof res.statusCode === 'number' ? `The request to Claude failed (HTTP ${res.statusCode}).` : 'The request to Claude failed (no response).';\nelse if (stopReason === 'refusal') error = 'Claude declined to write the documents.';\nelse if (stopReason === 'max_tokens') error = \"Claude's answer was cut off (max_tokens).\";\nelse if (stopReason !== 'end_turn') error = `Claude stopped unexpectedly (${stopReason ?? 'no stop reason'}).`;\nelse if (!validJson) error = \"The writer's answer was not in the expected format.\";\n\n// Cost: priced by the model that answered when the table has it, else by the writer model's price.\nconst usage = body.usage ?? {};\nconst has_usage = Number.isInteger(usage.input_tokens) && Number.isInteger(usage.output_tokens);\nconst model = isString(body.model) && body.model !== '' ? body.model : lookup.writer.model;\nconst price = lookup.prices[model] ?? { input: lookup.writer.input_usd_per_mtok, output: lookup.writer.output_usd_per_mtok };\nconst cost_usd = has_usage ? (usage.input_tokens * price.input + usage.output_tokens * price.output) / 1e6 : null;\nreturn {\n  json: {\n    ...state,\n    ok: error === null,\n    error,\n    final: false,\n    writer: error === null ? answer : null,\n    purpose: 'write_documents',\n    model,\n    has_usage,\n    input_tokens: has_usage ? usage.input_tokens : null,\n    output_tokens: has_usage ? usage.output_tokens : null,\n    cost_usd,\n  },\n};"
+        "jsCode": "// Flattens the writer's HTTP response into simple fields the IF nodes can check, and works out the cost.\nconst res = $json; // statusCode + body, or { error } when the request itself failed\nconst { headers, request, ...state } = $('Build writer request').first().json; // this round: run_id, claimed_at, round, job_id\nconst lookup = $('Look up model prices').first().json;\nconst body = res.body && typeof res.body === 'object' ? res.body : {};\nconst isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);\nconst isString = (v) => typeof v === 'string';\nconst isStringList = (v) => Array.isArray(v) && v.every(isString);\nconst isList = (v, item) => Array.isArray(v) && v.every((x) => isObject(x) && item(x));\n\n// The answer is the first \"text\" block (skip any \"thinking\" blocks before it).\nconst textBlock = (body.content ?? []).find((block) => block.type === 'text');\nlet answer = null;\ntry {\n  // NUL characters are dropped: Postgres cannot store them in jsonb.\n  answer = JSON.parse(textBlock?.text ?? '', (k, v) => (typeof v === 'string' ? v.replace(/\\u0000/g, '') : v));\n} catch {\n  answer = null;\n}\n// The CV and letter themselves are checked field by field by the worker (stage 5b).\nconst validJson =\n  isObject(answer) && answer.templateId === 'standard-ats' && isString(answer.templateReason) &&\n  isObject(answer.cv) && isObject(answer.coverLetter) &&\n  isObject(answer.keywordCoverage) && isStringList(answer.keywordCoverage.covered) &&\n  isList(answer.keywordCoverage.missing, (m) => isString(m.keyword) && isString(m.why)) &&\n  isList(answer.changes, (c) => [c.target, c.what, c.why].every(isString)) &&\n  isList(answer.stretches, (s) => [s.target, s.text, s.why].every(isString));\n\nconst httpOk = typeof res.statusCode === 'number' && res.statusCode >= 200 && res.statusCode < 300;\nconst stopReason = body.stop_reason ?? null;\nlet error = null;\nif (!httpOk) error = typeof res.statusCode === 'number' ? `The request to Claude failed (HTTP ${res.statusCode}).` : 'The request to Claude failed (no response).';\nelse if (stopReason === 'refusal') error = 'Claude declined to write the documents.';\nelse if (stopReason === 'max_tokens') error = \"Claude's answer was cut off (max_tokens).\";\nelse if (stopReason !== 'end_turn') error = `Claude stopped unexpectedly (${stopReason ?? 'no stop reason'}).`;\nelse if (!validJson) error = \"The writer's answer was not in the expected format.\";\n\n// Cost: priced by the model that answered when the table has it, else by the writer model's price.\nconst usage = body.usage ?? {};\nconst has_usage = Number.isInteger(usage.input_tokens) && Number.isInteger(usage.output_tokens);\nconst model = isString(body.model) && body.model !== '' ? body.model : lookup.writer.model;\nconst price = lookup.prices[model] ?? { input: lookup.writer.input_usd_per_mtok, output: lookup.writer.output_usd_per_mtok };\nconst cost_usd = has_usage ? (usage.input_tokens * price.input + usage.output_tokens * price.output) / 1e6 : null;\nreturn {\n  json: {\n    ...state,\n    ok: error === null,\n    error,\n    final: false,\n    writer: error === null ? answer : null,\n    purpose: 'write_documents',\n    model,\n    has_usage,\n    input_tokens: has_usage ? usage.input_tokens : null,\n    output_tokens: has_usage ? usage.output_tokens : null,\n    cost_usd,\n  },\n};"
       },
       "id": "6d1e8f82-337b-4d6a-aed9-e91078d27309",
       "name": "Read the writer's answer",
@@ -552,7 +555,8 @@
       "position": [
         3420,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -586,7 +590,7 @@
       "typeVersion": 2.2,
       "position": [
         3640,
-        100
+        300
       ]
     },
     {
@@ -610,7 +614,23 @@
           "id": "jh-postgres",
           "name": "JobHunter Postgres"
         }
-      }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Picks the writer's answer up again after its cost was logged (or there was no usage to log): one\n// chain, so the cost row is always written before the outcome is looked at.\nreturn { json: $(\"Read the writer's answer\").first().json };"
+      },
+      "id": "9bcedfcc-180f-42be-a442-ff54645efbf1",
+      "name": "Writer answer (after cost)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4080,
+        300
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -643,7 +663,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        3640,
+        4300,
         300
       ]
     },
@@ -651,7 +671,7 @@
       "parameters": {
         "content": "## 5b. Code checks\n**Heartbeat: checking**, then the worker's `POST /generation/check` renders the CV and the letter (DOCX → PDF) and runs the deterministic checks: page count (CV 1, letter ≤ 2), placeholders, banned phrases, Australian spelling, tech-name casing, facts not in the base CV, leakage of another company or role (other jobs, the base cover letter's previous target), keywords claimed but absent, links, the work-rights line. Each result is `hard` (must be fixed), `review` (the reviewer rules on it) or `warning` (shown to Prayush).\nThe checks are free (no Claude call). A worker that does not answer, or rejects the writer's documents as malformed, is a failed attempt (see 7).",
         "height": 900,
-        "width": 980,
+        "width": 1380,
         "color": 4
       },
       "id": "df8d2525-cb9f-457a-af4c-abb0248e683c",
@@ -659,7 +679,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        4160,
+        4520,
         -100
       ]
     },
@@ -676,7 +696,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        3920,
+        4580,
         300
       ],
       "credentials": {
@@ -718,7 +738,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4140,
+        4800,
         300
       ]
     },
@@ -732,9 +752,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4360,
+        5020,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -758,7 +779,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        4580,
+        5240,
         300
       ],
       "onError": "continueRegularOutput"
@@ -773,9 +794,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4800,
+        5460,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -808,7 +830,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        5020,
+        5680,
         300
       ]
     },
@@ -816,7 +838,7 @@
       "parameters": {
         "content": "## 5c. Independent review\n**Heartbeat: reviewing**, then the reviewer call: a **separate** request with its **own** system prompt (a senior Australian recruiter / ATS specialist), `REVIEW_MODEL`, effort `medium`, `max_tokens` 8000, 280 s timeout. It gets the base CV file, the job ad and facts, the base CV facts, the base cover letter's analysis, the company notes, the writer's **output** (`<documents>`: CV, letter, reasons, keyword coverage, changes, stretches) and the code-check results (`<code_checks>`). It never gets the writer's prompt.\nIt returns a verdict, the 14 checklist items, objections, a ruling for every `unmatched_skill` (honest rephrase / invented) and every `possible_misspelling` (ok / misspelt), and stretches.\n**The round passes** only when the verdict is `pass` **and** there is no `hard` check, no `invented` ruling, no `misspelt` ruling and no failed checklist item.\nThe cost is logged as `review_documents` (job and run ids) whenever usage is reported.",
         "height": 900,
-        "width": 1640,
+        "width": 2040,
         "color": 5
       },
       "id": "5aad05e3-0570-42e7-a29d-7bb14bbb69f8",
@@ -824,7 +846,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        5240,
+        5900,
         -100
       ]
     },
@@ -841,7 +863,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        5300,
+        5960,
         300
       ],
       "credentials": {
@@ -883,7 +905,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        5520,
+        6180,
         300
       ]
     },
@@ -897,9 +919,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5740,
+        6400,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -928,7 +951,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        5960,
+        6620,
         300
       ],
       "credentials": {
@@ -942,16 +965,17 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Flattens the reviewer's HTTP response, decides whether the round passed, and works out the cost.\nconst res = $json; // statusCode + body, or { error } when the request itself failed\nconst { headers, request, writer, checks, cvPages, letterPages, ...state } = $('Build review request').first().json;\nconst lookup = $('Look up model prices').first().json;\nconst body = res.body && typeof res.body === 'object' ? res.body : {};\nconst isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);\nconst isString = (v) => typeof v === 'string';\nconst isList = (v, item) => Array.isArray(v) && v.every((x) => isObject(x) && item(x));\n\n// The answer is the first \"text\" block (skip any \"thinking\" blocks before it).\nconst textBlock = (body.content ?? []).find((block) => block.type === 'text');\nlet a = null;\ntry {\n  a = JSON.parse(textBlock?.text ?? '');\n} catch {\n  a = null;\n}\nconst validJson =\n  isObject(a) && ['pass', 'fail'].includes(a.verdict) &&\n  isList(a.items, (i) => isString(i.id) && typeof i.pass === 'boolean' && isString(i.note)) &&\n  isList(a.objections, (o) => [o.target, o.problem, o.fix].every(isString)) &&\n  isList(a.factRulings, (r) => isString(r.text) && ['honest_rephrase', 'invented'].includes(r.ruling) && isString(r.why)) &&\n  isList(a.spellingRulings, (r) => isString(r.word) && ['ok', 'misspelt'].includes(r.ruling) && (r.fix === null || isString(r.fix))) &&\n  isList(a.stretches, (s) => [s.target, s.text, s.why].every(isString));\n\nconst httpOk = typeof res.statusCode === 'number' && res.statusCode >= 200 && res.statusCode < 300;\nconst stopReason = body.stop_reason ?? null;\nlet error = null;\nif (!httpOk) error = typeof res.statusCode === 'number' ? `The request to Claude failed (HTTP ${res.statusCode}).` : 'The request to Claude failed (no response).';\nelse if (stopReason === 'refusal') error = 'Claude declined to review the documents.';\nelse if (stopReason === 'max_tokens') error = \"Claude's answer was cut off (max_tokens).\";\nelse if (stopReason !== 'end_turn') error = `Claude stopped unexpectedly (${stopReason ?? 'no stop reason'}).`;\nelse if (!validJson) error = \"The reviewer's answer was not in the expected format.\";\nconst ok = error === null;\n\n// Passed: verdict pass, and no hard check, no invented fact, no misspelt word and no failed\n// checklist item (a \"pass\" with a failed item contradicts itself, so it does not count).\nconst passed =\n  ok && a.verdict === 'pass' &&\n  !checks.some((c) => c.severity === 'hard') &&\n  !a.factRulings.some((r) => r.ruling === 'invented') &&\n  !a.spellingRulings.some((r) => r.ruling === 'misspelt') &&\n  a.items.every((i) => i.pass);\n\n// Cost: priced by the model that answered when the table has it, else by the reviewer model's price.\nconst usage = body.usage ?? {};\nconst has_usage = Number.isInteger(usage.input_tokens) && Number.isInteger(usage.output_tokens);\nconst model = isString(body.model) && body.model !== '' ? body.model : lookup.reviewer.model;\nconst price = lookup.prices[model] ?? { input: lookup.reviewer.input_usd_per_mtok, output: lookup.reviewer.output_usd_per_mtok };\nconst cost_usd = has_usage ? (usage.input_tokens * price.input + usage.output_tokens * price.output) / 1e6 : null;\nreturn {\n  json: {\n    ...state, // run_id, claimed_at, round, job_id\n    ok,\n    error,\n    final: false,\n    review: ok ? a : null,\n    passed,\n    // What \"Record the round\" appends to the run's rounds.\n    round_record: ok ? { round: state.round, writer, checks, cvPages, letterPages, review: a, passed } : null,\n    purpose: 'review_documents',\n    model,\n    has_usage,\n    input_tokens: has_usage ? usage.input_tokens : null,\n    output_tokens: has_usage ? usage.output_tokens : null,\n    cost_usd,\n  },\n};"
+        "jsCode": "// Flattens the reviewer's HTTP response, decides whether the round passed, and works out the cost.\nconst res = $json; // statusCode + body, or { error } when the request itself failed\nconst { headers, request, writer, checks, cvPages, letterPages, ...state } = $('Build review request').first().json;\nconst lookup = $('Look up model prices').first().json;\nconst body = res.body && typeof res.body === 'object' ? res.body : {};\nconst isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);\nconst isString = (v) => typeof v === 'string';\nconst isList = (v, item) => Array.isArray(v) && v.every((x) => isObject(x) && item(x));\n\n// The answer is the first \"text\" block (skip any \"thinking\" blocks before it).\nconst textBlock = (body.content ?? []).find((block) => block.type === 'text');\nlet a = null;\ntry {\n  // NUL characters are dropped: Postgres cannot store them in jsonb.\n  a = JSON.parse(textBlock?.text ?? '', (k, v) => (typeof v === 'string' ? v.replace(/\\u0000/g, '') : v));\n} catch {\n  a = null;\n}\nconst validJson =\n  isObject(a) && ['pass', 'fail'].includes(a.verdict) &&\n  isList(a.items, (i) => isString(i.id) && typeof i.pass === 'boolean' && isString(i.note)) &&\n  isList(a.objections, (o) => [o.target, o.problem, o.fix].every(isString)) &&\n  isList(a.factRulings, (r) => isString(r.text) && ['honest_rephrase', 'invented'].includes(r.ruling) && isString(r.why)) &&\n  isList(a.spellingRulings, (r) => isString(r.word) && ['ok', 'misspelt'].includes(r.ruling) && (r.fix === null || isString(r.fix))) &&\n  isList(a.stretches, (s) => [s.target, s.text, s.why].every(isString));\n\nconst httpOk = typeof res.statusCode === 'number' && res.statusCode >= 200 && res.statusCode < 300;\nconst stopReason = body.stop_reason ?? null;\nlet error = null;\nif (!httpOk) error = typeof res.statusCode === 'number' ? `The request to Claude failed (HTTP ${res.statusCode}).` : 'The request to Claude failed (no response).';\nelse if (stopReason === 'refusal') error = 'Claude declined to review the documents.';\nelse if (stopReason === 'max_tokens') error = \"Claude's answer was cut off (max_tokens).\";\nelse if (stopReason !== 'end_turn') error = `Claude stopped unexpectedly (${stopReason ?? 'no stop reason'}).`;\nelse if (!validJson) error = \"The reviewer's answer was not in the expected format.\";\nconst ok = error === null;\n\n// A review check is ruled when a ruling names it: a fact ruling for an unmatched skill, a spelling\n// ruling for a possible misspelling (the worker quotes the name in its detail, or the detail is the\n// word). Any other review check, or one no ruling names, is unruled: the reviewer skipped it.\nconst named = (detail, s) => {\n  const d = String(detail ?? '').toLowerCase();\n  const n = String(s).toLowerCase();\n  return d === n || d.includes(`\"${n}\"`);\n};\nconst ruled = (c) => {\n  if (c.code === 'unmatched_skill') return a.factRulings.some((r) => named(c.detail, r.text));\n  if (c.code === 'possible_misspelling') return a.spellingRulings.some((r) => named(c.detail, r.word));\n  return false;\n};\nconst unruled = ok ? checks.filter((c) => c.severity === 'review' && !ruled(c)) : [];\n\n// Passed: verdict pass, every checklist item passes (a \"pass\" with a failed item contradicts itself),\n// no hard check, no invented fact, no misspelt word, and every review check has a ruling.\nconst passed =\n  ok && a.verdict === 'pass' &&\n  a.items.every((i) => i.pass) &&\n  !checks.some((c) => c.severity === 'hard') &&\n  !a.factRulings.some((r) => r.ruling === 'invented') &&\n  !a.spellingRulings.some((r) => r.ruling === 'misspelt') &&\n  unruled.length === 0;\n\n// Cost: priced by the model that answered when the table has it, else by the reviewer model's price.\nconst usage = body.usage ?? {};\nconst has_usage = Number.isInteger(usage.input_tokens) && Number.isInteger(usage.output_tokens);\nconst model = isString(body.model) && body.model !== '' ? body.model : lookup.reviewer.model;\nconst price = lookup.prices[model] ?? { input: lookup.reviewer.input_usd_per_mtok, output: lookup.reviewer.output_usd_per_mtok };\nconst cost_usd = has_usage ? (usage.input_tokens * price.input + usage.output_tokens * price.output) / 1e6 : null;\nreturn {\n  json: {\n    ...state, // run_id, claimed_at, round, job_id\n    ok,\n    error,\n    final: false,\n    review: ok ? a : null,\n    passed,\n    // What \"Record the round\" appends to the run's rounds.\n    round_record: ok ? { round: state.round, writer, checks, cvPages, letterPages, review: a, passed, unruled } : null,\n    purpose: 'review_documents',\n    model,\n    has_usage,\n    input_tokens: has_usage ? usage.input_tokens : null,\n    output_tokens: has_usage ? usage.output_tokens : null,\n    cost_usd,\n  },\n};"
       },
       "id": "64fd958c-c062-442c-aac1-6b343a60eae1",
       "name": "Read the reviewer's answer",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        6180,
+        6840,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -984,8 +1008,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        6400,
-        100
+        7060,
+        300
       ]
     },
     {
@@ -1001,7 +1025,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        6620,
+        7280,
         100
       ],
       "credentials": {
@@ -1009,7 +1033,23 @@
           "id": "jh-postgres",
           "name": "JobHunter Postgres"
         }
-      }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Picks the reviewer's answer up again after its cost was logged (or there was no usage to log): one\n// chain, so the cost row is always written before the outcome is looked at.\nreturn { json: $(\"Read the reviewer's answer\").first().json };"
+      },
+      "id": "8a87c5d7-ff22-4312-a7a9-b1ed376807e4",
+      "name": "Reviewer answer (after cost)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7500,
+        300
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -1042,7 +1082,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        6400,
+        7720,
         300
       ]
     },
@@ -1058,7 +1098,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        6900,
+        7940,
         -100
       ]
     },
@@ -1075,7 +1115,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        6680,
+        8000,
         300
       ],
       "credentials": {
@@ -1084,7 +1124,8 @@
           "name": "JobHunter Postgres"
         }
       },
-      "alwaysOutputData": true
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -1117,7 +1158,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        6900,
+        8220,
         300
       ]
     },
@@ -1131,9 +1172,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7120,
+        8440,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -1166,13 +1208,13 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        7340,
+        8660,
         300
       ]
     },
     {
       "parameters": {
-        "content": "## 6. Save the version\n**Choose the version to save**: the passing round; if none passed, the **best** round: the fewest hard checks + failed checklist items + invented facts (ties → the latest round).\n**Save version** (one SQL statement, so all or nothing, and only while this execution holds the claim): the next `version_no` for the job, `label` \"Generated\", the CV, letter, keyword coverage and checks of that round, `review = { passed, rounds, verdicts, unresolved }` (`unresolved`: the round's remaining hard checks, failed checklist items with their notes, invented facts, misspelt words and every warning such as `missing_work_rights`), `reasons = { templateReason, changes, stretches (writer's and reviewer's), factRulings }`. The run becomes `done`; the job becomes **CV ready** only if it is still **New** (with a status history row). A lost claim saves nothing.",
+        "content": "## 6. Save the version\n**Choose the version to save**: the passing round; if none passed, the **best** round: the fewest hard checks + unruled review checks + failed checklist items + invented facts (ties → the latest round).\n**Save version** is retried up to 3 times (1 s apart): the statement is all or nothing and claim-guarded, so a retry is safe, and a `version_no` taken by another save for the same job at the same moment (unique violation) is simply worked out again.\n**Save version** (one SQL statement, so all or nothing, and only while this execution holds the claim): the next `version_no` for the job, `label` \"Generated\", the CV, letter, keyword coverage and checks of that round, `review = { passed, rounds, verdicts, unresolved }` (`unresolved`: the round's remaining hard checks, review checks the reviewer did not rule on, failed checklist items with their notes, invented facts, misspelt words and every warning such as `missing_work_rights`), `reasons = { templateReason, changes, stretches (writer's and reviewer's), factRulings }`. The run becomes `done`; the job becomes **CV ready** only if it is still **New** (with a status history row). A lost claim saves nothing.",
         "height": 900,
         "width": 760,
         "color": 4
@@ -1182,23 +1224,24 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        7560,
+        8880,
         -100
       ]
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Picks the round to save from the run's recorded rounds, and builds the version's fields.\nconst { run_id, claimed_at, rounds } = $json;\nconst { inputs } = $('Prepare inputs').first().json;\nconst hard = (r) => r.checks.filter((c) => c.severity === 'hard');\nconst failedItems = (r) => r.review.items.filter((i) => !i.pass);\nconst invented = (r) => r.review.factRulings.filter((f) => f.ruling === 'invented');\nconst misspelt = (r) => r.review.spellingRulings.filter((s) => s.ruling === 'misspelt');\nconst problems = (r) => hard(r).length + failedItems(r).length + invented(r).length;\n\n// The passing round, else the one with the fewest problems (ties: the latest).\nlet best = [...rounds].reverse().find((r) => r.passed === true) ?? null;\nif (!best) for (const r of rounds) if (!best || problems(r) <= problems(best)) best = r;\nconst w = best.writer;\nconst check = (c) => ({ source: 'check', code: c.code, severity: c.severity, doc: c.doc, ...(c.where ? { where: c.where } : {}), detail: c.detail });\nconst unresolved = [\n  ...hard(best).map(check),\n  ...failedItems(best).map((i) => ({ source: 'review', id: i.id, note: i.note })),\n  ...invented(best).map((f) => ({ source: 'fact', text: f.text, why: f.why })),\n  ...misspelt(best).map((s) => ({ source: 'spelling', word: s.word, fix: s.fix })),\n  ...best.checks.filter((c) => c.severity === 'warning').map(check),\n];\n// Stretches from the writer and the reviewer, each once.\nconst seen = new Set();\nconst stretches = [...(w.stretches ?? []), ...(best.review.stretches ?? [])].filter((s) => {\n  const key = `${s.target}\\u0000${s.text}`;\n  if (seen.has(key)) return false;\n  seen.add(key);\n  return true;\n});\nreturn {\n  json: {\n    run_id,\n    claimed_at,\n    template_id: w.templateId,\n    cv: w.cv,\n    cover_letter: w.coverLetter,\n    keyword_coverage: w.keywordCoverage,\n    checks: best.checks,\n    review: { passed: best.passed === true, rounds: rounds.length, verdicts: rounds.map((r) => r.review.verdict), unresolved },\n    reasons: { templateReason: w.templateReason, changes: w.changes, stretches, factRulings: best.review.factRulings },\n    base_cv_id: inputs.cv_id,\n    base_cv_hash: inputs.cv_hash,\n    base_cover_letter_id: inputs.cl_id,\n    base_cover_letter_hash: inputs.cl_hash,\n  },\n};"
+        "jsCode": "// Picks the round to save from the run's recorded rounds, and builds the version's fields.\nconst { run_id, claimed_at, rounds } = $json;\nconst { inputs } = $('Prepare inputs').first().json;\nconst hard = (r) => r.checks.filter((c) => c.severity === 'hard');\nconst failedItems = (r) => r.review.items.filter((i) => !i.pass);\nconst invented = (r) => r.review.factRulings.filter((f) => f.ruling === 'invented');\nconst misspelt = (r) => r.review.spellingRulings.filter((s) => s.ruling === 'misspelt');\n// Review checks no ruling names (same rule as \"Read the reviewer's answer\").\nconst named = (detail, s) => {\n  const d = String(detail ?? '').toLowerCase();\n  const n = String(s).toLowerCase();\n  return d === n || d.includes(`\"${n}\"`);\n};\nconst unruled = (r) =>\n  r.checks.filter((c) => {\n    if (c.severity !== 'review') return false;\n    if (c.code === 'unmatched_skill') return !r.review.factRulings.some((f) => named(c.detail, f.text));\n    if (c.code === 'possible_misspelling') return !r.review.spellingRulings.some((s) => named(c.detail, s.word));\n    return true;\n  });\nconst problems = (r) => hard(r).length + unruled(r).length + failedItems(r).length + invented(r).length;\n\n// The passing round, else the one with the fewest problems (ties: the latest).\nlet best = [...rounds].reverse().find((r) => r.passed === true) ?? null;\nif (!best) for (const r of rounds) if (!best || problems(r) <= problems(best)) best = r;\nconst w = best.writer;\nconst check = (c) => ({ source: 'check', code: c.code, severity: c.severity, doc: c.doc, ...(c.where ? { where: c.where } : {}), detail: c.detail });\nconst unresolved = [\n  ...hard(best).map(check),\n  ...unruled(best).map((c) => ({ ...check(c), note: 'The reviewer did not rule on this.' })),\n  ...failedItems(best).map((i) => ({ source: 'review', id: i.id, note: i.note })),\n  ...invented(best).map((f) => ({ source: 'fact', text: f.text, why: f.why })),\n  ...misspelt(best).map((s) => ({ source: 'spelling', word: s.word, fix: s.fix })),\n  ...best.checks.filter((c) => c.severity === 'warning').map(check),\n];\n// Stretches from the writer and the reviewer, each once.\nconst seen = new Set();\nconst stretches = [...(w.stretches ?? []), ...(best.review.stretches ?? [])].filter((s) => {\n  const key = `${s.target}\\u0000${s.text}`;\n  if (seen.has(key)) return false;\n  seen.add(key);\n  return true;\n});\nreturn {\n  json: {\n    run_id,\n    claimed_at,\n    template_id: w.templateId,\n    cv: w.cv,\n    cover_letter: w.coverLetter,\n    keyword_coverage: w.keywordCoverage,\n    checks: best.checks,\n    review: { passed: best.passed === true, rounds: rounds.length, verdicts: rounds.map((r) => r.review.verdict), unresolved },\n    reasons: { templateReason: w.templateReason, changes: w.changes, stretches, factRulings: best.review.factRulings },\n    base_cv_id: inputs.cv_id,\n    base_cv_hash: inputs.cv_hash,\n    base_cover_letter_id: inputs.cl_id,\n    base_cover_letter_hash: inputs.cl_hash,\n  },\n};"
       },
       "id": "a55ed9c2-f3ee-475f-a57a-41c4c91d791f",
       "name": "Choose the version to save",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7620,
+        8940,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -1213,7 +1256,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        7840,
+        9160,
         300
       ],
       "credentials": {
@@ -1221,13 +1264,17 @@
           "id": "jh-postgres",
           "name": "JobHunter Postgres"
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "content": "## 7. A failed attempt\nAny failed step (a Claude error, refusal, `max_tokens` or malformed answer, the worker not answering or rejecting the documents) ends this attempt. **Mark attempt failed** (claim-guarded, so a lost execution changes nothing) keeps the reason in `error` and puts the run back to `pending` while attempts are left; the claim (3) retries it **1 minute after attempt 1 and 5 minutes after attempt 2**, each time from round 1. After the 3rd attempt, or for a reason a retry cannot fix (base CV not ready), the run is `failed` and the job page shows the reason. The cost of a call that returned usage is logged anyway (5a / 5c).",
+        "content": "## 7. A failed attempt\nAny failed step (a Claude error, refusal, `max_tokens` or malformed answer, the worker not answering or rejecting the documents) ends this attempt. **Mark attempt failed** (claim-guarded, so a lost execution changes nothing) keeps the reason in `error` and puts the run back to `pending` while attempts are left; the claim (3) retries it **1 minute after attempt 1 and 5 minutes after attempt 2**, each time from round 1. After the 3rd attempt, or for a reason a retry cannot fix (base CV not ready), the run is `failed` and the job page shows the reason. The cost of a call that returned usage is logged anyway (5a / 5c).\n**Unexpected errors**: the Code and Postgres nodes after the claim that can fail (a safety check that stops the run, a database error) send their error output to **Unexpected error**, which ends the attempt the same way at once instead of leaving the run frozen `in_progress` until the 6-minute stuck check (1). It only touches the run while it still carries a claim token this execution held. Only a failing heartbeat (the database itself down) still falls back to the stuck check.",
         "height": 420,
-        "width": 3360,
+        "width": 4000,
         "color": 3
       },
       "id": "9b2afffc-5ca3-43ab-aa7a-98226ae10544",
@@ -1252,7 +1299,45 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        5020,
+        5680,
+        760
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// A node after the claim failed unexpectedly (a safety check that stops the run, a database error).\n// End this attempt now, the normal way, instead of leaving the run in_progress until the 6-minute\n// stuck check. The run is only touched if it still carries a claim token this execution held: which\n// token is current depends on where the error happened, so every one is offered.\nconst run = $('Claim one run').first().json;\nconst tokens = [];\nconst collect = (node) => {\n  for (let i = 0; i < 50; i++) {\n    let items;\n    try {\n      items = node.all(0, i);\n    } catch {\n      break;\n    }\n    for (const it of items ?? []) if (typeof it.json.claimed_at === 'string') tokens.push(it.json.claimed_at);\n  }\n};\ncollect($('Claim one run'));\ncollect($('Heartbeat: writing'));\ncollect($('Heartbeat: checking'));\ncollect($('Heartbeat: reviewing'));\ncollect($('Record the round'));\nconst first = $input.first()?.json ?? {};\nconst raw = typeof first.error === 'string' ? first.error : first.error?.message ?? first.message ?? '';\nconst detail = String(raw).slice(0, 200);\nreturn [\n  {\n    json: {\n      run_id: run.id ?? null,\n      tokens: [...new Set(tokens)],\n      error: `Generation hit an unexpected error${detail ? ` (${detail})` : ''}.`,\n    },\n  },\n];"
+      },
+      "id": "121c7087-bf3f-41dc-af46-ad7c3ded2da8",
+      "name": "Unexpected error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7060,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] run id, [2] every claim token this execution held (JSON list), [3] the reason\n-- Only while the run still carries one of this execution's claim tokens. Attempts left: back to\n-- pending (retried after 1, then 5 minutes, from round 1). Otherwise failed.\nupdate generation_runs\nset status = case when attempts >= 3 then 'failed' else 'pending' end,\n    stage = case when attempts >= 3 then stage else 'queued' end,\n    error = $3,\n    updated_at = now()\nwhere id = $1 and status = 'in_progress'\n  and claimed_at = any(array(select jsonb_array_elements_text($2::jsonb)::timestamptz))\nreturning id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.run_id, JSON.stringify($json.tokens), $json.error ] }}"
+        }
+      },
+      "id": "c7c00e94-275e-4d71-a922-45631a8a2f38",
+      "name": "Mark attempt failed (unexpected error)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        7280,
         760
       ],
       "credentials": {
@@ -1275,7 +1360,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        8060,
+        9380,
         -100
       ]
     },
@@ -1290,7 +1375,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        8120,
+        9440,
         300
       ]
     }
@@ -1418,6 +1503,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -1437,6 +1529,13 @@
         [
           {
             "node": "Inputs ready?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unexpected error",
             "type": "main",
             "index": 0
           }
@@ -1498,6 +1597,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -1519,9 +1625,11 @@
             "node": "Writer reported usage?",
             "type": "main",
             "index": 0
-          },
+          }
+        ],
+        [
           {
-            "node": "Did the writer answer?",
+            "node": "Unexpected error",
             "type": "main",
             "index": 0
           }
@@ -1537,7 +1645,49 @@
             "index": 0
           }
         ],
-        []
+        [
+          {
+            "node": "Writer answer (after cost)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log writer cost": {
+      "main": [
+        [
+          {
+            "node": "Writer answer (after cost)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Writer answer (after cost)": {
+      "main": [
+        [
+          {
+            "node": "Did the writer answer?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Did the writer answer?": {
@@ -1595,6 +1745,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -1614,6 +1771,13 @@
         [
           {
             "node": "Did the checks run?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unexpected error",
             "type": "main",
             "index": 0
           }
@@ -1675,6 +1839,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -1696,9 +1867,11 @@
             "node": "Reviewer reported usage?",
             "type": "main",
             "index": 0
-          },
+          }
+        ],
+        [
           {
-            "node": "Did the reviewer answer?",
+            "node": "Unexpected error",
             "type": "main",
             "index": 0
           }
@@ -1714,7 +1887,49 @@
             "index": 0
           }
         ],
-        []
+        [
+          {
+            "node": "Reviewer answer (after cost)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log review cost": {
+      "main": [
+        [
+          {
+            "node": "Reviewer answer (after cost)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reviewer answer (after cost)": {
+      "main": [
+        [
+          {
+            "node": "Did the reviewer answer?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Did the reviewer answer?": {
@@ -1740,6 +1955,13 @@
         [
           {
             "node": "Still our claim? (round)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unexpected error",
             "type": "main",
             "index": 0
           }
@@ -1772,6 +1994,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -1801,6 +2030,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -1812,10 +2048,39 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Unexpected error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
     "Mark attempt failed": {
+      "main": [
+        [
+          {
+            "node": "Respond with summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unexpected error": {
+      "main": [
+        [
+          {
+            "node": "Mark attempt failed (unexpected error)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark attempt failed (unexpected error)": {
       "main": [
         [
           {

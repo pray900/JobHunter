@@ -372,6 +372,105 @@ describe('generate documents', () => {
     expect(await versions(jobId)).toEqual([]);
   });
 
+  describe('review checks need a ruling', () => {
+    /** The canned writer answer with a skill the base CV does not have (an unmatched_skill review check). */
+    const withSkill = () => {
+      const base = CANNED.write_documents;
+      return { ...base, cv: { ...base.cv, skills: [{ group: 'Languages', items: ['TypeScript', 'Kubernetes'] }] } };
+    };
+    const skillCheck = (checks: any[]) =>
+      checks.find((c) => c.code === 'unmatched_skill' && /"Kubernetes"/.test(c.detail));
+
+    test('the reviewer passes but does not rule on an unmatched skill: the round fails, the writer is told, unresolved lists it', async () => {
+      const jobId = await readyJob();
+      const runId = await queueRun(jobId);
+      await stub.reset();
+      await stub.scriptPurpose('write_documents', [withSkill(), withSkill(), withSkill()]);
+      expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
+
+      const writes = await writerRequests();
+      expect(writes).toHaveLength(3);
+      expect(await reviewRequests()).toHaveLength(3);
+      const previous = JSON.parse(tag(sentText(writes[1]), 'previous_round'));
+      expect(skillCheck(previous.failedChecks)).toBeTruthy();
+
+      const run = await runRow(runId);
+      expect(run.rounds.map((r: any) => [r.review.verdict, r.passed])).toEqual([['pass', false], ['pass', false], ['pass', false]]);
+      expect(skillCheck(run.rounds[0].unruled)).toBeTruthy();
+      const [v] = await versions(jobId);
+      expect(v.review.passed).toBe(false);
+      expect(v.review.unresolved).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'check', code: 'unmatched_skill', severity: 'review', note: 'The reviewer did not rule on this.', detail: expect.stringContaining('"Kubernetes"') })]),
+      );
+    });
+
+    test('the reviewer rules the skill an honest rephrase: the round passes', async () => {
+      const jobId = await readyJob();
+      const runId = await queueRun(jobId);
+      const ruled = {
+        ...CANNED.review_documents,
+        factRulings: [{ text: 'Kubernetes', ruling: 'honest_rephrase', why: 'The base CV shows container work.' }],
+        spellingRulings: [{ word: 'Kubernetes', ruling: 'ok', fix: null }],
+      };
+      await stub.reset();
+      await stub.scriptPurpose('write_documents', [withSkill()]);
+      await stub.scriptPurpose('review_documents', [ruled]);
+      await triggerGeneration();
+      expect(await writerRequests()).toHaveLength(1);
+      const run = await runRow(runId);
+      expect(run).toMatchObject({ status: 'done', round: 1 });
+      expect(skillCheck(run.rounds[0].checks)).toBeTruthy();
+      expect(run.rounds[0]).toMatchObject({ passed: true, unruled: [] });
+      const [v] = await versions(jobId);
+      expect(v.review.passed).toBe(true);
+      expect(v.reasons.factRulings).toEqual(ruled.factRulings);
+    });
+  });
+
+  describe('database errors after the calls', () => {
+    const dropTriggers = () =>
+      db.query(`drop trigger if exists gen_test_trigger on document_versions;
+                drop function if exists gen_test_trigger_fn();
+                drop sequence if exists gen_test_seq;`);
+    beforeEach(dropTriggers);
+    afterAll(dropTriggers);
+
+    test('a save that keeps failing ends the attempt as a failed attempt at once (no 6-minute freeze)', async () => {
+      const jobId = await readyJob();
+      const runId = await queueRun(jobId);
+      await db.query(`create function gen_test_trigger_fn() returns trigger language plpgsql as $f$
+                      begin raise exception 'test: the save fails'; end $f$`);
+      await db.query(`create trigger gen_test_trigger before insert on document_versions for each row execute function gen_test_trigger_fn()`);
+      await stub.reset();
+      expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
+      expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1, stage: 'queued', error: expect.stringMatching(/unexpected error/i) });
+      expect(await versions(jobId)).toEqual([]);
+      expect(await jobRow(jobId)).toMatchObject({ status: 'new' });
+      // Both calls were made and are logged.
+      expect((await db.query(`select purpose from cost_log where generation_run_id=$1`, [runId])).length).toBe(2);
+    });
+
+    test('a version number taken at the same moment is retried, not a failed attempt', async () => {
+      const jobId = await readyJob();
+      const runId = await queueRun(jobId);
+      // The first insert hits a unique violation (as if another version for the job was saved meanwhile).
+      await db.query(`create sequence gen_test_seq`);
+      await db.query(`create function gen_test_trigger_fn() returns trigger language plpgsql as $f$
+                      begin
+                        if nextval('gen_test_seq') = 1 then
+                          raise unique_violation using message = 'test: version number taken';
+                        end if;
+                        return new;
+                      end $f$`);
+      await db.query(`create trigger gen_test_trigger before insert on document_versions for each row execute function gen_test_trigger_fn()`);
+      await stub.reset();
+      await triggerGeneration();
+      expect(await runRow(runId)).toMatchObject({ status: 'done', attempts: 1, error: null });
+      expect((await versions(jobId)).map((v) => v.version_no)).toEqual([1]);
+      expect(await writerRequests()).toHaveLength(1);
+    });
+  });
+
   test('a stuck run is handed back and done by a later run', async () => {
     const jobId = await readyJob();
     const runId = await queueRun(jobId);
@@ -634,6 +733,46 @@ describe('generate documents', () => {
       }
     });
 
+    test('the cost row is written before the outcome is looked at, whatever the canvas layout', () => {
+      for (const [who, read, usage, log, after, outcome] of [
+        ['writer', "Read the writer's answer", 'Writer reported usage?', 'Log writer cost', 'Writer answer (after cost)', 'Did the writer answer?'],
+        ['reviewer', "Read the reviewer's answer", 'Reviewer reported usage?', 'Log review cost', 'Reviewer answer (after cost)', 'Did the reviewer answer?'],
+      ]) {
+        // One chain, no parallel branches: read → usage? → (log) → after cost → outcome.
+        // (the read node's second output is its error output, see the next test)
+        expect(wf.connections[read].main[0], who).toEqual([{ node: usage, type: 'main', index: 0 }]);
+        expect(wf.connections[usage].main, who).toEqual([[{ node: log, type: 'main', index: 0 }], [{ node: after, type: 'main', index: 0 }]]);
+        expect(wf.connections[log].main[0], who).toEqual([{ node: after, type: 'main', index: 0 }]);
+        expect(parentsOf(outcome), who).toEqual([after]);
+        expect(code(after), who).toContain(`$("${read}").first().json`);
+      }
+    });
+
+    test('a node that fails unexpectedly ends the attempt the normal way, claim-guarded', () => {
+      const risky = [
+        'Load inputs', 'Prepare inputs', 'Build writer request', "Read the writer's answer", 'Log writer cost', 'Writer answer (after cost)',
+        'Build check request', 'Read check results', 'Build review request', "Read the reviewer's answer", 'Log review cost',
+        'Reviewer answer (after cost)', 'Record the round', 'Decide the next step', 'Choose the version to save', 'Save version',
+      ];
+      for (const name of risky) {
+        expect(nodeByName(name).onError, name).toBe('continueErrorOutput');
+        const outputs = wf.connections[name].main;
+        expect(outputs[outputs.length - 1], name).toEqual([{ node: 'Unexpected error', type: 'main', index: 0 }]);
+      }
+      expect(wf.connections['Unexpected error'].main).toEqual([[{ node: 'Mark attempt failed (unexpected error)', type: 'main', index: 0 }]]);
+      const q = nodeByName('Mark attempt failed (unexpected error)').parameters.query;
+      expect(q).toMatch(/status = 'in_progress'/);
+      expect(q).toMatch(/claimed_at = any\(array\(select jsonb_array_elements_text\(\$2::jsonb\)::timestamptz\)\)/);
+      // Every claim token this execution held is offered; any other claim is left alone.
+      for (const node of ['Claim one run', 'Heartbeat: writing', 'Heartbeat: checking', 'Heartbeat: reviewing', 'Record the round']) {
+        expect(code('Unexpected error')).toContain(`$('${node}')`);
+      }
+    });
+
+    test('the save is retried, so a version number taken meanwhile does not end the attempt', () => {
+      expect(nodeByName('Save version')).toMatchObject({ retryOnFail: true, maxTries: 3 });
+    });
+
     const readAnswer = (node: string, state: object, res: object) =>
       new Function('$json', '$', code(node))(res, (name: string) => ({
         first: () => (name === 'Look up model prices' ? prices() : { json: state }),
@@ -706,7 +845,7 @@ describe('generate documents', () => {
       test('a pass with no hard check, invented fact or misspelling passes the round', () => {
         const out = read(envelope(pass, { model: 'claude-sonnet-5-5' }));
         expect(out).toMatchObject({ ok: true, passed: true, review: pass, purpose: 'review_documents', cost_usd: 0.003 });
-        expect(out.round_record).toEqual({ round: 2, writer: { w: 1 }, checks: [warning], cvPages: 1, letterPages: 1, review: pass, passed: true });
+        expect(out.round_record).toEqual({ round: 2, writer: { w: 1 }, checks: [warning], cvPages: 1, letterPages: 1, review: pass, passed: true, unruled: [] });
         // Unpriced answering model: the reviewer model's price.
         expect(read(envelope(pass, { model: 'claude-unpriced-1' })).cost_usd).toBeCloseTo(0.003, 9);
       });
@@ -733,6 +872,35 @@ describe('generate documents', () => {
           }),
         );
         expect(out.passed).toBe(true);
+      });
+
+      const SKILL = { code: 'unmatched_skill', severity: 'review', doc: 'cv', where: 'cv.skills[0].items[1]', detail: 'The skill "Kubernetes" is not in the base CV (it may be an honest rephrase).' };
+      const TECH = { code: 'unmatched_skill', severity: 'review', doc: 'cv', where: 'cv.summary', detail: 'The technology "Kafka" is not in the base CV.' };
+      const WORD = { code: 'possible_misspelling', severity: 'review', doc: 'cv', where: 'cv.summary', detail: 'Stubbish' };
+
+      test('a review check the reviewer did not rule on fails the round and is recorded as unruled', () => {
+        const ruledKafka = { ...pass, factRulings: [{ text: 'Kafka', ruling: 'honest_rephrase', why: 'w' }], spellingRulings: [{ word: 'Stubbish', ruling: 'ok', fix: null }] };
+        const out = read(envelope(ruledKafka), [SKILL, TECH, WORD]);
+        expect(out.ok).toBe(true);
+        expect(out.passed).toBe(false);
+        expect(out.round_record).toMatchObject({ passed: false, unruled: [SKILL] });
+        // An unruled misspelling counts too.
+        const noSpelling = read(envelope({ ...ruledKafka, spellingRulings: [] }), [TECH, WORD]);
+        expect(noSpelling.passed).toBe(false);
+        expect(noSpelling.round_record.unruled).toEqual([WORD]);
+      });
+
+      test('every review check ruled (honest or ok) passes the round', () => {
+        const out = read(
+          envelope({
+            ...pass,
+            factRulings: [{ text: 'kubernetes', ruling: 'honest_rephrase', why: 'w' }, { text: 'Kafka', ruling: 'honest_rephrase', why: 'w' }],
+            spellingRulings: [{ word: 'Stubbish', ruling: 'ok', fix: null }],
+          }),
+          [SKILL, TECH, WORD],
+        );
+        expect(out.passed).toBe(true);
+        expect(out.round_record.unruled).toEqual([]);
       });
 
       test.each([
@@ -882,6 +1050,24 @@ describe('generate documents', () => {
           { source: 'check', code: 'missing_work_rights', severity: 'warning', doc: 'cv', detail: 'The base CV has no work-rights line.' },
         ]);
       });
+
+      test('a review check without a ruling is unresolved and counts against the round', () => {
+        const UNRULED = { code: 'unmatched_skill', severity: 'review', doc: 'cv', where: 'cv.skills[0].items[1]', detail: 'The skill "Kubernetes" is not in the base CV (it may be an honest rephrase).' };
+        const out = choose([
+          // 1 unruled review check: 1 problem
+          { round: 1, writer: writer('a'), checks: [UNRULED, WARN], review: review('pass'), passed: false },
+          // the same check ruled honest, but 1 hard check: also 1 problem, and later, so it wins the tie
+          { round: 2, writer: writer('b'), checks: [UNRULED, HARD], review: review('pass', { factRulings: [{ text: 'Kubernetes', ruling: 'honest_rephrase', why: 'w' }] }), passed: false },
+          // unruled + hard: 2 problems
+          { round: 3, writer: writer('c'), checks: [UNRULED, HARD], review: review('pass'), passed: false },
+        ]);
+        expect(out.cv).toEqual({ headline: 'b' });
+        const only = choose([{ round: 1, writer: writer('a'), checks: [UNRULED, WARN], review: review('pass'), passed: false }]);
+        expect(only.review.unresolved).toEqual([
+          { source: 'check', code: 'unmatched_skill', severity: 'review', doc: 'cv', where: 'cv.skills[0].items[1]', detail: UNRULED.detail, note: 'The reviewer did not rule on this.' },
+          { source: 'check', code: 'missing_work_rights', severity: 'warning', doc: 'cv', detail: 'The base CV has no work-rights line.' },
+        ]);
+      });
     });
 
     test('the writer revision sends the previous round from the database row', () => {
@@ -922,6 +1108,8 @@ describe('generate documents', () => {
           { code: 'unmatched_skill', severity: 'review', doc: 'cv', detail: 'The technology "Kafka" is not in the base CV.' },
           { code: 'unmatched_skill', severity: 'review', doc: 'cv', detail: 'The technology "LWC" is not in the base CV.' },
           { code: 'missing_work_rights', severity: 'warning', doc: 'cv', detail: 'w' },
+          // Not ruled on by the reviewer: sent back as a failed check.
+          { code: 'unmatched_skill', severity: 'review', doc: 'cv', detail: 'The skill "Docker" is not in the base CV (it may be an honest rephrase).' },
         ],
         review: {
           verdict: 'fail',
@@ -939,7 +1127,7 @@ describe('generate documents', () => {
       const previous = JSON.parse(/<previous_round>\n([\s\S]*?)\n<\/previous_round>/.exec(text)![1]);
       expect(previous).toEqual({
         documents: { cv: { headline: 'old' } },
-        failedChecks: [prev.checks[0], prev.checks[1]],
+        failedChecks: [prev.checks[0], prev.checks[1], prev.checks[4]],
         warnings: [prev.checks[3]],
         failedItems: [{ id: 'relevance', pass: false, note: 'pad' }],
         rulingsAgainst: { facts: [prev.review.factRulings[0]], spelling: [] },
