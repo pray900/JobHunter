@@ -212,3 +212,10 @@ Use the frontend-design skill (CLAUDE.md UI rules: dark default, neutral greys, 
 ### Amendment (Prayush, 2026-11-07, after the Task 5 review)
 
 - **Pass rule (Task 5 step 5):** a round passes only when the reviewer's verdict is `pass` **and every review item passes**, no `hard` check remains, no fact ruling is `invented`, no spelling ruling is `misspelt`, **and every `review`-severity check (`unmatched_skill`, `possible_misspelling`) has a ruling**. An unruled review check counts as not passed, is listed in `unresolved`, counts in the best-round score, and is sent to the writer in the next round's failed checks.
+
+### Amendment (Prayush, 2026-11-08, after the final review)
+
+- **Copied own names:** words inside fields the writer must copy exactly from the base CV (role titles, employers, institutions, qualifications, statusText, the work-rights line) are exempt from the `us_spelling` and `banned_phrase` checks. Everywhere else both checks still apply.
+- **Invalid writer output:** a writer answer that fails document validation (e.g. an empty field) no longer fails the attempt. It becomes a hard check `invalid_document` in that round (detail names the field) and goes back to the writer in the next round, like any failed check.
+- **Failed n8n executions** stay saved (n8n default retention, local only). Decided, no change.
+- **Retries continue:** a retry after a failed attempt continues from the last finished round (rounds already in `generation_runs.rounds` are kept and count towards `GENERATION_MAX_ROUNDS`) instead of restarting from round 1.
