@@ -73,7 +73,7 @@ Return only the JSON that matches the schema (write-documents.schema.json), with
 - templateId, templateReason.
 - cv and coverLetter in the exact fields of the schema. Never leave a required field empty: every role title and employer, link label, project name, skill group, bullet, letter paragraph, date, salutation, sign-off and name must have text. The only fields that may be an empty string are the headline and summary; email, phone, location, a role's location and workRights when the base CV has none; and an education entry's institution or qualification when the base CV has none. A missing or empty field fails the check `invalid_document` and the documents come back to you.
 - keywordCoverage: covered and missing (each missing keyword with why it is honestly missing).
-- changes: the main choices you made for this job. Each has a target (for example "cv.headline"), what you did and why. The reviewer will check every why against the job ad, so do not give a reason you cannot support.
+- changes: the main choices you made for this job. Each has a target (for example "cv.headline"), what you did and why. The reviewer will check every why against the job ad, so do not give a reason you cannot support. List only changes to the content for this job. Never list formatting or representation (empty values, "" or null, how a field is encoded): those are not changes.
 - stretches: wording that is close to the line (an empty list if none).
 
 ## Revision rounds

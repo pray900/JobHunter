@@ -247,7 +247,12 @@ describe('generate documents', () => {
     expect(sentText(writes[0])).not.toContain('<previous_round>');
     const previous = JSON.parse(tag(sentText(writes[1]), 'previous_round'));
     expect(JSON.stringify(previous)).toContain('OBJECTION_7731');
-    expect(previous.documents).toEqual(await canned('write_documents'));
+    const w = await canned('write_documents');
+    // Shown in the writer's own format: "" for none in the optional fields.
+    expect(previous.documents).toEqual({
+      ...w,
+      cv: { ...w.cv, contact: { ...w.cv.contact, email: '', phone: '' }, workRights: '', experience: [{ ...w.cv.experience[0], location: '' }] },
+    });
     expect(previous.objections).toEqual(fail.objections);
     expect(previous.failedItems).toEqual([{ id: 'ai_sounding', pass: false, note: 'The summary reads as generated.' }]);
 
@@ -414,6 +419,25 @@ describe('generate documents', () => {
     // The reviewer saw the same documents (with null).
     const [r] = await reviewRequests();
     expect(JSON.parse(tag(sentText(r), 'documents')).cv.workRights).toBeNull();
+  });
+
+  test('real-run fix 2: a revision shows the writer its own "" in the optional fields, not null', async () => {
+    const jobId = await readyJob();
+    await queueRun(jobId);
+    const pass = await canned('review_documents');
+    await stub.reset();
+    await stub.scriptPurpose('review_documents', [{ ...pass, verdict: 'fail' }]);
+    await triggerGeneration();
+    const writes = await writerRequests();
+    expect(writes).toHaveLength(2);
+    const docs = JSON.parse(tag(sentText(writes[1]), 'previous_round')).documents;
+    // The canned writer answer has null there; the writer is shown its own format.
+    expect(docs.cv.contact).toMatchObject({ location: 'Sydney', email: '', phone: '' });
+    expect(docs.cv.workRights).toBe('');
+    expect(docs.cv.experience[0].location).toBe('');
+    // What is saved keeps null.
+    const [v] = await versions(jobId);
+    expect(v.cv.workRights).toBeNull();
   });
 
   test('every round invalid: nothing can be saved, the run fails without a retry', async () => {
@@ -1343,7 +1367,7 @@ describe('generate documents', () => {
       expect(first.request.messages[0].content[1].text).toContain('7 November 2026');
       const prev = {
         round: 1,
-        writer: { cv: { headline: 'old' } },
+        writer: { cv: { headline: 'old', contact: { location: null, email: null, phone: '0400' }, workRights: null, experience: [{ location: null }, { location: 'Sydney' }] } },
         checks: [
           { code: 'cv_pages', severity: 'hard', doc: 'cv', detail: 'pages' },
           { code: 'unmatched_skill', severity: 'review', doc: 'cv', detail: 'The technology "Kafka" is not in the base CV.' },
@@ -1367,7 +1391,8 @@ describe('generate documents', () => {
       const text = second.request.messages[0].content[1].text;
       const previous = JSON.parse(/<previous_round>\n([\s\S]*?)\n<\/previous_round>/.exec(text)![1]);
       expect(previous).toEqual({
-        documents: { cv: { headline: 'old' } },
+        // The writer sees its own format: "" where the stored documents have null.
+        documents: { cv: { headline: 'old', contact: { location: '', email: '', phone: '0400' }, workRights: '', experience: [{ location: '' }, { location: 'Sydney' }] } },
         failedChecks: [prev.checks[0], prev.checks[1], prev.checks[4]],
         warnings: [prev.checks[3]],
         failedItems: [{ id: 'relevance', pass: false, note: 'pad' }],
