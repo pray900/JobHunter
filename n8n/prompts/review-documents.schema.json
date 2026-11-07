@@ -128,10 +128,7 @@
             ]
           },
           "fix": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         }
       }

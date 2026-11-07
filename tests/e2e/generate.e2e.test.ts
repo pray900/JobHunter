@@ -390,6 +390,32 @@ describe('generate documents', () => {
     expect(costs.map((c) => c.purpose)).toEqual(['write_documents', 'write_documents', 'review_documents']);
   });
 
+  test('real-run fix: "" in the writer\'s optional fields is saved as null', async () => {
+    const jobId = await readyJob();
+    const runId = await queueRun(jobId);
+    const base = await canned('write_documents');
+    const blank = {
+      ...base,
+      cv: {
+        ...base.cv,
+        contact: { ...base.cv.contact, location: '', email: '', phone: '' },
+        workRights: '',
+        experience: [{ ...base.cv.experience[0], location: '' }],
+      },
+    };
+    await stub.reset();
+    await stub.scriptPurpose('write_documents', [blank]);
+    await triggerGeneration();
+    expect(await runRow(runId)).toMatchObject({ status: 'done', round: 1 });
+    const [v] = await versions(jobId);
+    expect(v.cv.contact).toMatchObject({ location: null, email: null, phone: null });
+    expect(v.cv.workRights).toBeNull();
+    expect(v.cv.experience[0].location).toBeNull();
+    // The reviewer saw the same documents (with null).
+    const [r] = await reviewRequests();
+    expect(JSON.parse(tag(sentText(r), 'documents')).cv.workRights).toBeNull();
+  });
+
   test('every round invalid: nothing can be saved, the run fails without a retry', async () => {
     const jobId = await readyJob();
     const runId = await queueRun(jobId);
@@ -415,7 +441,7 @@ describe('generate documents', () => {
     // Round 1 writes fine; the writer call of round 2 fails.
     await stub.scriptPurpose('write_documents', [writer, { __stub_status: 529 }]);
     expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
-    expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1, error: 'The request to Claude failed (HTTP 529).' });
+    expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1, error: 'The request to Claude failed (HTTP 529: api_error: scripted stub failure).' });
     expect((await runRow(runId)).rounds.map((r: any) => r.round)).toEqual([1]);
 
     await db.query(`update generation_runs set updated_at = updated_at - interval '2 minutes' where id=$1`, [runId]);
@@ -970,6 +996,37 @@ describe('generate documents', () => {
         expect(out.error).toMatch(message);
       });
 
+      test('real-run fix: "" in the nullable fields becomes null; other fields are left alone', () => {
+        const blank = {
+          ...good,
+          cv: {
+            ...good.cv,
+            contact: { ...good.cv.contact, location: '', email: ' ', phone: '0400' },
+            workRights: '',
+            experience: [{ ...good.cv.experience[0], location: '' }],
+            summary: '',
+          },
+        };
+        const out = read(envelope(blank));
+        expect(out.ok).toBe(true);
+        expect(out.writer.cv.contact).toEqual({ ...good.cv.contact, location: null, email: null, phone: '0400' });
+        expect(out.writer.cv.workRights).toBeNull();
+        expect(out.writer.cv.experience[0].location).toBeNull();
+        expect(out.writer.cv.summary).toBe('');
+      });
+
+      test('real-run fix: a Claude error body is summarised when it is safe to show', () => {
+        const err = (message: string) => ({ statusCode: 400, body: { type: 'error', error: { type: 'invalid_request_error', message } } });
+        expect(read(err('The compiled grammar is too large, which would cause performance issues.')).error).toBe(
+          'The request to Claude failed (HTTP 400: invalid_request_error: The compiled grammar is too large, which would cause performance issues.).',
+        );
+        const long = read(err('x'.repeat(500))).error;
+        expect(long).toBe(`The request to Claude failed (HTTP 400: invalid_request_error: ${'x'.repeat(200)}).`);
+        expect(read(err('line one\nline two')).error).toBe('The request to Claude failed (HTTP 400).');
+        expect(read(err('<script>alert(1)</script>')).error).toBe('The request to Claude failed (HTTP 400).');
+        expect(read({ statusCode: 529, body: { type: 'error' } }).error).toBe('The request to Claude failed (HTTP 529).');
+      });
+
       test('a refusal still reports its usage for the cost log', () => {
         expect(read(envelope(good, { stop_reason: 'refusal', content: [] }))).toMatchObject({ has_usage: true, input_tokens: 1000, cost_usd: 0.006 });
         expect(read({ statusCode: 500, body: {} })).toMatchObject({ has_usage: false, cost_usd: null });
@@ -1022,6 +1079,15 @@ describe('generate documents', () => {
         const ids: string[] = JSON.parse(promptFile('review-documents.schema.json')).properties.items.items.properties.id.enum;
         const listed = /const ITEM_IDS = \[([^\]]+)\]/.exec(code("Read the reviewer's answer"))![1];
         expect([...listed.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort()).toEqual([...ids].sort());
+      });
+
+      test('real-run fix: a reviewer error is summarised too, and an empty fix becomes null', () => {
+        expect(read({ statusCode: 529, body: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } }).error).toBe(
+          'The request to Claude failed (HTTP 529: overloaded_error: Overloaded).',
+        );
+        const out = read(envelope({ ...pass, spellingRulings: [{ word: 'Kubernetes', ruling: 'ok', fix: '' }] }));
+        expect(out.ok).toBe(true);
+        expect(out.review.spellingRulings).toEqual([{ word: 'Kubernetes', ruling: 'ok', fix: null }]);
       });
 
       test('honest rephrases and ok spellings do not fail the round', () => {

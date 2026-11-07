@@ -22,7 +22,7 @@ Code has already checked the rendered documents. Each result has a severity:
 
 Rule every `unmatched_skill`. It means a skill or technology appears in the CV but not in the base CV facts. Add one entry to `factRulings` for each: `text` is the skill or technology copied exactly as the check's detail quotes it (the words between the quotation marks, same spelling and case, nothing shortened or added: for `The skill "Lightning Web Components (LWC)" …` write `Lightning Web Components (LWC)`, not `LWC`), `ruling` is `honest_rephrase` when it is a fair description of something the base CV really shows (for example "modern JavaScript component frameworks" for Lightning Web Components), or `invented` when the base CV does not support it. An `invented` ruling is also an objection with a fix (remove it, or restore the base CV's wording).
 
-Rule every `possible_misspelling`. It means a word is not in the Australian dictionary. Add one entry to `spellingRulings` for each: `word` copied exactly as the check's detail gives it, `ruling` `ok` (a real proper noun, product name or technical term) or `misspelt`, and `fix`, the correct spelling for a misspelt word (null for ok). A misspelt word is also an objection.
+Rule every `possible_misspelling`. It means a word is not in the Australian dictionary. Add one entry to `spellingRulings` for each: `word` copied exactly as the check's detail gives it, `ruling` `ok` (a real proper noun, product name or technical term) or `misspelt`, and `fix`, the correct spelling for a misspelt word (an empty string "" for ok). A misspelt word is also an objection.
 
 ## What you judge
 

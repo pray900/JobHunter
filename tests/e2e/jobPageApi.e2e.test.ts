@@ -216,6 +216,7 @@ describe('job page API', () => {
       'Generation stopped and gave up after 3 attempts.',
       'The request to Claude failed (HTTP 529).',
       'The request to Claude failed (no response).',
+      'The request to Claude failed (HTTP 400: invalid_request_error: The compiled grammar is too large, which would cause performance issues.).',
       'Claude stopped unexpectedly (pause_turn).',
       "The writer's documents were not in the expected format.",
       'Your base documents changed while this was being written. Choose Generate again.',
@@ -224,6 +225,7 @@ describe('job page API', () => {
       'connect ECONNREFUSED 172.18.0.4:5432 password=hunter2',
       'Generation hit an unexpected error (relation "x" does not exist).',
       'Claude stopped unexpectedly (<script>alert(1)</script>).',
+      'The request to Claude failed (HTTP 400: <img src=x onerror=alert(1)>).',
     ];
     for (const e of shown) {
       await db.query(`update generation_runs set error=$2 where id=$1`, [run.id, e]);

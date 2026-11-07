@@ -52,22 +52,13 @@
           ],
           "properties": {
             "location": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "email": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "phone": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "links": {
               "type": "array",
@@ -94,10 +85,7 @@
           "type": "string"
         },
         "workRights": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "skills": {
           "type": "array",
@@ -141,10 +129,7 @@
                 "type": "string"
               },
               "location": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string"
               },
               "dates": {
                 "type": "string"

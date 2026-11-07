@@ -86,6 +86,21 @@ describe('writer prompt schema and the stub answer', () => {
     walk(schema('review-documents.schema.json'), 'reviewer');
   });
 
+  // The real API refuses the writer schema ("compiled grammar is too large") while it has nullable unions.
+  test('no schema has a nullable type: no "null" type, type list or anyOf/oneOf union', () => {
+    const walk = (n: any, where: string) => {
+      if (Array.isArray(n)) return n.forEach((v, i) => walk(v, `${where}[${i}]`));
+      if (!n || typeof n !== 'object') return;
+      expect(Array.isArray(n.type), `${where}.type is a list`).toBe(false);
+      expect(n.type, where).not.toBe('null');
+      expect(n.anyOf, `${where}.anyOf`).toBeUndefined();
+      expect(n.oneOf, `${where}.oneOf`).toBeUndefined();
+      for (const [k, v] of Object.entries(n)) walk(v, `${where}.${k}`);
+    };
+    walk(schema('write-documents.schema.json'), 'writer');
+    walk(schema('review-documents.schema.json'), 'reviewer');
+  });
+
   test('the canned reviewer answer has the reviewer schema fields', async () => {
     const r = await ask('review_documents');
     expect(Object.keys(r).sort()).toEqual(Object.keys(schema('review-documents.schema.json').properties).sort());
