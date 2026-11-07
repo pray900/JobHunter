@@ -201,3 +201,10 @@ Use the frontend-design skill (CLAUDE.md UI rules: dark default, neutral greys, 
 - [ ] **Step 2:** Click Generate on the highest-scoring job (the browser or `POST api/jobs/generate` with `X-JobHunter: 1`); wait for `done`.
 - [ ] **Step 3:** Check: PDF is 1 page; letter ≤ 2 pages; no previous-target names; no banned phrases; facts traceable; reasons and reviewer verdict present; cost per run recorded (expected ≈ $0.25 per round).
 - [ ] **Step 4:** Record results and cost in the ledger; report anything that reads wrong to Prayush before merging.
+
+---
+
+### Amendment (Prayush, 2026-11-07, after the Task 3 review)
+
+- **Cover-letter numbers:** in the cover letter only, numbers and dates that appear in the job ad (or the target title/employer) are allowed and are not `unknown_fact`. The CV still allows only numbers and dates from the base CV.
+- **Leakage from other jobs:** other jobs' employer/advertiser/title names match **case-sensitively** (whole word), so ordinary words ("insight into") are not flagged. The base cover letter's previous company/addressee/role stay case-insensitive, and also ignore punctuation ("Ms Li" = "Ms. Li").
