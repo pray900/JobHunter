@@ -10,15 +10,18 @@
   },
   "dependencies": {
     "@fastify/multipart": "10.1.8",
+    "dictionary-en-au": "3.0.0",
     "docx": "9.14.0",
     "fastify": "^5.0.0",
     "mammoth": "^1.13.0",
     "node-html-parser": "^9.0.7",
+    "nspell": "2.1.5",
     "pg": "^8.13.0",
     "unpdf": "1.9.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/nspell": "2.1.6",
     "@types/pg": "^8.11.0",
     "jszip": "^3.10.2",
     "typescript": "^5.6.0",

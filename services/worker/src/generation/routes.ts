@@ -9,6 +9,7 @@ import {
   type RenderFormat,
   type TemplateId,
 } from './types.js';
+import { runChecks, type CheckInput } from './checks.js';
 import { InvalidDocumentError, validateTailoredCv, validateTailoredLetter } from './validate.js';
 
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -17,6 +18,22 @@ export interface GenerationDeps {
   gotenbergUrl: string;
   // Test seam for the Gotenberg call.
   fetch?: FetchLike;
+  // Directory with the check lists. Defaults to CONFIG_DIR or /app/config.
+  configDir?: string;
+}
+
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+const strOrNull = (x: unknown): x is string | null => x === null || typeof x === 'string';
+
+// Shape-checks the parts of a check request that are not the tailored documents. Returns the bad path or null.
+function badCheckPath(b: Record<string, unknown>): string | null {
+  if (!Array.isArray(b.keywordsCovered) || !b.keywordsCovered.every((k) => typeof k === 'string')) return 'keywordsCovered';
+  const job = b.job;
+  if (!isObj(job) || !strOrNull(job.title) || !strOrNull(job.employer) || !strOrNull(job.advertiser) || typeof job.rawText !== 'string') return 'job';
+  if (!isObj(b.baseCv) || !isObj(b.baseCv.structured)) return 'baseCv';
+  if (b.baseCoverLetter !== null && b.baseCoverLetter !== undefined && (!isObj(b.baseCoverLetter) || !isObj(b.baseCoverLetter.structured))) return 'baseCoverLetter';
+  if (!Array.isArray(b.otherJobs) || !b.otherJobs.every((j) => isObj(j) && strOrNull(j.title) && strOrNull(j.employer) && strOrNull(j.advertiser))) return 'otherJobs';
+  return null;
 }
 
 const oneOf = <T extends string>(list: readonly T[], x: unknown): x is T =>
@@ -51,4 +68,26 @@ export function registerGenerationRoutes(app: FastifyInstance, deps: GenerationD
       }
     },
   );
+
+  app.post<{ Body: Record<string, unknown> | undefined }>('/generation/check', async (request, reply) => {
+    const body = request.body ?? {};
+    if (!oneOf<TemplateId>(TEMPLATE_IDS, body.templateId)) return reply.code(400).send({ error: 'invalid_document', path: 'templateId' });
+    let input: CheckInput;
+    try {
+      const cv = validateTailoredCv(body.cv);
+      const coverLetter = validateTailoredLetter(body.coverLetter);
+      const bad = badCheckPath(body);
+      if (bad) throw new InvalidDocumentError(bad);
+      input = { ...(body as unknown as CheckInput), templateId: body.templateId, cv, coverLetter, baseCoverLetter: (body.baseCoverLetter as CheckInput['baseCoverLetter']) ?? null };
+    } catch (err) {
+      if (err instanceof InvalidDocumentError) return reply.code(400).send({ error: 'invalid_document', path: err.path });
+      throw err;
+    }
+    try {
+      return await runChecks(input, { gotenbergUrl: deps.gotenbergUrl, fetch: deps.fetch, configDir: deps.configDir });
+    } catch (err) {
+      request.log.error({ reason: err instanceof PdfRenderError ? err.message : 'check failed' }, 'check failed');
+      return reply.code(err instanceof PdfRenderError ? 502 : 500).send({ error: err instanceof PdfRenderError ? 'pdf_render_failed' : 'check_failed' });
+    }
+  });
 }

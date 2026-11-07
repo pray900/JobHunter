@@ -18,7 +18,9 @@ export interface ServerDeps {
   bannedPhrasesFile?: string;
   // Gotenberg base URL for PDF rendering. Defaults to GOTENBERG_URL or the compose service.
   gotenbergUrl?: string;
-  // Test seam for calls to Gotenberg.
+  // Directory with banned-phrases.txt, au-spelling.txt and tech-casing.txt. Defaults to CONFIG_DIR or /app/config.
+  configDir?: string;
+  // Test seam for calls to Gotenberg (and link checks).
   fetch?: FetchLike;
 }
 
@@ -57,6 +59,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerGenerationRoutes(app, {
     gotenbergUrl: deps.gotenbergUrl ?? process.env.GOTENBERG_URL ?? 'http://gotenberg:3000',
     fetch: deps.fetch,
+    configDir: deps.configDir,
   });
 
   return app;
