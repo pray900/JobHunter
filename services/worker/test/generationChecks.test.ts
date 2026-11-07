@@ -434,4 +434,56 @@ describe('runChecks', () => {
     expect(find(ok, 'unknown_fact')).toEqual([]);
   });
 
+
+  // ---------- fix round 2 ----------
+  const withBaseLinks = (links: string[]) => ({ structured: { ...baseStructured, contact: { ...baseStructured.contact, links } } });
+  const withLink = (url: string) => ({ ...goodCv, contact: { ...goodCv.contact, links: [{ label: 'Profile', url }] } });
+
+  test('N1: links compare without scheme, www, case or trailing slash; a different path still fails', async () => {
+    const cases: [string, string, boolean][] = [
+      ['linkedin.com/in/x', 'https://linkedin.com/in/x', true],
+      ['http://linkedin.com/in/x', 'https://linkedin.com/in/x', true],
+      ['https://www.linkedin.com/in/x/', 'https://linkedin.com/in/x', true],
+      ['linkedin.com/in/x', 'https://www.LinkedIn.com/in/x/', true],
+      ['linkedin.com/in/x', 'https://linkedin.com/in/y', false],
+    ];
+    for (const [base, out, passes] of cases) {
+      const r = await runChecks(input({ cv: withLink(out), baseCv: withBaseLinks([base]) }), opts());
+      expect(find(r, 'unknown_fact').filter((c) => c.where === 'cv.contact.links[0]').length === 0, `${base} vs ${out}`).toBe(passes);
+      expect(find(r, 'link_invalid')).toEqual([]);
+    }
+  });
+
+  test('N1: a link written in prose matches a scheme-less base link', async () => {
+    const r = await runChecks(
+      input({ baseCv: withBaseLinks(['linkedin.com/in/x']), coverLetter: letter(['My profile is at https://www.linkedin.com/in/x/ today.']) }),
+      opts(),
+    );
+    expect(find(r, 'unknown_fact').filter((c) => c.where === 'coverLetter.paragraphs[0]')).toEqual([]);
+  });
+
+  test('N2: phone numbers compare by digits with +61 and 0 equivalent', async () => {
+    const run = (basePhone: string, outPhone: string) =>
+      runChecks(
+        input({
+          cv: { ...goodCv, contact: { ...goodCv.contact, phone: outPhone } },
+          baseCv: { structured: { ...baseStructured, contact: { ...baseStructured.contact, phone: basePhone } } },
+        }),
+        opts(),
+      );
+    expect(find(await run('+61 412 345 678', '0412 345 678'), 'unknown_fact')).toEqual([]);
+    expect(find(await run('0412-345-678', '+61 (0)412 345 678'.replace('(0)', '')), 'unknown_fact')).toEqual([]);
+    expect(find(await run('0412 345 678', '+61412345678'), 'unknown_fact')).toEqual([]);
+    expect(find(await run('0412 345 678', '0412 345 679'), 'unknown_fact').map((c) => c.where)).toEqual(['cv.contact.phone']);
+  });
+
+  test('N3: dropping the base work-rights line is a hard work_rights_dropped', async () => {
+    const r = await runChecks(input({ cv: { ...goodCv, workRights: null } }), opts());
+    expect(find(r, 'work_rights_dropped')).toEqual([
+      expect.objectContaining({ severity: 'hard', doc: 'cv', detail: 'Your base CV has a work-rights line; keep it.' }),
+    ]);
+    const none = await runChecks(input({ cv: { ...goodCv, workRights: null }, baseCv: { structured: { ...baseStructured, workRights: null } } }), opts());
+    expect(find(none, 'work_rights_dropped')).toEqual([]);
+  });
+
 });

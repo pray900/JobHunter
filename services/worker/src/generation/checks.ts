@@ -30,6 +30,7 @@ export type CheckCode =
   | 'unmatched_skill'
   | 'possible_misspelling'
   | 'missing_work_rights'
+  | 'work_rights_dropped'
   | 'link_unreachable';
 
 export interface CheckResult {
@@ -166,6 +167,17 @@ function dateTokens(text: string): string {
 }
 const punctFree = (s: string): string => norm(s).replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
 
+// Links are compared without scheme, "www.", case, trailing slash or fragment: "linkedin.com/in/x" = "https://www.LinkedIn.com/in/x/".
+const linkKey = (u: string): string =>
+  norm(u).replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').replace(/#.*$/, '').replace(/\/+$/, '');
+const LINK_IN_TEXT = /(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s)>\]"',;]*)?/gi;
+const linkKeysIn = (text: string): string[] => (text.match(LINK_IN_TEXT) ?? []).map(linkKey);
+// Australian numbers: +61 4xx and 04xx are the same number.
+const phoneKey = (p: string): string => {
+  const d = p.replace(/\D/g, '').replace(/^0061/, '61');
+  return d.startsWith('61') ? `0${d.slice(2).replace(/^0/, '')}` : d;
+};
+
 const LEGAL_SUFFIX = /\b(pty|ltd|limited|inc|llc|plc)\b\.?/g;
 // Employers only: brackets and legal suffixes are not part of the name. Job titles use norm() so "(Intern)" counts.
 const orgKey = (s: string): string =>
@@ -223,8 +235,8 @@ function baseFacts(structured: object, usToAu: Map<string, string>): BaseFacts {
     workRights: typeof s.workRights === 'string' && s.workRights.trim() !== '' ? s.workRights : null,
     contact: {
       email: norm(String(contact.email ?? '')),
-      phone: String(contact.phone ?? '').replace(/\D/g, ''),
-      links: new Set(collectStrings(contact.links).map((l) => norm(l).replace(/\/+$/, ''))),
+      phone: phoneKey(String(contact.phone ?? '')),
+      links: new Set([...collectStrings(contact.links).map(linkKey), ...linkKeysIn(raw)]),
     },
   };
 }
@@ -396,6 +408,9 @@ function roleFacts(cv: TailoredCv, base: BaseFacts): CheckResult[] {
 
 function contactAndRightsFacts(cv: TailoredCv, base: BaseFacts): CheckResult[] {
   const out: CheckResult[] = [];
+  if (base.workRights !== null && !(cv.workRights && cv.workRights.trim() !== '')) {
+    out.push({ code: 'work_rights_dropped', severity: 'hard', doc: 'cv', where: 'cv.workRights', detail: 'Your base CV has a work-rights line; keep it.' });
+  }
   if (cv.workRights && cv.workRights.trim() !== '') {
     if (base.workRights === null) {
       out.push(unknown('cv', 'cv.workRights', 'The base CV has no work-rights line, so one cannot be added.'));
@@ -404,7 +419,7 @@ function contactAndRightsFacts(cv: TailoredCv, base: BaseFacts): CheckResult[] {
     }
   }
   if (cv.contact.email && norm(cv.contact.email) !== base.contact.email) out.push(unknown('cv', 'cv.contact.email', 'The e-mail address differs from the base CV.'));
-  if (cv.contact.phone && cv.contact.phone.replace(/\D/g, '') !== base.contact.phone) out.push(unknown('cv', 'cv.contact.phone', 'The phone number differs from the base CV.'));
+  if (cv.contact.phone && phoneKey(cv.contact.phone) !== base.contact.phone) out.push(unknown('cv', 'cv.contact.phone', 'The phone number differs from the base CV.'));
   return out;
 }
 
@@ -412,7 +427,7 @@ function factChecks(input: CheckInput, cvSegs: Segment[], letterSegs: Segment[],
   const out: CheckResult[] = [...roleFacts(input.cv, base), ...contactAndRightsFacts(input.cv, base)];
   const jobText = [input.job.title, input.job.employer, input.job.advertiser, input.job.rawText].filter((t): t is string => !!t).join('\n');
   const jobAllowed = { numbers: new Set(numbers(stripLinks(jobText)).map((n) => n.key)), dates: new Set(monthYears(jobText).map((m) => m.key)) };
-  const jobNorm = norm(jobText);
+  const jobLinkKeys = new Set(linkKeysIn(jobText));
   for (const seg of [...cvSegs, ...letterSegs]) {
     if (seg.kind !== 'body') continue;
     // Role and education dates are compared with their own base entry in roleFacts.
@@ -420,8 +435,8 @@ function factChecks(input: CheckInput, cvSegs: Segment[], letterSegs: Segment[],
     if (!seg.field) out.push(...numberAndDateFacts(seg, text, base, seg.doc === 'cover_letter' ? jobAllowed : undefined));
     for (const url of seg.text.match(PROSE_URL) ?? []) {
       const clean = url.replace(/[.,;:]+$/, '');
-      const key = norm(clean).replace(/\/+$/, '');
-      if (!base.contact.links.has(key) && !base.corpus.includes(key) && !jobNorm.includes(key)) {
+      const key = linkKey(clean);
+      if (!base.contact.links.has(key) && !jobLinkKeys.has(key)) {
         out.push(unknown(seg.doc, seg.where, `The link "${clean}" is not in the base CV or the job ad.`));
       }
     }
@@ -537,7 +552,7 @@ async function linkChecks(cv: TailoredCv, base: BaseFacts, f: FetchLike): Promis
       return;
     } else if (!isPublicHost(l.url)) {
       out.push({ code: 'link_invalid', severity: 'hard', doc: 'cv', where, detail: `"${l.url}" is not a public web address.` });
-    } else if (!base.contact.links.has(norm(l.url).replace(/\/+$/, ''))) {
+    } else if (!base.contact.links.has(linkKey(l.url))) {
       out.push(unknown('cv', where, `The link "${l.url}" is not in the base CV.`));
     } else {
       toProbe.push({ url: l.url, where });
