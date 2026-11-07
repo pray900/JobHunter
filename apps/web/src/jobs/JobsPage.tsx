@@ -92,7 +92,7 @@ export function JobsPage() {
 
       <div className="grid">
         {visible.map((j) => (
-          <JobCard key={j.id} job={j} noReadyCv={noReadyCv} />
+          <JobCard key={j.id} job={j} noReadyCv={noReadyCv} onChanged={() => void load()} />
         ))}
       </div>
     </main>

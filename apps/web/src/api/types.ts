@@ -9,6 +9,15 @@ export interface MatchBreakdown {
   notes: string[];
 }
 
+export type RunStatus = 'pending' | 'in_progress' | 'done' | 'failed';
+export type RunStage = 'queued' | 'writing' | 'checking' | 'reviewing' | 'saving';
+
+export interface GenerationSummary {
+  status: RunStatus;
+  stage: RunStage;
+  round: number;
+}
+
 export interface JobSummary {
   id: string;
   title: string | null;
@@ -26,6 +35,9 @@ export interface JobSummary {
   sourceRemoved: boolean;
   sourceRef: string;
   createdAt: string;
+  // Latest generation run (null when none) and whether a generated version exists.
+  generation?: GenerationSummary | null;
+  hasVersion?: boolean;
 }
 
 export type DocumentKind = 'cv' | 'cover_letter';
@@ -55,3 +67,150 @@ export interface DocumentsResponse {
   cv: BaseDocumentSummary | null;
   coverLetter: BaseDocumentSummary | null;
 }
+
+// ---- Job page (GET /api/jobs/detail) ----
+
+export interface Generation extends GenerationSummary {
+  attempts: number;
+  error: string | null;
+}
+
+export interface JobDetailJob {
+  id: string;
+  title: string | null;
+  employer: string | null;
+  advertiser: string | null;
+  url: string | null;
+  status: JobStatus;
+  rawText: string | null;
+  matchScore: number | null;
+  matchExplanation: string | null;
+  matchBreakdown: MatchBreakdown | null;
+  warnings: WarningCode[];
+  companyNotes: string | null;
+}
+
+export interface TailoredCv {
+  name: string;
+  headline: string;
+  contact: {
+    location: string | null;
+    email: string | null;
+    phone: string | null;
+    links: { label: string; url: string }[];
+  };
+  summary: string;
+  workRights: string | null;
+  skills: { group: string; items: string[] }[];
+  experience: { title: string; employer: string; location: string | null; dates: string; bullets: string[] }[];
+  education: { qualification: string; institution: string; dates: string; statusText: string }[];
+  projects: { name: string; bullets: string[] }[];
+}
+
+export interface TailoredLetter {
+  date: string;
+  addressee: string;
+  salutation: string;
+  paragraphs: string[];
+  signOff: string;
+  name: string;
+}
+
+export type CheckCode =
+  | 'cv_pages'
+  | 'letter_pages'
+  | 'placeholder'
+  | 'company_leakage'
+  | 'title_leakage'
+  | 'banned_phrase'
+  | 'us_spelling'
+  | 'tech_casing'
+  | 'unknown_fact'
+  | 'keyword_not_found'
+  | 'link_invalid'
+  | 'render_text'
+  | 'unmatched_skill'
+  | 'possible_misspelling'
+  | 'missing_work_rights'
+  | 'work_rights_dropped'
+  | 'link_unreachable';
+
+export type ReviewItemId =
+  | 'relevance'
+  | 'over_tailoring'
+  | 'strongest_match_top_third'
+  | 'inflated_scope'
+  | 'ai_sounding'
+  | 'paraphrased_job_ad'
+  | 'keyword_stuffing'
+  | 'bullet_rhythm'
+  | 'star_form'
+  | 'tidiness'
+  | 'keyword_coverage_honest'
+  | 'reasons_hold_up'
+  | 'cover_letter_sources'
+  | 'addressee';
+
+export interface CheckResult {
+  code: CheckCode;
+  severity: 'hard' | 'warning' | 'review';
+  doc: 'cv' | 'cover_letter';
+  detail: string;
+  where?: string;
+}
+
+export interface Stretch {
+  target: string;
+  text: string;
+  why: string;
+}
+
+export interface VersionReasons {
+  templateReason: string;
+  changes: { target: string; what: string; why: string }[];
+  stretches: Stretch[];
+  factRulings: { text: string; ruling: 'honest_rephrase' | 'invented'; why: string }[];
+}
+
+export interface KeywordCoverage {
+  covered: string[];
+  missing: { keyword: string; why: string }[];
+}
+
+export type UnresolvedItem =
+  | (CheckResult & { source: 'check'; note?: string })
+  | { source: 'review'; id: ReviewItemId; note: string }
+  | { source: 'fact'; text: string; why: string }
+  | { source: 'spelling'; word: string; fix: string | null };
+
+export interface VersionReview {
+  passed: boolean;
+  rounds: number;
+  verdicts: ('pass' | 'fail')[];
+  unresolved: UnresolvedItem[];
+}
+
+export interface DocumentVersion {
+  id: string;
+  versionNo: number;
+  label: string;
+  createdAt: string;
+  templateId: string;
+  cv: TailoredCv;
+  coverLetter: TailoredLetter;
+  reasons: VersionReasons;
+  keywordCoverage: KeywordCoverage;
+  review: VersionReview;
+  checks: CheckResult[];
+  baseCvSourceRef: string | null;
+  costUsd: number;
+}
+
+export interface JobDetail {
+  job: JobDetailJob;
+  generation: Generation | null;
+  version: DocumentVersion | null;
+}
+
+export type DownloadDoc = 'cv' | 'cover_letter';
+export type DownloadFormat = 'docx' | 'pdf';

@@ -1,9 +1,22 @@
-import { render, screen } from '@testing-library/react';
+import { render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import * as client from '../api/client';
 import { JobCard } from './JobCard';
 import { baseJob } from './jobFixtures';
+
+vi.mock('../api/client', async () => ({
+  ...(await vi.importActual<typeof import('../api/client')>('../api/client')),
+  generate: vi.fn(),
+}));
+
+// Cards link to the job page, so they always render inside a router.
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: MemoryRouter });
+
+beforeEach(() => {
+  vi.mocked(client.generate).mockReset();
+});
 
 describe('JobCard', () => {
   test('shows title, company via advertiser, and posting link', () => {
@@ -22,9 +35,9 @@ describe('JobCard', () => {
 
   test('omits the link for non-http(s) or unparseable urls', () => {
     const { rerender } = render(<JobCard job={{ ...baseJob, url: 'javascript:alert(1)' }} />);
-    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /open job posting/i })).not.toBeInTheDocument();
     rerender(<JobCard job={{ ...baseJob, url: 'not a url' }} />);
-    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /open job posting/i })).not.toBeInTheDocument();
     rerender(<JobCard job={{ ...baseJob, url: 'https://x.io/a' }} />);
     expect(screen.getByRole('link', { name: /open job posting/i })).toBeInTheDocument();
   });
@@ -61,7 +74,7 @@ describe('JobCard', () => {
     expect(screen.getByText('No job description found')).toBeInTheDocument();
     expect(screen.getByText('Source file removed')).toBeInTheDocument();
     expect(screen.getByText('Details unavailable')).toBeInTheDocument();
-    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /open job posting/i })).not.toBeInTheDocument();
   });
 
   test('shows reading state while extraction is pending or in progress', () => {
@@ -116,17 +129,44 @@ describe('JobCard', () => {
   });
 
   test('shows add-a-CV hint linking to documents', () => {
-    const { rerender } = render(
-      <MemoryRouter>
-        <JobCard job={baseJob} noReadyCv />
-      </MemoryRouter>,
-    );
+    const { rerender } = render(<JobCard job={baseJob} noReadyCv />);
     expect(screen.getByRole('link', { name: 'Add a base CV to get match scores' })).toHaveAttribute('href', '/documents');
-    rerender(
-      <MemoryRouter>
-        <JobCard job={{ ...baseJob, matchScore: 80, scoreStatus: 'done' }} noReadyCv />
-      </MemoryRouter>,
-    );
+    rerender(<JobCard job={{ ...baseJob, matchScore: 80, scoreStatus: 'done' }} noReadyCv />);
     expect(screen.queryByText('Add a base CV to get match scores')).not.toBeInTheDocument();
+  });
+
+  test('title links to the job page', () => {
+    render(<JobCard job={{ ...baseJob, id: 'abc', title: 'Salesforce Developer' }} />);
+    expect(screen.getByRole('link', { name: 'Salesforce Developer' })).toHaveAttribute('href', '/jobs/abc');
+  });
+
+  test('card shows Generate only for new jobs without a run', () => {
+    const { rerender } = render(<JobCard job={baseJob} />);
+    expect(screen.getByRole('button', { name: 'Generate' })).toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, status: 'cv_ready' }} />);
+    expect(screen.queryByRole('button', { name: 'Generate' })).not.toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, generation: { status: 'done', stage: 'saving', round: 1 }, hasVersion: true }} />);
+    expect(screen.queryByRole('button', { name: 'Generate' })).not.toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, generation: { status: 'in_progress', stage: 'writing', round: 2 } }} />);
+    expect(screen.queryByRole('button', { name: 'Generate' })).not.toBeInTheDocument();
+    expect(screen.getByText('Writing… round 2')).toBeInTheDocument();
+    rerender(<JobCard job={{ ...baseJob, extractionStatus: 'pending' }} />);
+    expect(screen.queryByRole('button', { name: 'Generate' })).not.toBeInTheDocument();
+  });
+
+  test('Generate queues a run and tells the page to refresh', async () => {
+    vi.mocked(client.generate).mockResolvedValue({ runId: 'r1' });
+    const onChanged = vi.fn();
+    render(<JobCard job={{ ...baseJob, id: 'abc' }} onChanged={onChanged} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Generate' }));
+    expect(client.generate).toHaveBeenCalledWith('abc');
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  test('Generate shows why it could not start', async () => {
+    vi.mocked(client.generate).mockRejectedValue(new client.ApiError(422, 'x', 'base_cv_not_ready'));
+    render(<JobCard job={baseJob} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Generate' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("base CV isn't ready");
   });
 });
