@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 import { CV, LETTER } from '../../services/worker/test/fixtures';
-import { N8N_URL, SYNC_HEADERS, WEB_URL, db, makePdf, putDocument, resetState, stub } from './lib';
+import { N8N_URL, SYNC_HEADERS, WEB_URL, compose, db, makePdf, putDocument, resetState, stub } from './lib';
 
 const OWNER = '00000000-0000-0000-0000-000000000001';
 const EVIL = 'https://evil.example';
@@ -343,6 +343,62 @@ describe('job page API', () => {
     res = await get(`jobs/download?id=${MISSING}&doc=cv&format=pdf`);
     expect(res.status).toBe(404);
   });
+
+  test('download answers 502 render_failed when the worker is unreachable', async () => {
+    const jobId = await addJob();
+    await addVersion(jobId);
+    await compose(['stop', 'worker']);
+    try {
+      for (const base of [WEB_URL + '/api', N8N_URL + '/webhook/api']) {
+        const res = await fetch(`${base}/jobs/download?id=${jobId}&doc=cv&format=docx`);
+        expect(res.status).toBe(502);
+        expect(await res.json()).toEqual({ error: 'render_failed' });
+      }
+    } finally {
+      await compose(['up', '-d', '--wait', 'worker']);
+    }
+    const ok = await get(`jobs/download?id=${jobId}&doc=cv&format=docx`);
+    expect(ok.status).toBe(200);
+    await ok.arrayBuffer();
+  }, 120_000);
+
+  test('a NUL byte in an id, status or notes is a clean 4xx, not a 500', async () => {
+    await withCv();
+    const jobId = await addJob();
+    for (const path of ['jobs/detail?id=%00', 'jobs/download?id=%00&doc=cv&format=pdf']) {
+      const res = await get(path);
+      expect([400, 404]).toContain(res.status);
+      await res.arrayBuffer();
+    }
+    for (const path of ['jobs/generate?id=%00']) {
+      expect((await post(path)).status).toBe(404);
+    }
+    expect((await post('jobs/status?id=%00', { status: 'applied' })).status).toBe(404);
+    expect((await post('jobs/notes?id=%00', { notes: 'x' })).status).toBe(404);
+    let res = await post(`jobs/status?id=${jobId}`, { status: 'app\u0000lied' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'bad_status' });
+    res = await post(`jobs/notes?id=${jobId}`, { notes: 'a\u0000b' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'bad_notes' });
+    expect(await db.query(`select company_notes from jobs`)).toEqual([{ company_notes: null }]);
+  });
+
+  test('download header: no CR/LF injection, parentheses encoded, no trailing dot', async () => {
+    const jobId = await addJob({ employer: 'Acme\r\nX-Evil: 1 (Aust) Pty Ltd.' });
+    const id = await addVersion(jobId);
+    await db.query(`update document_versions set cv = jsonb_set(cv, '{name}', to_jsonb($2::text)) where id=$1`, [id, 'Jo' + String.fromCharCode(13, 10) + 'Set-Cookie: a=b']);
+    const res = await get(`jobs/download?id=${jobId}&doc=cv&format=docx`);
+    expect(res.status).toBe(200);
+    const cd = res.headers.get('content-disposition')!;
+    expect(cd).not.toMatch(/[\r\n]/);
+    expect(res.headers.get('x-evil')).toBeNull();
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(cd).toContain('filename="JoSet-Cookie ab - CV - AcmeX-Evil 1 (Aust) Pty Ltd.docx"');
+    expect(cd).toContain('%28Aust%29');
+    expect(cd).not.toContain('..');
+    await res.arrayBuffer();
+  }, 60_000);
 
   test('jobs list carries generation and hasVersion', async () => {
     const plain = await addJob({ title: 'Plain' });

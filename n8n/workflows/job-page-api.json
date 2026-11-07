@@ -118,7 +118,7 @@
         "operation": "executeQuery",
         "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\n-- One statement: the insert only happens when the job and the base CV are ready. A second active\n-- run for the job violates the partial unique index; on conflict do nothing then returns no row.\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\nj as (\n  select jobs.id, jobs.extraction_status from jobs, p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid\n), cv as (\n  select 1 as one from base_documents\n  where owner_id = $1::uuid and kind = 'cv' and active and analysis_status = 'done' and not source_removed\n  limit 1\n), ins as (\n  insert into generation_runs (owner_id, job_id)\n  select $1::uuid, j.id from j\n  where j.extraction_status = 'done' and exists (select 1 from cv)\n  on conflict do nothing\n  returning id\n)\nselect (select id from ins) as run_id,\n       exists (select 1 from j) as job_found,\n       coalesce((select extraction_status from j), '') as extraction_status,\n       exists (select 1 from cv) as cv_ready;",
         "options": {
-          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', String(($json.query || {}).id || '') ] }}"
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(($json.query || {}).id || '')) ? String(($json.query || {}).id || '') : '') ] }}"
         }
       },
       "credentials": {
@@ -126,7 +126,8 @@
           "id": "jh-postgres",
           "name": "JobHunter Postgres"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "042c4dba-59f7-562f-b7c4-aebd1486a6b4",
@@ -138,8 +139,9 @@
         0
       ],
       "parameters": {
-        "jsCode": "// Turns the insert's outcome into the HTTP answer.\nconst r = $json;\nif (r.run_id) return { json: { code: 202, body: { runId: r.run_id } } };\nif (!r.job_found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nif (r.extraction_status !== 'done') return { json: { code: 422, body: { error: 'job_not_ready' } } };\nif (!r.cv_ready) return { json: { code: 422, body: { error: 'base_cv_not_ready' } } };\n// Ready, but no row: the job already has an active run.\nreturn { json: { code: 409, body: { error: 'generation_in_progress' } } };"
-      }
+        "jsCode": "// Turns the insert's outcome into the HTTP answer.\nconst r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (r.run_id) return { json: { code: 202, body: { runId: r.run_id } } };\nif (!r.job_found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nif (r.extraction_status !== 'done') return { json: { code: 422, body: { error: 'job_not_ready' } } };\nif (!r.cv_ready) return { json: { code: 422, body: { error: 'base_cv_not_ready' } } };\n// Ready, but no row: the job already has an active run.\nreturn { json: { code: 409, body: { error: 'generation_in_progress' } } };"
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "5651f2b3-d74c-5f09-a985-3dc8a1ae3ad6",
@@ -152,9 +154,9 @@
       ],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ $json.body }}",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
         "options": {
-          "responseCode": "={{ $json.code }}"
+          "responseCode": "={{ $json.code || 500 }}"
         }
       }
     },
@@ -206,7 +208,7 @@
         "operation": "executeQuery",
         "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below)\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the generate query).\n-- Same score rule as the job list: shown only when worked out from the CV in use now.\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\ncur as (\n  select content_hash from base_documents\n  where owner_id = $1::uuid and kind = 'cv' and active and analysis_status = 'done' and not source_removed\n  limit 1\n), j as (\n  select jobs.*,\n    (jobs.match_basis_hash is not null\n      and jobs.match_basis_hash = (select content_hash from cur)) as basis_ok\n  from jobs, p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid\n), g as (\n  select r.* from generation_runs r, j where r.job_id = j.id\n  order by r.created_at desc, r.id desc limit 1\n), v as (\n  select d.*, b.source_ref as base_cv_source_ref from document_versions d\n  join j on d.job_id = j.id\n  left join base_documents b on b.id = d.base_cv_id\n  order by d.version_no desc limit 1\n)\nselect\n  exists (select 1 from j) as found,\n  (select json_build_object(\n    'id', j.id, 'title', j.title, 'employer', j.employer, 'advertiser', j.advertiser, 'url', j.url,\n    'status', j.status, 'rawText', j.raw_text,\n    'matchScore',       case when j.basis_ok then j.match_score end,\n    'matchExplanation', case when j.basis_ok then j.match_explanation end,\n    'matchBreakdown',   case when j.basis_ok then j.match_breakdown end,\n    'warnings', j.warnings, 'companyNotes', j.company_notes) from j) as job,\n  (select json_build_object(\n    'status', g.status, 'stage', g.stage, 'round', g.round, 'attempts', g.attempts, 'error', g.error) from g) as generation,\n  (select json_build_object(\n    'id', v.id, 'versionNo', v.version_no, 'label', v.label,\n    'createdAt', to_char(v.created_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),\n    'templateId', v.template_id, 'cv', v.cv, 'coverLetter', v.cover_letter, 'reasons', v.reasons,\n    'keywordCoverage', v.keyword_coverage, 'review', v.review, 'checks', v.checks,\n    'baseCvSourceRef', v.base_cv_source_ref,\n    'costUsd', coalesce((select sum(c.cost_usd) from cost_log c where c.generation_run_id = v.run_id), 0)::float8\n  ) from v) as version;",
         "options": {
-          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', String(($json.query || {}).id || '') ] }}"
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(($json.query || {}).id || '')) ? String(($json.query || {}).id || '') : '') ] }}"
         }
       },
       "credentials": {
@@ -214,7 +216,8 @@
           "id": "jh-postgres",
           "name": "JobHunter Postgres"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "e770c4d9-1dec-57db-b098-5db9fc689d89",
@@ -226,8 +229,9 @@
         500
       ],
       "parameters": {
-        "jsCode": "// Builds the answer. A generation error is shown only when it is one of the Generate workflow's own\n// user-facing messages (grep \"error\" in generate-documents.json). Anything else may hold raw error\n// text, so it is replaced by a fixed message.\nconst r = $json;\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nconst FIXED = new Set([\n  'The job was not found.',\n  \"The job's details have not been read yet.\",\n  \"Your base CV isn't ready.\",\n  'Your base CV file could not be read; it will be tried again.',\n  'The last attempt stopped before it finished; it will be tried again.',\n  'Generation stopped and gave up after 3 attempts.',\n  'Claude declined to write the documents.',\n  'Claude declined to review the documents.',\n  \"Claude's answer was cut off (max_tokens).\",\n  \"The writer's answer was not in the expected format.\",\n  \"The reviewer's answer was not in the expected format.\",\n  \"The writer's documents were not in the expected format.\",\n]);\nconst PATTERNS = [\n  /^The request to Claude failed \\((HTTP \\d{3}|no response)\\)\\.$/,\n  /^Claude stopped unexpectedly \\(([a-z_]{1,40}|no stop reason)\\)\\.$/,\n  /^The document checks could not run \\((HTTP \\d{3}|no response)\\)\\.$/,\n];\nconst GENERIC = 'Something went wrong while generating. Try again.';\nlet generation = r.generation || null;\nif (generation && generation.error != null) {\n  const e = String(generation.error);\n  generation = { ...generation, error: FIXED.has(e) || PATTERNS.some((p) => p.test(e)) ? e : GENERIC };\n}\nreturn { json: { code: 200, body: { job: r.job, generation, version: r.version || null } } };"
-      }
+        "jsCode": "// Builds the answer. A generation error is shown only when it is one of the Generate workflow's own\n// user-facing messages (grep \"error\" in generate-documents.json). Anything else may hold raw error\n// text, so it is replaced by a fixed message.\nconst r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nconst FIXED = new Set([\n  'The job was not found.',\n  \"The job's details have not been read yet.\",\n  \"Your base CV isn't ready.\",\n  'Your base CV file could not be read; it will be tried again.',\n  'The last attempt stopped before it finished; it will be tried again.',\n  'Generation stopped and gave up after 3 attempts.',\n  'Claude declined to write the documents.',\n  'Claude declined to review the documents.',\n  \"Claude's answer was cut off (max_tokens).\",\n  \"The writer's answer was not in the expected format.\",\n  \"The reviewer's answer was not in the expected format.\",\n  \"The writer's documents were not in the expected format.\",\n]);\nconst PATTERNS = [\n  /^The request to Claude failed \\((HTTP \\d{3}|no response)\\)\\.$/,\n  /^Claude stopped unexpectedly \\(([a-z_]{1,40}|no stop reason)\\)\\.$/,\n  /^The document checks could not run \\((HTTP \\d{3}|no response)\\)\\.$/,\n];\nconst GENERIC = 'Something went wrong while generating. Try again.';\nlet generation = r.generation || null;\nif (generation && generation.error != null) {\n  const e = String(generation.error);\n  generation = { ...generation, error: FIXED.has(e) || PATTERNS.some((p) => p.test(e)) ? e : GENERIC };\n}\nreturn { json: { code: 200, body: { job: r.job, generation, version: r.version || null } } };"
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "eebd4f84-0096-5c55-96c1-50bf56f532cd",
@@ -240,9 +244,9 @@
       ],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ $json.body }}",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
         "options": {
-          "responseCode": "={{ $json.code }}"
+          "responseCode": "={{ $json.code || 500 }}"
         }
       }
     },
@@ -328,7 +332,7 @@
         "operation": "executeQuery",
         "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below), [3] the new status (text)\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the generate query).\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\ncur as (\n  select jobs.id, jobs.status from jobs, p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid\n  for update of jobs\n), upd as (\n  update jobs set status = $3::text, updated_at = now()\n  from cur\n  where jobs.id = cur.id\n    and $3::text in ('new', 'cv_ready', 'applied', 'interviewing', 'closed')\n    and cur.status is distinct from $3::text\n  returning jobs.id, cur.status as old_status\n), hist as (\n  insert into job_status_history (job_id, from_status, to_status)\n  select id, old_status, $3::text from upd\n  returning 1\n)\nselect exists (select 1 from cur) as found,\n       ($3::text in ('new', 'cv_ready', 'applied', 'interviewing', 'closed')) as valid;",
         "options": {
-          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', String(($json.query || {}).id || ''), typeof (($json.body || {}).status) === 'string' ? $json.body.status : '' ] }}"
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(($json.query || {}).id || '')) ? String(($json.query || {}).id || '') : ''), ['new', 'cv_ready', 'applied', 'interviewing', 'closed'].includes(($json.body || {}).status) ? $json.body.status : '' ] }}"
         }
       },
       "credentials": {
@@ -336,7 +340,8 @@
           "id": "jh-postgres",
           "name": "JobHunter Postgres"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "7b34e85b-5eb3-5aa9-8b23-87985fe32462",
@@ -348,8 +353,9 @@
         900
       ],
       "parameters": {
-        "jsCode": "const r = $json;\nconst status = typeof (($('POST api/jobs/status').first().json.body || {}).status) === 'string' ? $('POST api/jobs/status').first().json.body.status : '';\nif (!r.valid) return { json: { code: 400, body: { error: 'bad_status' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nreturn { json: { code: 200, body: { status } } };"
-      }
+        "jsCode": "const r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nconst status = typeof (($('POST api/jobs/status').first().json.body || {}).status) === 'string' ? $('POST api/jobs/status').first().json.body.status : '';\nif (!r.valid) return { json: { code: 400, body: { error: 'bad_status' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nreturn { json: { code: 200, body: { status } } };"
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "754e35e4-59f7-54bf-8178-e3499158d4ef",
@@ -362,9 +368,9 @@
       ],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ $json.body }}",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
         "options": {
-          "responseCode": "={{ $json.code }}"
+          "responseCode": "={{ $json.code || 500 }}"
         }
       }
     },
@@ -450,7 +456,7 @@
         "operation": "executeQuery",
         "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below), [3] the notes (text), [4] whether the notes\n-- are a string of at most 4000 characters\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the generate query).\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\nupd as (\n  update jobs set company_notes = $3::text, updated_at = now()\n  from p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid and $4::boolean\n  returning jobs.id\n)\nselect exists (select 1 from jobs, p where jobs.id = p.id and jobs.owner_id = $1::uuid) as found;",
         "options": {
-          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', String(($json.query || {}).id || ''), typeof (($json.body || {}).notes) === 'string' ? $json.body.notes : '', typeof (($json.body || {}).notes) === 'string' && Array.from($json.body.notes).length <= 4000 ] }}"
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(($json.query || {}).id || '')) ? String(($json.query || {}).id || '') : ''), typeof (($json.body || {}).notes) === 'string' && $json.body.notes.indexOf(String.fromCharCode(0)) < 0 ? $json.body.notes : '', typeof (($json.body || {}).notes) === 'string' && $json.body.notes.indexOf(String.fromCharCode(0)) < 0 && Array.from($json.body.notes).length <= 4000 ] }}"
         }
       },
       "credentials": {
@@ -458,7 +464,8 @@
           "id": "jh-postgres",
           "name": "JobHunter Postgres"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "6dda582d-ea3f-5a7f-9386-9d6869939eaf",
@@ -470,8 +477,9 @@
         1300
       ],
       "parameters": {
-        "jsCode": "const r = $json;\nconst notes = ($('POST api/jobs/notes').first().json.body || {}).notes;\nif (typeof notes !== 'string' || Array.from(notes).length > 4000) return { json: { code: 400, body: { error: 'bad_notes' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nreturn { json: { code: 200, body: { notes } } };"
-      }
+        "jsCode": "const r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nconst notes = ($('POST api/jobs/notes').first().json.body || {}).notes;\nif (typeof notes !== 'string' || notes.indexOf(String.fromCharCode(0)) >= 0 || Array.from(notes).length > 4000) return { json: { code: 400, body: { error: 'bad_notes' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nreturn { json: { code: 200, body: { notes } } };"
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "62521332-6e2a-54d1-a8a1-3c10b9cab855",
@@ -484,9 +492,9 @@
       ],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ $json.body }}",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
         "options": {
-          "responseCode": "={{ $json.code }}"
+          "responseCode": "={{ $json.code || 500 }}"
         }
       }
     },
@@ -536,7 +544,8 @@
       ],
       "parameters": {
         "jsCode": "// Validates the query. Anything unexpected is a 400 before the database is touched.\nconst q = $json.query || {};\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst ok = typeof q.id === 'string' && UUID.test(q.id)\n  && (q.doc === 'cv' || q.doc === 'cover_letter')\n  && (q.format === 'docx' || q.format === 'pdf');\nif (!ok) return { json: { ok: false, code: 400, body: { error: 'bad_request' } } };\nreturn { json: { ok: true, id: q.id, doc: q.doc, format: q.format } };"
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "989aa739-ea4b-5d34-987e-8821d3e68c03",
@@ -583,9 +592,9 @@
       ],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ $json.body }}",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
         "options": {
-          "responseCode": "={{ $json.code }}"
+          "responseCode": "={{ $json.code || 500 }}"
         }
       }
     },
@@ -610,7 +619,8 @@
           "id": "jh-postgres",
           "name": "JobHunter Postgres"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "309022d7-27dc-5f74-8353-12af339a0a47",
@@ -622,8 +632,9 @@
         1700
       ],
       "parameters": {
-        "jsCode": "// The worker request, the download file name and the response headers.\nconst req = $('Check download request').first().json;\nconst r = $json;\nif (!r.found) return { json: { render: false, code: 404, body: { error: 'job_not_found' } } };\nif (!r.version) return { json: { render: false, code: 404, body: { error: 'no_version' } } };\nconst v = r.version;\nconst clean = (s) => String(s).replace(/[^A-Za-z0-9 ._()-]/g, '');\nconst target = [v.employer, v.advertiser].map((s) => (typeof s === 'string' ? clean(s).trim() : '')).find((s) => s) || 'Job';\nconst person = clean((v.cv && typeof v.cv.name === 'string' ? v.cv.name : '') || '').trim() || 'CV';\nconst kind = req.doc === 'cv' ? 'CV' : 'Cover letter';\nlet base = clean(`${person} - ${kind} - ${target}`).replace(/^[ .]+/, '').slice(0, 100).trim();\nif (!base) base = 'Document';\nconst file = `${base}.${req.format}`;\nconst type = req.format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';\nreturn { json: {\n  render: true,\n  body: { templateId: v.templateId, doc: req.doc, format: req.format, cv: v.cv, coverLetter: req.doc === 'cover_letter' ? v.coverLetter : null },\n  disposition: `attachment; filename=\"${file}\"; filename*=UTF-8''${encodeURIComponent(file)}`,\n  contentType: type,\n} };"
-      }
+        "jsCode": "// The worker request, the download file name and the response headers.\nconst req = $('Check download request').first().json;\nconst r = $json;\nif (r.error) return { json: { render: false, code: 500, body: { error: 'server_error' } } };\nif (!r.found) return { json: { render: false, code: 404, body: { error: 'job_not_found' } } };\nif (!r.version) return { json: { render: false, code: 404, body: { error: 'no_version' } } };\nconst v = r.version;\nconst clean = (s) => String(s).replace(/[^A-Za-z0-9 ._()-]/g, '');\nconst target = [v.employer, v.advertiser].map((s) => (typeof s === 'string' ? clean(s).trim() : '')).find((s) => s) || 'Job';\nconst person = clean((v.cv && typeof v.cv.name === 'string' ? v.cv.name : '') || '').trim() || 'CV';\nconst kind = req.doc === 'cv' ? 'CV' : 'Cover letter';\nlet base = clean(`${person} - ${kind} - ${target}`).replace(/^[ .]+/, '').slice(0, 100).replace(/[ .]+$/, '');\nif (!base) base = 'Document';\nconst file = `${base}.${req.format}`;\nconst type = req.format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';\nreturn { json: {\n  render: true,\n  body: { templateId: v.templateId, doc: req.doc, format: req.format, cv: v.cv, coverLetter: req.doc === 'cover_letter' ? v.coverLetter : null },\n  disposition: `attachment; filename=\"${file}\"; filename*=UTF-8''${encodeURIComponent(file).replace(/[()]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())}`,\n  contentType: type,\n} };"
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "83272c41-ef0f-51e7-9614-1a653f060efe",
@@ -684,7 +695,8 @@
             }
           }
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "7458ec06-b0db-5758-972a-7242d948be6e",
