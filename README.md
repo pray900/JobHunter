@@ -110,18 +110,18 @@ Both of these webhooks ("GET api/jobs" here and "POST api/jobs/sync" in Job inta
 
 ## Cost
 
-Real costs measured on 2026-11-07:
+Real costs measured on 2026-11-07, in US dollars (Anthropic bills in US$):
 
 | What | Model | Cost | When |
 | --- | --- | --- | --- |
-| Reading your CV | Opus 5.5 | about $0.06 | only when you upload a new or changed CV |
-| Reading your cover letter | Opus 5.5 | about $0.03 | only when you upload a new or changed letter |
-| Scoring one job | Sonnet 5.5 | about $0.016 | when the job or your CV changes |
-| Reading one job file | Haiku 5.5 | about $0.0003 | new or changed job file (and retries) |
-| Writing a CV and cover letter (one round) | Opus 5.5 | about $0.13 (estimate, not yet measured) | only after you click Generate |
-| Reviewing them (one round) | Opus 5.5 | about $0.12 (estimate, not yet measured) | once per writing round |
+| Reading your CV | Opus 5.5 | about US$0.06 | only when you upload a new or changed CV |
+| Reading your cover letter | Opus 5.5 | about US$0.03 | only when you upload a new or changed letter |
+| Scoring one job | Sonnet 5.5 | about US$0.016 | when the job or your CV changes |
+| Reading one job file | Haiku 5.5 | about US$0.0003 | new or changed job file (and retries) |
+| Writing a CV and cover letter (one round) | Opus 5.5 | about US$0.13 (estimate, not yet measured) | only after you click Generate |
+| Reviewing them (one round) | Opus 5.5 | about US$0.12 (estimate, not yet measured) | once per writing round |
 
-A Generate click costs one round (about $0.25) when the first draft passes the review, and at most `GENERATION_MAX_ROUNDS` rounds (3: about $0.75). A failed attempt (an API error, or n8n restarted mid-run) is retried from round 1 after 1, then 5 minutes, at most 3 attempts, so the worst case for one click is 18 calls (about $2.25). Nothing is written or reviewed without a click: the "Generate documents" workflow only picks up runs that a Generate click queued, and every call's cost is logged with its job and generation run.
+A Generate click costs one round (about US$0.25) when the first draft passes the review, and at most `GENERATION_MAX_ROUNDS` rounds (3: about US$0.75). A failed attempt (an API error, or n8n restarted mid-run) is retried after 1, then 5 minutes, at most 3 attempts, and a retry **continues from the last finished round** (rounds already paid for are kept and count towards `GENERATION_MAX_ROUNDS`). Only the round that was cut off is paid for twice, so the worst case for one click is 2 × (rounds + 2) calls: 10 calls (about US$1.25) at 3 rounds, 14 calls (about US$1.75) at the maximum of 5. A round whose documents are malformed is not reviewed, so it costs only the writer call. Nothing is written or reviewed without a click: the "Generate documents" workflow only picks up runs that a Generate click queued, and every call's cost is logged with its job and generation run.
 
 Reading the job folder every 30 seconds costs nothing, and the documents sync only reads your CV and letter after an upload or to retry a failed reading. A new CV re-scores every job once (10 per run). Check the real total any time with `docker compose exec postgres psql -U jobhunter -c "select sum(cost_usd) from cost_log"`.
 

@@ -6,6 +6,8 @@ import { filterJobs, sortJobs } from './filterJobs';
 import { STATUSES, statusLabel } from './labels';
 
 const REFRESH_MS = 15_000;
+// While a card is writing its documents, refresh faster so its progress is not stale.
+const RUNNING_REFRESH_MS = 5_000;
 
 export function JobsPage() {
   const [jobs, setJobs] = useState<JobSummary[] | null>(null);
@@ -38,9 +40,13 @@ export function JobsPage() {
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), REFRESH_MS);
-    return () => clearInterval(timer);
   }, [load]);
+
+  const anyRunning = (jobs ?? []).some((j) => j.generation?.status === 'pending' || j.generation?.status === 'in_progress');
+  useEffect(() => {
+    const timer = setInterval(() => void load(), anyRunning ? RUNNING_REFRESH_MS : REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [load, anyRunning]);
 
   const sorted = useMemo(() => (jobs ? sortJobs(jobs) : []), [jobs]);
   const visible = useMemo(() => filterJobs(sorted, { status, query }), [sorted, status, query]);

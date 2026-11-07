@@ -123,9 +123,43 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
 
       <section className="panel" aria-label="Reviewer">
         <h3>Reviewer</h3>
-        <p>{review.passed ? 'Reviewer: passed' : 'Reviewer: not satisfied'}</p>
+        {review.passed ? (
+          <p>
+            <span aria-hidden="true">✓ </span>Reviewer: passed
+          </p>
+        ) : (
+          <p className="attention-text">
+            <Warn>Reviewer: not satisfied</Warn>
+          </p>
+        )}
         <p className="muted">{review.rounds === 1 ? 'Took 1 round' : `Took ${review.rounds} rounds`}</p>
       </section>
+
+      {reasons.factRulings.length > 0 && (
+        <section className="panel" aria-label="Reworded skills the reviewer accepted">
+          <h3>Reworded skills the reviewer accepted</h3>
+          <p className="muted">Skills written differently from your base CV, and the reviewer's ruling on each. Check you could defend them in an interview.</p>
+          <ul className="plain">
+            {reasons.factRulings.map((f, i) =>
+              f.ruling === 'invented' ? (
+                <li key={i} className="attention-text">
+                  <Warn>
+                    <strong>{f.text}</strong> <span className="badge-stretch">Invented</span>
+                    <br />
+                    {f.why}
+                  </Warn>
+                </li>
+              ) : (
+                <li key={i}>
+                  <strong>{f.text}</strong> <span className="badge">Honest rephrase</span>
+                  <br />
+                  <span className="muted">{f.why}</span>
+                </li>
+              ),
+            )}
+          </ul>
+        </section>
+      )}
 
       {review.unresolved.length > 0 && (
         <section className="panel attention" aria-label="Needs your attention">
@@ -165,7 +199,7 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
         </p>
       )}
 
-      <p className="muted">This generation cost ${version.costUsd.toFixed(2)}</p>
+      <p className="muted">This generation cost US${version.costUsd.toFixed(2)}</p>
     </div>
   );
 }

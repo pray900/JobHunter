@@ -197,6 +197,9 @@ createServer((req, res) => {
       if (text.includes('STUB_REFUSE'))
         return send(res, 200, { ...base, content: [], stop_reason: 'refusal', usage: { input_tokens: 1000, output_tokens: 100 } });
       let answer = scripts.get(purpose)?.shift() ?? CANNED[purpose] ?? CANNED.extract_job;
+      // A scripted { __stub_status: 529 } answers that HTTP error instead (no usage), e.g. to fail round 2 only.
+      if (answer && typeof answer.__stub_status === 'number')
+        return send(res, answer.__stub_status, { type: 'error', error: { type: 'api_error', message: 'scripted stub failure' } });
       // "STUB_HEADLINE:<text>" in a CV makes its recorded headline <text> (so tests can tell CVs apart).
       const headline = /STUB_HEADLINE:(\S+)/.exec(text)?.[1];
       if (purpose === 'analyse_cv' && headline) answer = { ...answer, headline };

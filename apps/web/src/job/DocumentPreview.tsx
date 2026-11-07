@@ -17,8 +17,12 @@ export function CvPreview({ cv }: { cv: TailoredCv }) {
       {contact && <p className="paper-contact">{contact}</p>}
       {cv.workRights && <p>{cv.workRights}</p>}
 
-      <h3>Summary</h3>
-      <p>{cv.summary}</p>
+      {cv.summary.trim() !== '' && (
+        <>
+          <h3>Summary</h3>
+          <p>{cv.summary}</p>
+        </>
+      )}
 
       <h3>Skills</h3>
       {cv.skills.map((g, i) => (
@@ -64,7 +68,7 @@ export function CvPreview({ cv }: { cv: TailoredCv }) {
       {cv.education.map((e, i) => (
         <div key={i} className="paper-entry">
           <p className="paper-line">
-            <strong>{`${e.qualification}, ${e.institution}`}</strong>
+            <strong>{[e.qualification, e.institution].filter((p) => p.trim() !== '').join(', ')}</strong>
             <span>{e.dates}</span>
           </p>
           {e.statusText && <p>{e.statusText}</p>}

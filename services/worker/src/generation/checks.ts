@@ -31,7 +31,9 @@ export type CheckCode =
   | 'possible_misspelling'
   | 'missing_work_rights'
   | 'work_rights_dropped'
-  | 'link_unreachable';
+  | 'link_unreachable'
+  // Not produced by runChecks: the Generate workflow records it when the worker rejects the writer's documents.
+  | 'invalid_document';
 
 export interface CheckResult {
   code: CheckCode;
@@ -195,6 +197,7 @@ interface BaseFacts {
   education: { institution: string; qualification: string; statusText: string; dates: string }[];
   words: Set<string>;
   workRights: string | null;
+  name: string | null;
   contact: { email: string; phone: string; links: Set<string> };
 }
 
@@ -233,6 +236,7 @@ function baseFacts(structured: object, usToAu: Map<string, string>): BaseFacts {
     })),
     words,
     workRights: typeof s.workRights === 'string' && s.workRights.trim() !== '' ? s.workRights : null,
+    name: typeof s.name === 'string' && s.name.trim() !== '' ? s.name : null,
     contact: {
       email: norm(String(contact.email ?? '')),
       phone: phoneKey(String(contact.phone ?? '')),
@@ -256,6 +260,33 @@ function placeholderChecks(segments: Segment[]): CheckResult[] {
   return out;
 }
 
+// A field the writer must copy exactly from the base CV (role title, employer, institution, qualification,
+// statusText, the work-rights line) and did: its own words are his, so US spelling and banned words in it
+// ("Data Visualization Analyst", "Dynamic Solutions Pty Ltd") are not the writer's to fix.
+const COPIED_FIELD = /^(?:cv\.experience\[\d+\]\.(title|employer)|cv\.education\[\d+\]\.(institution|qualification|statusText)|cv\.(workRights))$/;
+
+function isCopiedFromBase(seg: Segment, base: BaseFacts): boolean {
+  const m = COPIED_FIELD.exec(seg.where);
+  if (!m) return false;
+  const field = m[1] ?? m[2] ?? m[3];
+  switch (field) {
+    case 'title':
+      return base.titles.has(norm(seg.text));
+    case 'employer':
+      return base.roles.some((r) => r.employer === orgKey(seg.text));
+    case 'institution':
+      return base.education.some((e) => e.institution === norm(seg.text));
+    case 'qualification':
+      return base.education.some((e) => e.qualification === norm(seg.text));
+    case 'statusText':
+      return base.education.some((e) => e.statusText === punctFree(seg.text));
+    case 'workRights':
+      return base.workRights !== null && punctFree(base.workRights) === punctFree(seg.text);
+    default:
+      return false;
+  }
+}
+
 function bannedChecks(segments: Segment[], banned: string[]): CheckResult[] {
   const out: CheckResult[] = [];
   for (const seg of segments) {
@@ -270,7 +301,7 @@ function bannedChecks(segments: Segment[], banned: string[]): CheckResult[] {
   return out;
 }
 
-// Names from the previous application match ignoring case and punctuation ("Ms Li" = "Ms. Li"). Names from other jobs match
+// Names from the previous application match ignoring case and punctuation ("Ms Quill" = "Ms. Quill"). Names from other jobs match
 // as stored, case-sensitively, so a common word ("insight") is not mistaken for an employer called "Insight".
 const looseText = (s: string): string => norm(s).replace(/[.,;:]/g, '');
 
@@ -418,6 +449,9 @@ function contactAndRightsFacts(cv: TailoredCv, base: BaseFacts): CheckResult[] {
       out.push(unknown('cv', 'cv.workRights', 'The work-rights wording differs from the base CV.'));
     }
   }
+  if (base.name !== null) {
+    if (punctFree(cv.name) !== punctFree(base.name)) out.push(unknown('cv', 'cv.name', 'The name differs from the base CV.'));
+  }
   if (cv.contact.email && norm(cv.contact.email) !== base.contact.email) out.push(unknown('cv', 'cv.contact.email', 'The e-mail address differs from the base CV.'));
   if (cv.contact.phone && phoneKey(cv.contact.phone) !== base.contact.phone) out.push(unknown('cv', 'cv.contact.phone', 'The phone number differs from the base CV.'));
   return out;
@@ -425,6 +459,9 @@ function contactAndRightsFacts(cv: TailoredCv, base: BaseFacts): CheckResult[] {
 
 function factChecks(input: CheckInput, cvSegs: Segment[], letterSegs: Segment[], base: BaseFacts): CheckResult[] {
   const out: CheckResult[] = [...roleFacts(input.cv, base), ...contactAndRightsFacts(input.cv, base)];
+  if (base.name !== null && punctFree(input.coverLetter.name) !== punctFree(base.name)) {
+    out.push(unknown('cover_letter', 'coverLetter.name', 'The name differs from the base CV.'));
+  }
   const jobText = [input.job.title, input.job.employer, input.job.advertiser, input.job.rawText].filter((t): t is string => !!t).join('\n');
   const jobAllowed = { numbers: new Set(numbers(stripLinks(jobText)).map((n) => n.key)), dates: new Set(monthYears(jobText).map((m) => m.key)) };
   const jobLinkKeys = new Set(linkKeysIn(jobText));
@@ -568,7 +605,7 @@ async function linkChecks(cv: TailoredCv, base: BaseFacts, f: FetchLike): Promis
 // ---------- rendering ----------
 
 const HEADINGS: Record<TemplateId, (cv: TailoredCv) => string[]> = {
-  'standard-ats': (cv) => ['SUMMARY', 'SKILLS', 'EXPERIENCE', ...(cv.projects.length > 0 ? ['PROJECTS'] : []), 'EDUCATION'],
+  'standard-ats': (cv) => [...(cv.summary.trim() !== '' ? ['SUMMARY'] : []), 'SKILLS', 'EXPERIENCE', ...(cv.projects.length > 0 ? ['PROJECTS'] : []), 'EDUCATION'],
 };
 
 function renderTextChecks(templateId: TemplateId, cv: TailoredCv, cvText: string, letterText: string): CheckResult[] {
@@ -632,7 +669,6 @@ export async function runChecks(
   const cvSegs = cvSegments(input.cv);
   const letterSegs = letterSegments(input.coverLetter);
   const all = [...cvSegs, ...letterSegs];
-  const base = baseFacts(input.baseCv.structured, config.usToAu);
 
   const checks: CheckResult[] = [];
   if (cvRender.pages > 1) checks.push({ code: 'cv_pages', severity: 'hard', doc: 'cv', detail: `The CV is ${cvRender.pages} pages; the limit is 1.` });
@@ -641,7 +677,10 @@ export async function runChecks(
   }
   checks.push(...renderTextChecks(input.templateId, input.cv, cvRender.text, letterRender.text));
   checks.push(...placeholderChecks(all));
-  checks.push(...bannedChecks(all, config.banned));
+  const base = baseFacts(input.baseCv.structured, config.usToAu);
+  // Copied own names are exempt from the spelling and banned-phrase checks; everything else is checked.
+  const ownWords = all.filter((seg) => !isCopiedFromBase(seg, base));
+  checks.push(...bannedChecks(ownWords, config.banned));
   checks.push(...leakageChecks(input, all, base));
 
   const exempt = new Set<string>();
@@ -650,7 +689,7 @@ export async function runChecks(
   for (const e of Array.isArray(baseRecord.education) ? baseRecord.education : []) wordSet(String(asRecord(e).institution ?? ''), exempt);
   for (const e of Array.isArray(baseRecord.education) ? baseRecord.education : []) wordSet(String(asRecord(e).qualification ?? ''), exempt);
   for (const r of Array.isArray(baseRecord.roles) ? baseRecord.roles : []) wordSet(String(asRecord(r).employer ?? ''), exempt);
-  checks.push(...usSpellingChecks(all, config.usToAu, exempt));
+  checks.push(...usSpellingChecks(ownWords, config.usToAu, exempt));
   checks.push(...techCasingChecks(all, config.tech, spell));
   checks.push(...factChecks(input, cvSegs, letterSegs, base));
   checks.push(...techNotInBaseChecks(cvSegs, config.tech, spell, base, config.usToAu));

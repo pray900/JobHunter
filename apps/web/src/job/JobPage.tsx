@@ -84,6 +84,22 @@ export function JobPage() {
     return () => clearInterval(timer);
   }, [running, load]);
 
+  // Tabs pattern: arrow keys (and Home / End) move between the CV and the cover letter.
+  function onTabKey(e: React.KeyboardEvent<HTMLDivElement>) {
+    const order = ['cv', 'letter'] as const;
+    const at = order.indexOf(tab);
+    const next =
+      e.key === 'ArrowRight' ? order[(at + 1) % order.length]
+      : e.key === 'ArrowLeft' ? order[(at + order.length - 1) % order.length]
+      : e.key === 'Home' ? order[0]
+      : e.key === 'End' ? order[order.length - 1]
+      : null;
+    if (!next) return;
+    e.preventDefault();
+    setTab(next);
+    document.getElementById(next === 'cv' ? 'tab-cv' : 'tab-letter')?.focus();
+  }
+
   async function onGenerate() {
     setGenError(null);
     setStarting(true);
@@ -202,7 +218,13 @@ export function JobPage() {
       <section className="gen-bar" aria-label="Generate">
         {running && generation ? (
           <p role="status" className="progress">
-            {progressText(generation.stage, generation.round)}
+            {generation.status === 'pending' && generation.attempts > 0 && generation.error ? (
+              <span className="attention-text">
+                <span aria-hidden="true">⚠ </span>Retrying: {generation.error}
+              </span>
+            ) : (
+              progressText(generation.stage, generation.round)
+            )}
           </p>
         ) : (
           <button type="button" className="btn btn-primary" disabled={starting} onClick={() => void onGenerate()}>
@@ -249,8 +271,16 @@ export function JobPage() {
 
         {version ? (
           <section className="panel" aria-label="Generated documents">
-            <div role="tablist" aria-label="Documents" className="tabs">
-              <button type="button" role="tab" id="tab-cv" aria-selected={tab === 'cv'} aria-controls="panel-doc" onClick={() => setTab('cv')}>
+            <div role="tablist" aria-label="Documents" className="tabs" onKeyDown={onTabKey}>
+              <button
+                type="button"
+                role="tab"
+                id="tab-cv"
+                aria-selected={tab === 'cv'}
+                aria-controls="panel-doc"
+                tabIndex={tab === 'cv' ? 0 : -1}
+                onClick={() => setTab('cv')}
+              >
                 CV
               </button>
               <button
@@ -259,6 +289,7 @@ export function JobPage() {
                 id="tab-letter"
                 aria-selected={tab === 'letter'}
                 aria-controls="panel-doc"
+                tabIndex={tab === 'letter' ? 0 : -1}
                 onClick={() => setTab('letter')}
               >
                 Cover letter

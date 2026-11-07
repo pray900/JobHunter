@@ -18,7 +18,7 @@ const RUN_STAGES = ['queued', 'writing', 'checking', 'reviewing', 'saving'];
 const CHECK_CODES = [
   'cv_pages', 'letter_pages', 'placeholder', 'company_leakage', 'title_leakage', 'banned_phrase', 'us_spelling',
   'tech_casing', 'unknown_fact', 'keyword_not_found', 'link_invalid', 'render_text', 'unmatched_skill',
-  'possible_misspelling', 'missing_work_rights', 'work_rights_dropped', 'link_unreachable',
+  'possible_misspelling', 'missing_work_rights', 'work_rights_dropped', 'link_unreachable', 'invalid_document',
 ];
 const REVIEW_IDS = [
   'relevance', 'over_tailoring', 'strongest_match_top_third', 'inflated_scope', 'ai_sounding', 'paraphrased_job_ad',

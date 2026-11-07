@@ -360,15 +360,100 @@ describe('generate documents', () => {
     expect(costs.map((c) => c.purpose)).toEqual(['write_documents', 'review_documents']);
   });
 
-  test('documents the worker rejects fail the attempt before any review', async () => {
+  test('an invalid writer document is a hard invalid_document check: no review, the writer is told, the next round is saved', async () => {
     const jobId = await readyJob();
     const runId = await queueRun(jobId);
     const base = await canned('write_documents');
+    const invalid = { ...base, cv: { ...base.cv, experience: [{ ...base.cv.experience[0], employer: '' }] } };
     await stub.reset();
-    await stub.scriptPurpose('write_documents', [{ ...base, cv: { name: 'Stub Person' } }]);
+    await stub.scriptPurpose('write_documents', [invalid]);
+    expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
+
+    const writes = await writerRequests();
+    expect(writes).toHaveLength(2);
+    // The invalid round is not reviewed (it cannot pass): one review, for round 2.
+    expect(await reviewRequests()).toHaveLength(1);
+    const previous = JSON.parse(tag(sentText(writes[1]), 'previous_round'));
+    expect(previous.failedChecks).toEqual([
+      expect.objectContaining({ code: 'invalid_document', severity: 'hard', doc: 'cv', where: 'cv.experience[0].employer', detail: expect.stringContaining('cv.experience[0].employer') }),
+    ]);
+    expect(previous.objections).toEqual([]);
+
+    const run = await runRow(runId);
+    expect(run).toMatchObject({ status: 'done', attempts: 1, round: 2, error: null });
+    expect(run.rounds.map((r: any) => [r.round, r.passed])).toEqual([[1, false], [2, true]]);
+    expect(run.rounds[0]).toMatchObject({ review: null, checks: [expect.objectContaining({ code: 'invalid_document' })] });
+    const [v] = await versions(jobId);
+    expect(v.review).toMatchObject({ passed: true, rounds: 2, verdicts: ['fail', 'pass'] });
+    expect(v.cv).toEqual(base.cv);
+    const costs = await db.query(`select purpose from cost_log where generation_run_id=$1 order by created_at`, [runId]);
+    expect(costs.map((c) => c.purpose)).toEqual(['write_documents', 'write_documents', 'review_documents']);
+  });
+
+  test('every round invalid: nothing can be saved, the run fails without a retry', async () => {
+    const jobId = await readyJob();
+    const runId = await queueRun(jobId);
+    const base = await canned('write_documents');
+    const invalid = { ...base, cv: { ...base.cv, name: '' } };
+    await stub.reset();
+    await stub.scriptPurpose('write_documents', [invalid, invalid, invalid]);
     await triggerGeneration();
-    expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1, error: "The writer's documents were not in the expected format." });
+    expect(await writerRequests()).toHaveLength(3);
     expect(await reviewRequests()).toEqual([]);
+    expect(await runRow(runId)).toMatchObject({ status: 'failed', attempts: 1, error: "The writer's documents were not in the expected format." });
+    expect(await versions(jobId)).toEqual([]);
+  });
+
+  test('a retry continues from the last finished round: round 1 is not paid for again', async () => {
+    const jobId = await readyJob();
+    const runId = await queueRun(jobId);
+    const pass = await canned('review_documents');
+    const fail = { ...pass, verdict: 'fail', objections: [{ target: 'cv.summary', problem: 'OBJECTION_4410 too vague.', fix: 'Be specific.' }] };
+    const writer = await canned('write_documents');
+    await stub.reset();
+    await stub.scriptPurpose('review_documents', [fail]);
+    // Round 1 writes fine; the writer call of round 2 fails.
+    await stub.scriptPurpose('write_documents', [writer, { __stub_status: 529 }]);
+    expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
+    expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1, error: 'The request to Claude failed (HTTP 529).' });
+    expect((await runRow(runId)).rounds.map((r: any) => r.round)).toEqual([1]);
+
+    await db.query(`update generation_runs set updated_at = updated_at - interval '2 minutes' where id=$1`, [runId]);
+    expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
+    const writes = await writerRequests();
+    // 1 (round 1) + 1 (round 2, failed) + 1 (round 2 again): round 1 was not written again.
+    expect(writes).toHaveLength(3);
+    expect(await reviewRequests()).toHaveLength(2);
+    expect(JSON.stringify(JSON.parse(tag(sentText(writes[2]), 'previous_round')))).toContain('OBJECTION_4410');
+    const run = await runRow(runId);
+    expect(run).toMatchObject({ status: 'done', attempts: 2, round: 2 });
+    expect(run.rounds.map((r: any) => [r.round, r.passed])).toEqual([[1, false], [2, true]]);
+    const [v] = await versions(jobId);
+    expect(v.review).toMatchObject({ passed: true, rounds: 2, verdicts: ['fail', 'pass'] });
+  });
+
+  test('a retry after the base CV changed does not mix rounds from the old CV', async () => {
+    const jobId = await readyJob();
+    const runId = await queueRun(jobId);
+    const pass = await canned('review_documents');
+    await stub.reset();
+    await stub.scriptPurpose('review_documents', [{ ...pass, verdict: 'fail' }]);
+    await stub.scriptPurpose('write_documents', [await canned('write_documents'), { __stub_status: 529 }]);
+    await triggerGeneration();
+    expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1 });
+    // The recorded round was written from another version of the base CV.
+    await db.query(
+      `update generation_runs set updated_at = updated_at - interval '2 minutes',
+              rounds = jsonb_set(rounds, '{0,base_cv_hash}', '"an-older-cv"') where id=$1`,
+      [runId],
+    );
+    await stub.reset();
+    await triggerGeneration();
+    expect(await runRow(runId)).toMatchObject({
+      status: 'failed',
+      error: 'Your base documents changed while this was being written. Choose Generate again.',
+    });
+    expect(await stub.requests()).toEqual([]);
     expect(await versions(jobId)).toEqual([]);
   });
 
@@ -448,6 +533,50 @@ describe('generate documents', () => {
       expect(await jobRow(jobId)).toMatchObject({ status: 'new' });
       // Both calls were made and are logged.
       expect((await db.query(`select purpose from cost_log where generation_run_id=$1`, [runId])).length).toBe(2);
+    });
+
+    test('a retry with every round already recorded saves the best one without a Claude call', async () => {
+      const jobId = await readyJob();
+      const runId = await queueRun(jobId);
+      const base = await canned('write_documents');
+      const long = { ...base, cv: { ...base.cv, experience: [{ ...base.cv.experience[0], bullets: Array.from({ length: 90 }, () => 'Led a team of 5 and built a stub in TypeScript for the team.') }] } };
+      await db.query(`create function gen_test_trigger_fn() returns trigger language plpgsql as $f$
+                      begin raise exception 'test: the save fails'; end $f$`);
+      await db.query(`create trigger gen_test_trigger before insert on document_versions for each row execute function gen_test_trigger_fn()`);
+      await stub.reset();
+      await stub.scriptPurpose('write_documents', [long, long, long]);
+      await triggerGeneration();
+      expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1 });
+      expect((await runRow(runId)).rounds).toHaveLength(3);
+      expect(await writerRequests()).toHaveLength(3);
+
+      await dropTriggers();
+      await db.query(`update generation_runs set updated_at = updated_at - interval '2 minutes' where id=$1`, [runId]);
+      await stub.reset();
+      expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
+      expect(await stub.requests()).toEqual([]);
+      expect(await runRow(runId)).toMatchObject({ status: 'done', attempts: 2, error: null });
+      const [v] = await versions(jobId);
+      expect(v.review).toMatchObject({ passed: false, rounds: 3 });
+      expect(v.cv.experience[0].bullets).toHaveLength(90);
+    });
+
+    test('a retry after a passed round whose save failed saves it without a Claude call', async () => {
+      const jobId = await readyJob();
+      const runId = await queueRun(jobId);
+      await db.query(`create function gen_test_trigger_fn() returns trigger language plpgsql as $f$
+                      begin raise exception 'test: the save fails'; end $f$`);
+      await db.query(`create trigger gen_test_trigger before insert on document_versions for each row execute function gen_test_trigger_fn()`);
+      await stub.reset();
+      await triggerGeneration();
+      expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1 });
+      await dropTriggers();
+      await db.query(`update generation_runs set updated_at = updated_at - interval '2 minutes' where id=$1`, [runId]);
+      await stub.reset();
+      await triggerGeneration();
+      expect(await stub.requests()).toEqual([]);
+      expect(await runRow(runId)).toMatchObject({ status: 'done', attempts: 2 });
+      expect(await versions(jobId)).toHaveLength(1);
     });
 
     test('a version number taken at the same moment is retried, not a failed attempt', async () => {
@@ -693,12 +822,14 @@ describe('generate documents', () => {
       expect(max('50')).toBe(5);
     });
 
-    test('the claim takes one due run, oldest first, inside the locked subquery, and resets the rounds', () => {
+    test('the claim takes one due run, oldest first, inside the locked subquery, and keeps the recorded rounds', () => {
       const q: string = nodeByName('Claim one run').parameters.query;
       expect(q).toMatch(/order by r\.created_at, r\.id\s+limit 1\s+for update of r skip locked/);
       expect(q).toMatch(/interval '1 minute'/);
       expect(q).toMatch(/interval '5 minutes'/);
-      expect(q).toMatch(/rounds = '\[\]'/);
+      expect(q).not.toMatch(/rounds = '\[\]'/);
+      expect(q).toMatch(/round = jsonb_array_length\(rounds\)/);
+      expect(q).toMatch(/returning[^;]*\brounds\b/);
       expect(q).toMatch(/claimed_at::text as claimed_at/);
       expect(nodeByName('Give up on stuck runs').parameters.query).toMatch(/interval '6 minutes'/);
     });
@@ -713,9 +844,22 @@ describe('generate documents', () => {
       expect(parentsOf('Still our claim? (writing)')).toEqual(['Heartbeat: writing']);
       expect(parentsOf('Build review request')).toEqual(['Still our claim? (reviewing)']);
       expect(parentsOf('Still our claim? (reviewing)')).toEqual(['Heartbeat: reviewing']);
-      expect(parentsOf('Choose the version to save')).toEqual(['Another round?']);
-      // The loop goes back to the writing heartbeat only.
-      expect(parentsOf('Heartbeat: writing').sort()).toEqual(['Another round?', 'Inputs ready?']);
+      expect(parentsOf('Choose the version to save').sort()).toEqual(['Another round?', 'Rounds left?']);
+      // The loop goes back to the writing heartbeat only; a retry starts there too, or saves at once.
+      expect(parentsOf('Heartbeat: writing').sort()).toEqual(['Another round?', 'Rounds left?']);
+      expect(parentsOf('Rounds left?')).toEqual(['Inputs ready?']);
+      // An invalid document skips the review and is recorded as a failed round.
+      expect(parentsOf('Documents valid?')).toEqual(['Did the checks run?']);
+      expect(wf.connections['Documents valid?'].main).toEqual([
+        [{ node: 'Heartbeat: reviewing', type: 'main', index: 0 }],
+        [{ node: 'Record the round', type: 'main', index: 0 }],
+      ]);
+      expect(parentsOf('Record the round').sort()).toEqual(['Did the reviewer answer?', 'Documents valid?']);
+      // Nothing that can be saved: the attempt fails, claim-guarded, without a retry.
+      expect(wf.connections['Anything to save?'].main).toEqual([
+        [{ node: 'Save version', type: 'main', index: 0 }],
+        [{ node: 'Mark attempt failed', type: 'main', index: 0 }],
+      ]);
     });
 
     test('Claude calls finish well inside the 6-minute stuck window', () => {
@@ -861,6 +1005,23 @@ describe('generate documents', () => {
         expect(out.ok).toBe(true);
         expect(out.passed).toBe(false);
         expect(out.round_record.passed).toBe(false);
+      });
+
+      test('M3: a pass that leaves out checklist items fails the round, and the missing items are recorded as failed', () => {
+        const out = read(envelope({ ...pass, items: pass.items.slice(0, 12) }));
+        expect(out.ok).toBe(true);
+        expect(out.passed).toBe(false);
+        const missing = pass.items.slice(12).map((i: any) => ({ id: i.id, pass: false, note: 'The reviewer did not judge this.' }));
+        expect(out.round_record.review.items).toEqual([...pass.items.slice(0, 12), ...missing]);
+        // Repeating one item 14 times is not 14 items.
+        expect(read(envelope({ ...pass, items: Array.from({ length: 14 }, () => pass.items[0]) })).passed).toBe(false);
+        expect(read(envelope({ ...pass, items: [] })).passed).toBe(false);
+      });
+
+      test('M3: the checklist ids the reader requires are the reviewer schema ids', () => {
+        const ids: string[] = JSON.parse(promptFile('review-documents.schema.json')).properties.items.items.properties.id.enum;
+        const listed = /const ITEM_IDS = \[([^\]]+)\]/.exec(code("Read the reviewer's answer"))![1];
+        expect([...listed.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort()).toEqual([...ids].sort());
       });
 
       test('honest rephrases and ok spellings do not fail the round', () => {
@@ -1051,6 +1212,20 @@ describe('generate documents', () => {
         ]);
       });
 
+      const INVALID = { code: 'invalid_document', severity: 'hard', doc: 'cv', where: 'cv.name', detail: 'x' };
+
+      test('a round with invalid documents is never saved; verdicts count it as a fail', () => {
+        const out = choose([
+          { round: 1, writer: writer('a'), checks: [HARD, HARD, HARD], review: review('fail'), passed: false },
+          { round: 2, writer: { bad: true }, checks: [INVALID], review: null, passed: false },
+        ]);
+        expect(out.cv).toEqual({ headline: 'a' });
+        expect(out.save).toBe(true);
+        expect(out.review).toMatchObject({ rounds: 2, verdicts: ['fail', 'fail'] });
+        const nothing = choose([{ round: 1, writer: { bad: true }, checks: [INVALID], review: null, passed: false }]);
+        expect(nothing).toEqual({ save: false, run_id: 'r1', claimed_at: 't9', error: "The writer's documents were not in the expected format.", final: true });
+      });
+
       test('a review check without a ruling is unresolved and counts against the round', () => {
         const UNRULED = { code: 'unmatched_skill', severity: 'review', doc: 'cv', where: 'cv.skills[0].items[1]', detail: 'The skill "Kubernetes" is not in the base CV (it may be an honest rephrase).' };
         const out = choose([
@@ -1134,6 +1309,72 @@ describe('generate documents', () => {
         objections: prev.review.objections,
       });
       expect(() => build({ id: 'r1', claimed_at: 't2', round: 2, rounds: [] })).toThrow(/round/i);
+      // An invalid round was not reviewed: the writer gets the invalid_document check and nothing else.
+      const invalid = { code: 'invalid_document', severity: 'hard', doc: 'cv', where: 'cv.name', detail: 'd' };
+      const third = build({ id: 'r1', claimed_at: 't3', round: 2, rounds: [{ round: 1, writer: { cv: {} }, checks: [invalid], review: null, passed: false }] });
+      const p3 = JSON.parse(/<previous_round>\n([\s\S]*?)\n<\/previous_round>/.exec(third.request.messages[0].content[1].text)![1]);
+      expect(p3).toEqual({ documents: { cv: {} }, failedChecks: [invalid], warnings: [], failedItems: [], rulingsAgainst: { facts: [], spelling: [] }, objections: [] });
+    });
+
+    describe('reading the check results', () => {
+      const STATE_C = { run_id: 'r1', claimed_at: 't3', round: 2, job_id: 'j1', writer: { w: 1 }, body: {} };
+      const readChecks = (res: object) =>
+        new Function('$json', '$', code('Read check results'))(res, () => ({ first: () => ({ json: STATE_C }) })).json;
+
+      test('checks that ran are passed on for review', () => {
+        const out = readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1 } });
+        expect(out).toMatchObject({ ok: true, valid: true, checks: [], cvPages: 1, letterPages: 1, run_id: 'r1', claimed_at: 't3', round: 2 });
+      });
+
+      test('a writer document the worker rejects becomes a hard invalid_document round', () => {
+        const out = readChecks({ statusCode: 400, body: { error: 'invalid_document', path: 'coverLetter.paragraphs[1]' } });
+        expect(out).toMatchObject({ ok: true, valid: false, error: null, run_id: 'r1', claimed_at: 't3' });
+        const check = { code: 'invalid_document', severity: 'hard', doc: 'cover_letter', where: 'coverLetter.paragraphs[1]', detail: expect.stringContaining('coverLetter.paragraphs[1]') };
+        expect(out.checks).toEqual([check]);
+        expect(out.round_record).toEqual({ round: 2, writer: { w: 1 }, checks: [check], cvPages: null, letterPages: null, review: null, passed: false, unruled: [] });
+      });
+
+      test('a rejected request that is not the writer documents, or no answer, is a failed attempt', () => {
+        expect(readChecks({ statusCode: 400, body: { error: 'invalid_document', path: 'job' } })).toMatchObject({ ok: false, error: expect.stringMatching(/could not run/) });
+        expect(readChecks({ statusCode: 502, body: {} })).toMatchObject({ ok: false, error: 'The document checks could not run (HTTP 502).' });
+      });
+    });
+
+    describe('preparing the inputs of a claimed run', () => {
+      const prepare = (rounds: object[], max = 3) =>
+        new Function('$json', '$', code('Prepare inputs'))(
+          { statusCode: 200, body: { documents: [{ kind: 'cv', contentHash: 'h1', pdfBase64: 'UERG' }] } },
+          (name: string) => ({
+            first: () => {
+              if (name === 'Claim one run') return { json: { id: 'r1', claimed_at: 't1', rounds } };
+              if (name === 'Look up model prices') return { json: { ...prices().json, max_rounds: max } };
+              return { json: { job_id: 'j1', extraction_status: 'done', cv_id: 'c1', cv_hash: 'h1', cv_structured: {}, cl_structured: null, raw_text: 'ad', other_jobs: [] } };
+            },
+          }),
+        ).json;
+      const rec = (round: number, passed = false) => ({ round, passed, base_cv_hash: 'h1', base_cover_letter_hash: null });
+
+      test('a first attempt starts at round 1', () => {
+        expect(prepare([])).toMatchObject({ ready: true, round: 1, another: true, rounds: [] });
+      });
+
+      test('a retry continues after the last recorded round', () => {
+        expect(prepare([rec(1)])).toMatchObject({ ready: true, round: 2, another: true });
+      });
+
+      test('a retry with every round recorded, or a passed round, goes straight to the save', () => {
+        expect(prepare([rec(1), rec(2), rec(3)])).toMatchObject({ ready: true, another: false, run_id: 'r1', claimed_at: 't1', rounds: [rec(1), rec(2), rec(3)] });
+        expect(prepare([rec(1), rec(2)], 2)).toMatchObject({ another: false });
+        expect(prepare([rec(1, true)])).toMatchObject({ another: false });
+      });
+
+      test('rounds written from other base documents end the run', () => {
+        expect(prepare([{ ...rec(1), base_cv_hash: 'old' }])).toMatchObject({
+          ready: false,
+          final: true,
+          error: 'Your base documents changed while this was being written. Choose Generate again.',
+        });
+      });
     });
 
     test('prompts and schemas in the workflow match n8n/prompts', () => {

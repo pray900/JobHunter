@@ -66,3 +66,27 @@ test('validate rejects a missing name and names the path', () => {
 test('readPdf counts pages', async () => {
   expect((await readPdf(makePdf(2))).pages).toBe(2);
 });
+
+test('I2: an education entry without an institution or qualification is valid and has no stray comma', async () => {
+  const cv = {
+    ...CV,
+    education: [
+      { qualification: 'Salesforce Certified Platform Developer I', institution: '', dates: '2023', statusText: '' },
+      { qualification: '', institution: 'Example Institute', dates: '2019', statusText: '' },
+    ],
+  };
+  expect(validateTailoredCv(cv).education[0].institution).toBe('');
+  const xml = await documentXml(await renderDocx('standard-ats', 'cv', cv));
+  expect(xml).toContain('>Salesforce Certified Platform Developer I<');
+  expect(xml).not.toContain('Developer I, ');
+  expect(xml).toContain('>Example Institute<');
+  expect(xml).not.toMatch(/>, Example Institute/);
+  // Other fields the template needs stay required.
+  expect(() => validateTailoredCv({ ...CV, experience: [{ ...CV.experience[0], employer: '' }] })).toThrow(/experience\[0\]\.employer/);
+});
+
+test('M11: an empty summary has no SUMMARY heading', async () => {
+  const xml = await documentXml(await renderDocx('standard-ats', 'cv', { ...CV, summary: '  ' }));
+  expect(xml).not.toContain('SUMMARY');
+  expect(xml).toContain('SKILLS');
+});

@@ -383,8 +383,8 @@ describe('runChecks', () => {
       opts(),
     );
     expect(find(leaked, 'company_leakage').length).toBe(1);
-    const base = { structured: { previousTarget: { company: 'Oldco', addressee: 'Ms. Li', role: null } } };
-    const noStop = await runChecks(input({ baseCoverLetter: base, coverLetter: { ...LETTER, salutation: 'Dear ms li,' } }), opts());
+    const base = { structured: { previousTarget: { company: 'Oldco', addressee: 'Ms. Quill', role: null } } };
+    const noStop = await runChecks(input({ baseCoverLetter: base, coverLetter: { ...LETTER, salutation: 'Dear ms quill,' } }), opts());
     expect(find(noStop, 'company_leakage').map((c) => c.where)).toEqual(['coverLetter.salutation']);
   });
 
@@ -486,4 +486,74 @@ describe('runChecks', () => {
     expect(find(none, 'work_rights_dropped')).toEqual([]);
   });
 
+
+  // ---------- final review fixes ----------
+  describe('final review: names copied from the base CV', () => {
+    const copiedBase = {
+      ...baseStructured,
+      workRights: 'Authorized to work in Australia (485 visa)',
+      roles: [{ title: 'Data Visualization Analyst', employer: 'Dynamic Solutions Pty Ltd', dates: 'Mar 2022 - Dec 2024', bullets: ['Built an invoicing service.'] }],
+      education: [{ qualification: 'Certificate in Dynamic Systems', institution: 'Dynamic Learning Institute', dates: '2018 - 2021', statusText: 'Completed with Honors' }],
+    };
+    const copiedCv: TailoredCv = {
+      ...goodCv,
+      workRights: 'Authorized to work in Australia (485 visa)',
+      experience: [{ title: 'Data Visualization Analyst', employer: 'Dynamic Solutions Pty Ltd', location: 'Sydney', dates: 'Mar 2022 – Dec 2024', bullets: ['Built an invoicing service.'] }],
+      education: [{ qualification: 'Certificate in Dynamic Systems', institution: 'Dynamic Learning Institute', dates: '2018 - 2021', statusText: 'Completed with Honors' }],
+    };
+    const run = (cv: TailoredCv) => runChecks(input({ cv, baseCv: { structured: copiedBase } }), opts());
+
+    test('US spelling and banned words in a title, employer, institution, qualification, statusText or work-rights line copied exactly pass', async () => {
+      const r = await run(copiedCv);
+      expect(find(r, 'us_spelling')).toEqual([]);
+      expect(find(r, 'banned_phrase')).toEqual([]);
+      expect(find(r, 'unknown_fact')).toEqual([]);
+      expect(r.checks.filter((c) => c.severity === 'hard')).toEqual([]);
+    });
+
+    test('the same words in a bullet or the summary still fail', async () => {
+      const cv: TailoredCv = {
+        ...copiedCv,
+        summary: 'Authorized analyst with 3+ years building services.',
+        experience: [{ ...copiedCv.experience[0], bullets: ['Built a visualization service at a dynamic company.'] }],
+      };
+      const r = await run(cv);
+      expect(find(r, 'us_spelling').map((c) => c.where).sort()).toEqual(['cv.experience[0].bullets[0]', 'cv.summary']);
+      expect(find(r, 'banned_phrase').map((c) => c.where)).toEqual(['cv.experience[0].bullets[0]']);
+    });
+
+    test('a copied field that no longer matches the base CV gets no exemption', async () => {
+      const cv: TailoredCv = { ...copiedCv, experience: [{ ...copiedCv.experience[0], title: 'Dynamic Visualization Lead' }] };
+      const r = await run(cv);
+      expect(find(r, 'us_spelling').map((c) => c.where)).toContain('cv.experience[0].title');
+      expect(find(r, 'banned_phrase').map((c) => c.where)).toContain('cv.experience[0].title');
+    });
+  });
+
+  test('M5: a name that differs from the base CV is unknown_fact', async () => {
+    const ok = await runChecks(input({ cv: { ...goodCv, name: 'Jordan  Testcase' } }), opts());
+    expect(find(ok, 'unknown_fact')).toEqual([]);
+    const cv = await runChecks(input({ cv: { ...goodCv, name: 'Jordon Testcase' } }), opts());
+    expect(find(cv, 'unknown_fact').map((c) => c.where)).toEqual(['cv.name']);
+    const letterName = await runChecks(input({ coverLetter: { ...LETTER, name: 'J. Testcase' } }), opts());
+    expect(find(letterName, 'unknown_fact').map((c) => c.where)).toEqual(['coverLetter.name']);
+    const noName = await runChecks(input({ baseCv: { structured: { ...baseStructured, name: null } } }), opts());
+    expect(find(noName, 'unknown_fact')).toEqual([]);
+  });
+
+  test('M11: an empty summary needs no SUMMARY heading in the rendered CV', async () => {
+    const render: NonNullable<RunOptions['render']> = async (doc, _d, cv) => ({
+      pages: 1,
+      text: doc === 'cv' ? `${cv.name}\nSKILLS\nx\nEXPERIENCE\nx\nPROJECTS\nx\nEDUCATION\nx` : `${cv.name}`,
+    });
+    const r = await runChecks(input({ cv: { ...goodCv, summary: '' } }), opts({ render }));
+    expect(find(r, 'render_text')).toEqual([]);
+  });
+
+  test('I2: an education entry without an institution or qualification is checked against the base', async () => {
+    const base = { ...baseStructured, education: [{ qualification: 'Salesforce Certified Platform Developer I', institution: '', dates: '2023', statusText: '' }] };
+    const cv: TailoredCv = { ...goodCv, education: [{ qualification: 'Salesforce Certified Platform Developer I', institution: '', dates: '2023', statusText: '' }] };
+    const r = await runChecks(input({ cv, baseCv: { structured: base } }), opts());
+    expect(r.checks.filter((c) => c.severity === 'hard')).toEqual([]);
+  });
 });

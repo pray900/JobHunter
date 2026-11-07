@@ -31,6 +31,18 @@ describe('anthropic stub', () => {
     expect(await ask('review_documents')).toEqual(canned);
   });
 
+  test('a scripted __stub_status answers that HTTP error once', async () => {
+    await stub.scriptPurpose('write_documents', [{ __stub_status: 529 }]);
+    const call = () =>
+      fetch(`${STUB_URL}/v1/messages`, {
+        method: 'POST',
+        headers: { 'x-api-key': 'k', 'anthropic-version': '2026-10-21', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'm', system: 'purpose: write_documents', messages: [{ role: 'user', content: 'hi' }] }),
+      });
+    expect((await call()).status).toBe(529);
+    expect((await call()).status).toBe(200);
+  });
+
   test('canned reviewer passes every checklist item', async () => {
     const r = await ask('review_documents');
     expect(r.items).toHaveLength(14);

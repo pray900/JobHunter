@@ -217,6 +217,8 @@ describe('job page API', () => {
       'The request to Claude failed (HTTP 529).',
       'The request to Claude failed (no response).',
       'Claude stopped unexpectedly (pause_turn).',
+      "The writer's documents were not in the expected format.",
+      'Your base documents changed while this was being written. Choose Generate again.',
     ];
     const hidden = [
       'connect ECONNREFUSED 172.18.0.4:5432 password=hunter2',

@@ -133,7 +133,8 @@ export type CheckCode =
   | 'possible_misspelling'
   | 'missing_work_rights'
   | 'work_rights_dropped'
-  | 'link_unreachable';
+  | 'link_unreachable'
+  | 'invalid_document';
 
 export type ReviewItemId =
   | 'relevance'

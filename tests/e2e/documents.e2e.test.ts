@@ -184,7 +184,7 @@ describe('base documents sync', () => {
   });
 
   test('cover letter uses cover-letter prompt', async () => {
-    await putDocument('cover_letter', 'cl.docx', await makeDocx([{ text: 'Dear Ms Li,' }, { text: 'I would like to apply.' }]));
+    await putDocument('cover_letter', 'cl.docx', await makeDocx([{ text: 'Dear Ms Quill,' }, { text: 'I would like to apply.' }]));
     const doc = await docRow('cl.docx');
     expect(doc).toMatchObject({ kind: 'cover_letter', active: true, analysis_status: 'done' });
     expect(doc.structured).toMatchObject({ previousTarget: { company: 'Stub Company' }, toneNotes: expect.any(String) });
@@ -193,7 +193,7 @@ describe('base documents sync', () => {
     expect(purposeOf(reqs[0])).toBe('purpose: analyse_cover_letter');
     expect(normalise(reqs[0].system)).toBe(normalise(prompt('analyse-cover-letter.md')));
     // DOCX goes as extracted text inside <document> tags.
-    expect(reqs[0].messages[0].content[0]).toEqual({ type: 'text', text: '<document>\nDear Ms Li,\nI would like to apply.\n</document>' });
+    expect(reqs[0].messages[0].content[0]).toEqual({ type: 'text', text: '<document>\nDear Ms Quill,\nI would like to apply.\n</document>' });
     expect([...reqs[0].output_config.format.schema.required].sort()).toEqual(['previousTarget', 'reusableParagraphs', 'toneNotes']);
     expect(await db.query(`select purpose from cost_log`)).toEqual([{ purpose: 'analyse_cover_letter' }]);
   });

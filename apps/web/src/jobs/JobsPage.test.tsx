@@ -115,4 +115,20 @@ describe('JobsPage', () => {
     await waitFor(() => expect(mockDocs).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Add a base CV to get match scores')).not.toBeInTheDocument();
   });
+
+  test('M6: refreshes every 5 seconds while a card is generating', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockFetch.mockResolvedValue([job({ id: '1', title: 'Alpha Role', generation: { status: 'in_progress', stage: 'writing', round: 1 } })]);
+      render(<JobsPage />, { wrapper: MemoryRouter });
+      await screen.findByText('Alpha Role');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

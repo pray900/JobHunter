@@ -61,7 +61,7 @@ describe('JobPage', () => {
     expect(screen.getByText('Not in your base CV.')).toBeInTheDocument();
     expect(screen.getByText('The ad asks for Apex first.')).toBeInTheDocument();
     expect(screen.getByText('Stretch — you decide')).toBeInTheDocument();
-    expect(screen.getByText(/This generation cost \$0\.42/)).toBeInTheDocument();
+    expect(screen.getByText(/This generation cost US\$0\.42/)).toBeInTheDocument();
     expect(screen.getByText(/2 rounds/)).toBeInTheDocument();
     // job ad with covered keywords highlighted (US/AU variants)
     const marks = document.querySelectorAll('mark');
@@ -225,5 +225,101 @@ describe('JobPage', () => {
     m.fetchJobDetail.mockRejectedValueOnce(new client.ApiError(404, 'nope', 'job_not_found'));
     renderPage();
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load this job");
+  });
+
+  test('I3: reworded skills the reviewer ruled on are listed with why; invented ones in amber', async () => {
+    m.fetchJobDetail.mockResolvedValue({
+      ...baseDetail,
+      version: {
+        ...baseVersion,
+        reasons: {
+          ...baseVersion.reasons,
+          factRulings: [
+            { text: 'modern JavaScript component frameworks', ruling: 'honest_rephrase', why: 'Lightning Web Components are in your base CV.' },
+            { text: 'Kubernetes', ruling: 'invented', why: 'Nothing in your base CV supports it.' },
+          ],
+        },
+      },
+    });
+    renderPage();
+    const region = await screen.findByRole('region', { name: 'Reworded skills the reviewer accepted' });
+    const items = within(region).getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent('modern JavaScript component frameworks');
+    expect(items[0]).toHaveTextContent('Honest rephrase');
+    expect(items[0]).toHaveTextContent('Lightning Web Components are in your base CV.');
+    expect(items[0]).not.toHaveClass('attention-text');
+    expect(items[1]).toHaveTextContent('Kubernetes');
+    expect(items[1]).toHaveTextContent('Invented');
+    expect(items[1]).toHaveTextContent('Nothing in your base CV supports it.');
+    expect(items[1]).toHaveClass('attention-text');
+    expect(within(items[1]).getByText('⚠')).toBeInTheDocument();
+  });
+
+  test('I3: no rulings, no rulings panel', async () => {
+    renderPage();
+    await screen.findByRole('heading', { name: /Salesforce Developer/ });
+    expect(screen.queryByRole('region', { name: 'Reworded skills the reviewer accepted' })).not.toBeInTheDocument();
+  });
+
+  test('M11: "Reviewer: not satisfied" is amber with an icon', async () => {
+    renderPage();
+    const line = await screen.findByText('Reviewer: not satisfied');
+    const p = line.closest('p')!;
+    expect(p).toHaveClass('attention-text');
+    expect(within(p).getByText('⚠')).toBeInTheDocument();
+  });
+
+  test('M6: a failed attempt waiting to retry shows the reason', async () => {
+    m.fetchJobDetail.mockResolvedValue({
+      ...baseDetail,
+      generation: { status: 'pending', stage: 'queued', round: 2, attempts: 1, error: 'The request to Claude failed (HTTP 529).' },
+    });
+    renderPage();
+    expect(await screen.findByRole('status')).toHaveTextContent('Retrying: The request to Claude failed (HTTP 529).');
+  });
+
+  test('M6: a first attempt waiting to start says so', async () => {
+    m.fetchJobDetail.mockResolvedValue({ ...baseDetail, generation: { status: 'pending', stage: 'queued', round: 0, attempts: 0, error: null } });
+    renderPage();
+    expect(await screen.findByRole('status')).toHaveTextContent('Waiting to start…');
+  });
+
+  test('M11: the document tabs move with the arrow keys', async () => {
+    renderPage();
+    const cvTab = await screen.findByRole('tab', { name: 'CV' });
+    expect(cvTab).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('tab', { name: 'Cover letter' })).toHaveAttribute('tabindex', '-1');
+    cvTab.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    const letterTab = screen.getByRole('tab', { name: 'Cover letter' });
+    expect(letterTab).toHaveAttribute('aria-selected', 'true');
+    expect(letterTab).toHaveFocus();
+    expect(screen.getByText('Dear Hiring Manager,')).toBeInTheDocument();
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(screen.getByRole('tab', { name: 'CV' })).toHaveFocus();
+    await userEvent.keyboard('{End}');
+    expect(screen.getByRole('tab', { name: 'Cover letter' })).toHaveFocus();
+    await userEvent.keyboard('{Home}');
+    expect(screen.getByRole('tab', { name: 'CV' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  test('I2/M11: preview has no stray comma for a missing institution and no empty Summary heading', async () => {
+    m.fetchJobDetail.mockResolvedValue({
+      ...baseDetail,
+      version: {
+        ...baseVersion,
+        cv: {
+          ...baseVersion.cv,
+          summary: '',
+          education: [{ qualification: 'Salesforce Certified Platform Developer I', institution: '', dates: '2023', statusText: '' }],
+        },
+      },
+    });
+    renderPage();
+    const panel = await screen.findByRole('tabpanel');
+    expect(within(panel).getByText('Salesforce Certified Platform Developer I')).toBeInTheDocument();
+    expect(within(panel).queryByRole('heading', { name: 'Summary' })).not.toBeInTheDocument();
+    expect(within(panel).getByRole('heading', { name: 'Skills' })).toBeInTheDocument();
   });
 });

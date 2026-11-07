@@ -66,8 +66,9 @@ export function validateTailoredCv(x: unknown): TailoredCv {
       const p = `cv.education[${i}]`;
       const ed = obj(e, p);
       return {
-        qualification: str(ed.qualification, `${p}.qualification`),
-        institution: str(ed.institution, `${p}.institution`),
+        // The CV analysis records a certification without an issuer (or a school without a named award) as "".
+        qualification: str(ed.qualification, `${p}.qualification`, { allowEmpty: true }),
+        institution: str(ed.institution, `${p}.institution`, { allowEmpty: true }),
         dates: str(ed.dates, `${p}.dates`, { allowEmpty: true }),
         statusText: str(ed.statusText, `${p}.statusText`, { allowEmpty: true }),
       };

@@ -65,6 +65,10 @@ const contactLine = (cv: TailoredCv): string =>
     .filter((p): p is string => !!p)
     .join(' | ');
 
+// "Qualification, Institution", without a stray comma when either is empty.
+export const educationLine = (e: TailoredCv['education'][number]): string =>
+  [e.qualification, e.institution].filter((p) => p.trim() !== '').join(', ');
+
 function cvParagraphs(cv: TailoredCv): Paragraph[] {
   const size = 10.5;
   const out: Paragraph[] = [nameLine(cv)];
@@ -73,7 +77,7 @@ function cvParagraphs(cv: TailoredCv): Paragraph[] {
   if (contact) out.push(body(contact, size, 40));
   if (cv.workRights) out.push(body(cv.workRights, size, 40));
 
-  out.push(heading('Summary'), body(cv.summary, size));
+  if (cv.summary.trim() !== '') out.push(heading('Summary'), body(cv.summary, size));
 
   out.push(heading('Skills'));
   for (const g of cv.skills) out.push(body(`${g.group}: ${g.items.join(', ')}`, size, 40));
@@ -94,7 +98,7 @@ function cvParagraphs(cv: TailoredCv): Paragraph[] {
 
   out.push(heading('Education'));
   for (const e of cv.education) {
-    out.push(titleLine(`${e.qualification}, ${e.institution}`, e.dates, size));
+    out.push(titleLine(educationLine(e), e.dates, size));
     if (e.statusText) out.push(body(e.statusText, size, 40));
   }
   return out;
