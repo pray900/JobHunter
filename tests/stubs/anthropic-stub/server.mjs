@@ -14,6 +14,7 @@ const CANNED = {
   },
   // workRights is null so the worker's checks report missing_work_rights.
   analyse_cv: {
+    name: 'Stub Person',
     headline: 'Stub Headline',
     summary: 'Stub summary.',
     workRights: null,

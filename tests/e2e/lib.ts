@@ -89,7 +89,7 @@ const emptyDir = (dir: string) => {
 
 /** Per-test reset: empty job and base-document tables, the e2e job folder and the document storage; clear the stub log. */
 export async function resetState(): Promise<void> {
-  await db.query('truncate jobs, job_status_history, cost_log, base_documents');
+  await db.query('truncate jobs, job_status_history, cost_log, base_documents, generation_runs, document_versions');
   emptyDir(JOB_DIR);
   clearStoredDocuments();
   await stub.reset();

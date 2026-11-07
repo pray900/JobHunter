@@ -24,6 +24,7 @@ test('applies 001_init once and seeds the single user', async () => {
     '001_init.sql',
     '002_base_documents.sql',
     '003_single_base_document.sql',
+    '004_generation.sql',
   ]);
   expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual([]);
   const { rows } = await pool.query('select id, name from users');
@@ -54,7 +55,9 @@ test('applies 003 after 002: no labels or conflict checks, one active document p
     `insert into base_documents(owner_id, kind, source_ref, content_hash, media_type, label) values ($1,'cv','old.pdf','h','application/pdf','x')`,
     [USER_ID],
   );
-  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['003_single_base_document.sql']);
+  expect(await migrateUpTo(['001_init.sql', '002_base_documents.sql', '003_single_base_document.sql'])).toEqual([
+    '003_single_base_document.sql',
+  ]);
   const { rows: cols } = await pool.query(
     `select column_name from information_schema.columns where table_name = 'base_documents' and column_name in ('label','label_suggested','active')`,
   );
@@ -90,4 +93,51 @@ test('jobs.score_status defaults to pending', async () => {
   );
   const { rows } = await pool.query(`select score_status, score_attempts from jobs where source_ref = 'score.docx'`);
   expect(rows).toEqual([{ score_status: 'pending', score_attempts: 0 }]);
+});
+
+test('applies 004 after 003', async () => {
+  await pool.query('drop schema public cascade; create schema public;');
+  await migrateUpTo(['001_init.sql', '002_base_documents.sql', '003_single_base_document.sql']);
+  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['004_generation.sql']);
+  const { rows } = await pool.query(
+    `select to_regclass('generation_runs') as r, to_regclass('document_versions') as v,
+       (select count(*) from information_schema.columns where table_name='jobs' and column_name='company_notes')::int as n,
+       (select count(*) from information_schema.columns where table_name='cost_log' and column_name='generation_run_id')::int as c`,
+  );
+  expect(rows[0]).toMatchObject({ r: 'generation_runs', v: 'document_versions', n: 1, c: 1 });
+});
+
+test('only one active run per job', async () => {
+  const { rows } = await pool.query(
+    `insert into jobs(owner_id, source, source_ref, content_hash, raw_text) values ($1,'folder','run.docx','h','t') returning id`,
+    [USER_ID],
+  );
+  const jobId = rows[0].id;
+  const insert = `insert into generation_runs(owner_id, job_id, status) values ($1,$2,$3)`;
+  await pool.query(insert, [USER_ID, jobId, 'done']);
+  await pool.query(insert, [USER_ID, jobId, 'pending']);
+  await expect(pool.query(insert, [USER_ID, jobId, 'pending'])).rejects.toThrow(/duplicate key/);
+  await expect(pool.query(insert, [USER_ID, jobId, 'in_progress'])).rejects.toThrow(/duplicate key/);
+});
+
+test('004 re-queues a done CV without a name', async () => {
+  await pool.query('drop schema public cascade; create schema public;');
+  await migrateUpTo(['001_init.sql', '002_base_documents.sql', '003_single_base_document.sql']);
+  const insert = `insert into base_documents(owner_id, kind, source_ref, content_hash, media_type, active, analysis_status, analysis_attempts, structured)
+    values ($1,$2,$3,'h','application/pdf',$4,'done',1,$5::jsonb)`;
+  await pool.query(insert, [USER_ID, 'cv', 'noname.pdf', true, JSON.stringify({ headline: 'x' })]);
+  await pool.query(insert, [USER_ID, 'cover_letter', 'letter.pdf', true, JSON.stringify({ tone: 'x' })]);
+  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['004_generation.sql']);
+  const { rows } = await pool.query(`select source_ref, analysis_status, analysis_attempts from base_documents order by source_ref`);
+  expect(rows).toEqual([
+    { source_ref: 'letter.pdf', analysis_status: 'done', analysis_attempts: 1 },
+    { source_ref: 'noname.pdf', analysis_status: 'pending', analysis_attempts: 0 },
+  ]);
+
+  await pool.query('drop schema public cascade; create schema public;');
+  await migrateUpTo(['001_init.sql', '002_base_documents.sql', '003_single_base_document.sql']);
+  await pool.query(insert, [USER_ID, 'cv', 'named.pdf', true, JSON.stringify({ name: 'A Person' })]);
+  await runMigrations(pool, MIGRATIONS_DIR);
+  const { rows: after } = await pool.query(`select analysis_status, analysis_attempts from base_documents`);
+  expect(after).toEqual([{ analysis_status: 'done', analysis_attempts: 1 }]);
 });

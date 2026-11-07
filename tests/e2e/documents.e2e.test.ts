@@ -44,7 +44,7 @@ describe('base documents sync', () => {
   test('webhook without X-JobHunter header is refused and runs nothing', async () => {
     await putDocument('cv', 'a.pdf', makePdf('CV A'));
     // A run that got past the check would insert this stored document again and call Claude.
-    await db.query('truncate cost_log, base_documents');
+    await db.query('truncate cost_log, base_documents, document_versions');
     await stub.reset();
     const res = await fetch(`${N8N_URL}/webhook/api/documents/sync`, { method: 'POST' });
     expect(res.status).toBe(403);
@@ -66,6 +66,7 @@ describe('base documents sync', () => {
       source_removed: false,
     });
     expect(doc.structured.workRights).toBeNull();
+    expect(doc.structured.name).toBe('Stub Person');
     expect(doc.warnings).toEqual([expect.objectContaining({ code: 'missing_work_rights' })]);
     const costs = await db.query(`select * from cost_log`);
     expect(costs).toHaveLength(1);
@@ -209,7 +210,7 @@ describe('base documents sync', () => {
     const schema = body.output_config.format.schema;
     expect(schema).toMatchObject({ type: 'object', additionalProperties: false });
     expect([...schema.required].sort()).toEqual(
-      ['contact', 'education', 'headline', 'metrics', 'projects', 'roles', 'skills', 'summary', 'workRights'],
+      ['contact', 'education', 'headline', 'metrics', 'name', 'projects', 'roles', 'skills', 'summary', 'workRights'],
     );
     for (const key of ['temperature', 'top_p', 'top_k', 'thinking']) expect(body).not.toHaveProperty(key);
     expect(purposeOf(body)).toBe('purpose: analyse_cv');

@@ -6,6 +6,7 @@ The document is attached before this instruction (a PDF, or the text of a Word f
 
 Return these fields:
 
+- name: his name as written at the top of the CV. null if missing.
 - headline: the headline or title line under his name, as written. null if there is none.
 - summary: the profile / summary paragraph, as written. null if there is none.
 - workRights: the line that states his right to work (for example "Full working rights (485 visa)"), as written. null unless the CV has an explicit right-to-work line. Never work it out from his location, nationality or study.
