@@ -193,8 +193,9 @@ interface BaseFacts {
   numberKeys: Set<string>;
   monthYearKeys: Set<string>;
   titles: Set<string>;
-  roles: { employer: string; title: string; dates: string }[];
-  education: { institution: string; qualification: string; statusText: string; dates: string }[];
+  // employer: orgKey (no brackets or legal suffix), for matching; employerText: norm() of the base text as written.
+  roles: { employer: string; employerText: string; title: string; dates: string }[];
+  education: { institution: string; qualification: string; statusText: string; statusTextExact: string; dates: string }[];
   words: Set<string>;
   workRights: string | null;
   name: string | null;
@@ -227,11 +228,12 @@ function baseFacts(structured: object, usToAu: Map<string, string>): BaseFacts {
     numberKeys: new Set(numbers(stripLinks(factsRaw)).map((n) => n.key)),
     monthYearKeys: new Set(monthYears(factsRaw).map((m) => m.key)),
     titles: new Set(roles.map((r) => norm(String(r.title ?? ''))).filter(Boolean)),
-    roles: roles.map((r) => ({ employer: orgKey(String(r.employer ?? '')), title: norm(String(r.title ?? '')), dates: dateTokens(String(r.dates ?? '')) })),
+    roles: roles.map((r) => ({ employer: orgKey(String(r.employer ?? '')), employerText: norm(String(r.employer ?? '')), title: norm(String(r.title ?? '')), dates: dateTokens(String(r.dates ?? '')) })),
     education: education.map((e) => ({
       institution: norm(String(e.institution ?? '')),
       qualification: norm(String(e.qualification ?? '')),
       statusText: punctFree(String(e.statusText ?? '')),
+      statusTextExact: norm(String(e.statusText ?? '')),
       dates: dateTokens(String(e.dates ?? '')),
     })),
     words,
@@ -260,6 +262,8 @@ function placeholderChecks(segments: Segment[]): CheckResult[] {
   return out;
 }
 
+// Only text equal to the base value (after norm(): case, spaces, dashes and quotes; brackets and other
+// punctuation count) is exempt.
 // A field the writer must copy exactly from the base CV (role title, employer, institution, qualification,
 // statusText, the work-rights line) and did: its own words are his, so US spelling and banned words in it
 // ("Data Visualization Analyst", "Dynamic Solutions Pty Ltd") are not the writer's to fix.
@@ -273,15 +277,16 @@ function isCopiedFromBase(seg: Segment, base: BaseFacts): boolean {
     case 'title':
       return base.titles.has(norm(seg.text));
     case 'employer':
-      return base.roles.some((r) => r.employer === orgKey(seg.text));
+      // Exactly as the base CV writes it, brackets included: text added in brackets is the writer's.
+      return base.roles.some((r) => r.employerText === norm(seg.text));
     case 'institution':
       return base.education.some((e) => e.institution === norm(seg.text));
     case 'qualification':
       return base.education.some((e) => e.qualification === norm(seg.text));
     case 'statusText':
-      return base.education.some((e) => e.statusText === punctFree(seg.text));
+      return base.education.some((e) => e.statusTextExact === norm(seg.text));
     case 'workRights':
-      return base.workRights !== null && punctFree(base.workRights) === punctFree(seg.text);
+      return base.workRights !== null && norm(base.workRights) === norm(seg.text);
     default:
       return false;
   }
@@ -413,6 +418,13 @@ function roleFacts(cv: TailoredCv, base: BaseFacts): CheckResult[] {
       if (!base.titles.has(norm(e.title))) out.push(unknown('cv', `${p}.title`, `The job title "${e.title}" is not in the base CV.`));
       out.push(...numberAndDateFacts(datesSeg, e.dates, base));
       return;
+    }
+    // Brackets are ignored when matching an employer, so bracketed text the base employer does not have is new.
+    for (const m of e.employer.matchAll(/\(([^)]*)\)/g)) {
+      const inner = norm(m[1]);
+      if (inner !== '' && !candidates.some((r) => r.employerText.includes(`(${inner})`))) {
+        out.push(unknown('cv', `${p}.employer`, `"(${m[1]})" is not part of the employer "${e.employer}" in the base CV.`));
+      }
     }
     const exact = candidates.find((r) => r.title === norm(e.title));
     if (!exact) out.push(unknown('cv', `${p}.title`, `The job title "${e.title}" is not the title the base CV gives for "${e.employer}".`));

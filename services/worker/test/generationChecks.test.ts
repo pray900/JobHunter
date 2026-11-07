@@ -556,4 +556,19 @@ describe('runChecks', () => {
     const r = await runChecks(input({ cv, baseCv: { structured: base } }), opts());
     expect(r.checks.filter((c) => c.severity === 'hard')).toEqual([]);
   });
+
+  test('R1: bracketed text added to a copied employer is checked; brackets the base has pass', async () => {
+    const base = { ...baseStructured, roles: [{ ...baseStructured.roles[0], employer: 'Acme Widgets Pty Ltd' }] };
+    const cv: TailoredCv = { ...goodCv, experience: [{ ...goodCv.experience[0], employer: 'Acme Widgets (passionate, optimized team of 50) Pty Ltd' }] };
+    const r = await runChecks(input({ cv, baseCv: { structured: base } }), opts());
+    const where = 'cv.experience[0].employer';
+    expect(find(r, 'banned_phrase').map((c) => c.where)).toContain(where);
+    expect(find(r, 'us_spelling').map((c) => c.where)).toContain(where);
+    expect(find(r, 'unknown_fact').map((c) => c.where)).toContain(where);
+
+    const bracketed = { ...baseStructured, roles: [{ ...baseStructured.roles[0], employer: 'Dynamic Widgets (Optimization Division) Pty Ltd' }] };
+    const honest: TailoredCv = { ...goodCv, experience: [{ ...goodCv.experience[0], employer: 'Dynamic Widgets (Optimization Division) Pty Ltd' }] };
+    const ok = await runChecks(input({ cv: honest, baseCv: { structured: bracketed } }), opts());
+    expect(ok.checks.filter((c) => c.severity === 'hard')).toEqual([]);
+  });
 });
