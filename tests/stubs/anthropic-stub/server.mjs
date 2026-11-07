@@ -30,6 +30,61 @@ const CANNED = {
     reusableParagraphs: ['Stub paragraph.'],
     toneNotes: 'Stub tone.',
   },
+  // Built only from the analyse_cv facts above, so it passes the worker's strict checks against them.
+  write_documents: {
+    templateId: 'standard-ats',
+    templateReason: 'Standard ATS is the only template and suits this role.',
+    cv: {
+      name: 'Stub Person',
+      headline: 'Stub Engineer',
+      contact: { location: 'Sydney', email: null, phone: null, links: [] },
+      summary: 'Engineer who builds and leads small stub teams.',
+      workRights: null,
+      skills: [{ group: 'Languages', items: ['TypeScript'] }],
+      experience: [
+        { title: 'Stub Engineer', employer: 'Stub Employer', location: null, dates: '2023 – 2024', bullets: ['Led a team of 5'] },
+      ],
+      education: [{ qualification: 'Stub Degree', institution: 'Stub University', dates: '2020 – 2023', statusText: 'Completed' }],
+      projects: [{ name: 'Stub Project', bullets: ['Built a stub'] }],
+    },
+    coverLetter: {
+      date: '7 November 2026',
+      addressee: 'Hiring Manager',
+      salutation: 'Dear Hiring Manager,',
+      paragraphs: [
+        'I am applying for this role. At Stub Employer I led a team and built a stub in TypeScript.',
+        'I would welcome a conversation about how I can help your team.',
+      ],
+      signOff: 'Kind regards,',
+      name: 'Stub Person',
+    },
+    keywordCoverage: { covered: ['TypeScript'], missing: [] },
+    changes: [{ target: 'cv.headline', what: 'Headline names the role.', why: 'The job ad asks for an engineer.' }],
+    stretches: [],
+  },
+  review_documents: {
+    verdict: 'pass',
+    items: [
+      'relevance',
+      'over_tailoring',
+      'strongest_match_top_third',
+      'inflated_scope',
+      'ai_sounding',
+      'paraphrased_job_ad',
+      'keyword_stuffing',
+      'bullet_rhythm',
+      'star_form',
+      'tidiness',
+      'keyword_coverage_honest',
+      'reasons_hold_up',
+      'cover_letter_sources',
+      'addressee',
+    ].map((id) => ({ id, pass: true, note: 'Fine.' })),
+    objections: [],
+    factRulings: [],
+    spellingRulings: [],
+    stretches: [],
+  },
   score_job: {
     score: 82,
     explanation: '82%: Stub match explanation.',
@@ -42,6 +97,7 @@ const CANNED = {
 let requests = []; // { headers, body }
 let failPurposes = new Set();
 let delays = new Map(); // purpose -> ms to wait before answering
+let scripts = new Map(); // purpose -> answers still to give, in order, before the canned one
 
 const send = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -77,6 +133,7 @@ createServer((req, res) => {
       requests = [];
       failPurposes = new Set();
       delays = new Map();
+      scripts = new Map();
       return send(res, 200, { ok: true });
     }
     // Test control: every request with this purpose answers 500 until /_reset.
@@ -93,6 +150,17 @@ createServer((req, res) => {
       try {
         const { purpose, ms } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         delays.set(purpose, Number(ms));
+      } catch {
+        return err(res, 400, 'invalid JSON');
+      }
+      return send(res, 200, { ok: true });
+    }
+    // Test control: the next requests with this purpose get these answers in order, then the canned one.
+    if (req.method === 'POST' && url === '/_script_purpose') {
+      try {
+        const { purpose, answers } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (typeof purpose !== 'string' || !Array.isArray(answers)) throw new Error('bad shape');
+        scripts.set(purpose, [...answers]);
       } catch {
         return err(res, 400, 'invalid JSON');
       }
@@ -128,7 +196,7 @@ createServer((req, res) => {
       const base = { id: 'msg_stub', type: 'message', role: 'assistant', model: answeredModel ?? body.model ?? 'stub' };
       if (text.includes('STUB_REFUSE'))
         return send(res, 200, { ...base, content: [], stop_reason: 'refusal', usage: { input_tokens: 1000, output_tokens: 100 } });
-      let answer = CANNED[purpose] ?? CANNED.extract_job;
+      let answer = scripts.get(purpose)?.shift() ?? CANNED[purpose] ?? CANNED.extract_job;
       // "STUB_HEADLINE:<text>" in a CV makes its recorded headline <text> (so tests can tell CVs apart).
       const headline = /STUB_HEADLINE:(\S+)/.exec(text)?.[1];
       if (purpose === 'analyse_cv' && headline) answer = { ...answer, headline };

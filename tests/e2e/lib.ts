@@ -180,6 +180,10 @@ export const stub = {
   async delayPurpose(purpose: string, ms: number): Promise<void> {
     await fetch(`${STUB_URL}/_delay_purpose`, { method: 'POST', body: JSON.stringify({ purpose, ms }) });
   },
+  /** The next requests with this purpose get these answers in order, then the canned one (until reset). */
+  async scriptPurpose(purpose: string, answers: object[]): Promise<void> {
+    await fetch(`${STUB_URL}/_script_purpose`, { method: 'POST', body: JSON.stringify({ purpose, answers }) });
+  },
   async reset(): Promise<void> {
     await fetch(`${STUB_URL}/_reset`, { method: 'POST' });
   },

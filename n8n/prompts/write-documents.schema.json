@@ -1,0 +1,329 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "templateId",
+    "templateReason",
+    "cv",
+    "coverLetter",
+    "keywordCoverage",
+    "changes",
+    "stretches"
+  ],
+  "properties": {
+    "templateId": {
+      "type": "string",
+      "enum": [
+        "standard-ats"
+      ]
+    },
+    "templateReason": {
+      "type": "string"
+    },
+    "cv": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "headline",
+        "contact",
+        "summary",
+        "workRights",
+        "skills",
+        "experience",
+        "education",
+        "projects"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "headline": {
+          "type": "string"
+        },
+        "contact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "location",
+            "email",
+            "phone",
+            "links"
+          ],
+          "properties": {
+            "location": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "phone": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "links": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "label",
+                  "url"
+                ],
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "workRights": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "group",
+              "items"
+            ],
+            "properties": {
+              "group": {
+                "type": "string"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "experience": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title",
+              "employer",
+              "location",
+              "dates",
+              "bullets"
+            ],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "employer": {
+                "type": "string"
+              },
+              "location": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dates": {
+                "type": "string"
+              },
+              "bullets": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "education": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "qualification",
+              "institution",
+              "dates",
+              "statusText"
+            ],
+            "properties": {
+              "qualification": {
+                "type": "string"
+              },
+              "institution": {
+                "type": "string"
+              },
+              "dates": {
+                "type": "string"
+              },
+              "statusText": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "bullets"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "bullets": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "coverLetter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "addressee",
+        "salutation",
+        "paragraphs",
+        "signOff",
+        "name"
+      ],
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "addressee": {
+          "type": "string"
+        },
+        "salutation": {
+          "type": "string"
+        },
+        "paragraphs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "signOff": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "keywordCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "covered",
+        "missing"
+      ],
+      "properties": {
+        "covered": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "keyword",
+              "why"
+            ],
+            "properties": {
+              "keyword": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "what",
+          "why"
+        ],
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "what": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "stretches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "text",
+          "why"
+        ],
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

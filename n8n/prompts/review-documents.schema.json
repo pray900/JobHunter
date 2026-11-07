@@ -1,0 +1,163 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "items",
+    "objections",
+    "factRulings",
+    "spellingRulings",
+    "stretches"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "pass",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "relevance",
+              "over_tailoring",
+              "strongest_match_top_third",
+              "inflated_scope",
+              "ai_sounding",
+              "paraphrased_job_ad",
+              "keyword_stuffing",
+              "bullet_rhythm",
+              "star_form",
+              "tidiness",
+              "keyword_coverage_honest",
+              "reasons_hold_up",
+              "cover_letter_sources",
+              "addressee"
+            ]
+          },
+          "pass": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "objections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "problem",
+          "fix"
+        ],
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "problem": {
+            "type": "string"
+          },
+          "fix": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "factRulings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "ruling",
+          "why"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "ruling": {
+            "type": "string",
+            "enum": [
+              "honest_rephrase",
+              "invented"
+            ]
+          },
+          "why": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "spellingRulings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "word",
+          "ruling",
+          "fix"
+        ],
+        "properties": {
+          "word": {
+            "type": "string"
+          },
+          "ruling": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "misspelt"
+            ]
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "stretches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "text",
+          "why"
+        ],
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
