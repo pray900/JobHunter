@@ -64,7 +64,7 @@ describe('documents API', () => {
       expect(up.status).toBe(403);
       expect(await up.json()).toEqual({ error: 'missing_jobhunter_header' });
     }
-    expect(storedDocuments('cv')).toEqual([]);
+    expect(await storedDocuments('cv')).toEqual([]);
     expect(await db.query(`select id from base_documents`)).toEqual([]);
   });
 
@@ -72,7 +72,7 @@ describe('documents API', () => {
     const res = await uploadDocument('cover_letter', 'letter.pdf', makePdf('Letter'));
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ sourceRef: 'letter.pdf' });
-    expect(storedDocuments('cover_letter')).toEqual(['letter.pdf']);
+    expect(await storedDocuments('cover_letter')).toEqual(['letter.pdf']);
     // The upload already ran the sync, so the document is listed and analysed.
     expect((await listDocuments()).coverLetter).toMatchObject({ sourceRef: 'letter.pdf', analysisStatus: 'done' });
   });
@@ -82,7 +82,7 @@ describe('documents API', () => {
     const res = await uploadDocument('cv', 'fresh.pdf', makePdf('CV fresh'));
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ sourceRef: 'fresh.pdf' });
-    expect(storedDocuments('cv')).toEqual(['fresh.pdf']);
+    expect(await storedDocuments('cv')).toEqual(['fresh.pdf']);
     expect((await listDocuments()).cv).toMatchObject({ sourceRef: 'fresh.pdf', analysisStatus: 'done' });
     expect(await db.query(`select source_ref, source_removed, active from base_documents order by source_ref`)).toEqual([
       { source_ref: 'fresh.pdf', source_removed: false, active: true },
@@ -96,7 +96,7 @@ describe('documents API', () => {
     const res = await uploadDocument('cv', 'a.pdf', makePdf('CV A v2'));
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ sourceRef: 'a.pdf' });
-    expect(storedDocuments('cv')).toEqual(['a.pdf']);
+    expect(await storedDocuments('cv')).toEqual(['a.pdf']);
     expect(await activeCvHash()).not.toBe(before);
     expect((await listDocuments()).cv).toMatchObject({ sourceRef: 'a.pdf', analysisStatus: 'done' });
   });
@@ -139,7 +139,7 @@ describe('documents API', () => {
     const res = await fetch(`${WEB_URL}/api/documents/upload?kind=cv`, { method: 'POST', headers: SYNC_HEADERS, body: new FormData() });
     expect(res.status).toBe(400);
     await res.arrayBuffer();
-    expect(storedDocuments('cv')).toEqual([]);
+    expect(await storedDocuments('cv')).toEqual([]);
   });
 
   test('a failed upload keeps the current CV', async () => {
@@ -149,7 +149,7 @@ describe('documents API', () => {
       expect([400, 413]).toContain(res.status);
       await res.arrayBuffer();
     }
-    expect(storedDocuments('cv')).toEqual(['a.pdf']);
+    expect(await storedDocuments('cv')).toEqual(['a.pdf']);
     expect((await listDocuments()).cv).toMatchObject({ sourceRef: 'a.pdf', analysisStatus: 'done' });
   });
 
@@ -158,10 +158,10 @@ describe('documents API', () => {
     const body: any = await res.json();
     if (res.status === 201) {
       expect(body.sourceRef).not.toMatch(/[\\/]|\.\./);
-      expect(storedDocuments('cv')).toEqual([body.sourceRef]);
+      expect(await storedDocuments('cv')).toEqual([body.sourceRef]);
     } else {
       expect(res.status).toBe(400);
-      expect(storedDocuments('cv')).toEqual([]);
+      expect(await storedDocuments('cv')).toEqual([]);
     }
   });
 
@@ -173,7 +173,7 @@ describe('documents API', () => {
       expect([404, 405]).toContain(res.status);
       await res.arrayBuffer();
     }
-    expect(storedDocuments('cv')).toEqual(['a.pdf']);
+    expect(await storedDocuments('cv')).toEqual(['a.pdf']);
     expect((await listDocuments()).cv).toMatchObject({ id: row.id, sourceRef: 'a.pdf' });
   });
 

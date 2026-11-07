@@ -1,7 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { N8N_URL, ROOT, stub } from './lib';
+import { N8N_URL, ROOT, run, stub } from './lib';
 
 describe('e2e infrastructure', () => {
   it('n8n is healthy', async () => {
@@ -13,11 +12,11 @@ describe('e2e infrastructure', () => {
     expect(await stub.requests()).toEqual([]);
   });
 
-  it('bootstrap loaded both credentials into n8n', () => {
-    const out = execFileSync(
+  it('bootstrap loaded both credentials into n8n', async () => {
+    const out = await run(
       'docker',
       ['compose', '-f', join(ROOT, 'docker-compose.test.yml'), 'exec', '-T', 'n8n', 'n8n', 'export:credentials', '--all'],
-      { cwd: ROOT, encoding: 'utf8' },
+      { cwd: ROOT },
     );
     // The CLI prints log lines before the JSON array.
     const json = out
@@ -29,12 +28,12 @@ describe('e2e infrastructure', () => {
     expect(names).toEqual(['Anthropic', 'JobHunter Postgres']);
   });
 
-  it('re-running the bootstrap publishes only the shipped workflows and leaves no temp credentials', () => {
+  it('re-running the bootstrap publishes only the shipped workflows and leaves no temp credentials', async () => {
     const composeFile = join(ROOT, 'docker-compose.test.yml');
     const n8n = (args: string[], input?: string) =>
-      execFileSync('docker', ['compose', '-f', composeFile, 'exec', '-T', 'n8n', ...args], { cwd: ROOT, encoding: 'utf8', input });
-    const activeIds = () =>
-      n8n(['n8n', 'list:workflow', '--active=true', '--onlyId'])
+      run('docker', ['compose', '-f', composeFile, 'exec', '-T', 'n8n', ...args], { cwd: ROOT, input });
+    const activeIds = async () =>
+      (await n8n(['n8n', 'list:workflow', '--active=true', '--onlyId']))
         .split(/\r?\n/)
         .map((l) => l.trim())
         .filter((l) => /^[A-Za-z0-9_-]+$/.test(l))
@@ -49,13 +48,13 @@ describe('e2e infrastructure', () => {
       connections: {},
       settings: {},
     };
-    n8n(['sh', '-c', 'cat >/tmp/user-own.json'], JSON.stringify(own));
-    n8n(['n8n', 'import:workflow', '--input=/tmp/user-own.json']);
-    n8n(['rm', '-f', '/tmp/user-own.json']);
+    await n8n(['sh', '-c', 'cat >/tmp/user-own.json'], JSON.stringify(own));
+    await n8n(['n8n', 'import:workflow', '--input=/tmp/user-own.json']);
+    await n8n(['rm', '-f', '/tmp/user-own.json']);
 
-    execFileSync('bash', [join(ROOT, 'scripts', 'n8n-bootstrap.sh'), composeFile], { cwd: ROOT, stdio: 'inherit' });
+    await run('bash', [join(ROOT, 'scripts', 'n8n-bootstrap.sh'), composeFile], { cwd: ROOT, inherit: true });
 
-    expect(activeIds()).toEqual(['jh-base-documents-sync', 'jh-documents-api', 'jh-job-intake-sync', 'jh-job-match-scoring', 'jh-jobs-api']);
-    expect(n8n(['sh', '-c', 'test -e /tmp/jh-credentials.json && echo present || echo absent']).trim()).toBe('absent');
+    expect(await activeIds()).toEqual(['jh-base-documents-sync', 'jh-documents-api', 'jh-job-intake-sync', 'jh-job-match-scoring', 'jh-jobs-api']);
+    expect((await n8n(['sh', '-c', 'test -e /tmp/jh-credentials.json && echo present || echo absent'])).trim()).toBe('absent');
   }, 300_000);
 });

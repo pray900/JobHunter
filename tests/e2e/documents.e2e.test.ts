@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -14,6 +13,7 @@ import {
   makePdf,
   putDocument,
   resetState,
+  run,
   storedDocuments,
   stub,
   triggerDocumentsSync,
@@ -79,7 +79,7 @@ describe('base documents sync', () => {
       output_tokens: 100,
     });
     expect(Number(costs[0].cost_usd)).toBeCloseTo(0.006, 6); // 1000 x $4 + 100 x $20 per 1M
-    expect(storedDocuments('cv')).toEqual(['a.pdf']);
+    expect(await storedDocuments('cv')).toEqual(['a.pdf']);
   });
 
   test('cost is priced by the model that answered', async () => {
@@ -122,14 +122,14 @@ describe('base documents sync', () => {
     expect(after).toMatchObject({ id: before.id, active: true, analysis_status: 'done', analysis_attempts: 1 });
     expect(after.content_hash).not.toBe(before.content_hash);
     expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('v1'), expect.stringContaining('v2')]);
-    expect(storedDocuments('cv')).toEqual(['a.pdf']);
+    expect(await storedDocuments('cv')).toEqual(['a.pdf']);
     expect(await db.query(`select id from base_documents`)).toHaveLength(1);
   });
 
   test('replace with a different name: the old document is gone and retired, the new one active and analysed', async () => {
     await putDocument('cv', 'old.pdf', makePdf('OLD CV'));
     await putDocument('cv', 'new.pdf', makePdf('NEW CV'));
-    expect(storedDocuments('cv')).toEqual(['new.pdf']);
+    expect(await storedDocuments('cv')).toEqual(['new.pdf']);
     expect(await docRow('new.pdf')).toMatchObject({ active: true, source_removed: false, analysis_status: 'done' });
     expect(await docRow('old.pdf')).toMatchObject({ active: false, source_removed: true, analysis_status: 'done' });
     expect((await stub.requests()).map(sentText)).toEqual([expect.stringContaining('OLD CV'), expect.stringContaining('NEW CV')]);
@@ -149,7 +149,7 @@ describe('base documents sync', () => {
     await putDocument('cv', 'first.pdf', first);
     await putDocument('cv', 'second.pdf', makePdf('SECOND CV'));
     await putDocument('cv', 'first.pdf', first);
-    expect(storedDocuments('cv')).toEqual(['first.pdf']);
+    expect(await storedDocuments('cv')).toEqual(['first.pdf']);
     expect(await docRow('first.pdf')).toMatchObject({ active: true, source_removed: false, analysis_status: 'done' });
     expect(await docRow('second.pdf')).toMatchObject({ active: false, source_removed: true });
     expect(await stub.requests()).toHaveLength(2);
@@ -170,7 +170,7 @@ describe('base documents sync', () => {
     await putDocument('cover_letter', 'cl.pdf', makePdf('CL ONE'));
     const letter = await docRow('cl.pdf');
     await putDocument('cv', 'cv2.pdf', makePdf('CV TWO'));
-    expect(storedDocuments('cover_letter')).toEqual(['cl.pdf']);
+    expect(await storedDocuments('cover_letter')).toEqual(['cl.pdf']);
     expect(await docRow('cl.pdf')).toMatchObject({ id: letter.id, active: true, source_removed: false, analysis_status: 'done' });
     expect(await db.query(`select kind, source_ref from base_documents where active order by kind`)).toEqual([
       { kind: 'cover_letter', source_ref: 'cl.pdf' },
@@ -332,10 +332,10 @@ describe('base documents sync', () => {
     expect(await stub.requests()).toEqual([]);
   });
 
-  test('documents are only kept in the worker volume, never in a host folder', () => {
-    const id = composeOutput(['ps', '-q', 'worker']).trim();
+  test('documents are only kept in the worker volume, never in a host folder', async () => {
+    const id = (await composeOutput(['ps', '-q', 'worker'])).trim();
     const mounts: { Type: string; Destination: string; Name?: string }[] = JSON.parse(
-      execFileSync('docker', ['inspect', '--format', '{{json .Mounts}}', id], { encoding: 'utf8' }),
+      await run('docker', ['inspect', '--format', '{{json .Mounts}}', id]),
     );
     const byTarget = Object.fromEntries(mounts.map((m) => [m.Destination, m]));
     expect(Object.keys(byTarget).sort()).toEqual(['/app/config', DOCUMENTS_DIR, '/data/joblisting']);
@@ -343,8 +343,8 @@ describe('base documents sync', () => {
   });
 
   describe('worker down', () => {
-    afterEach(() => {
-      compose(['up', '-d', '--wait', 'worker']);
+    afterEach(async () => {
+      await compose(['up', '-d', '--wait', 'worker']);
     });
 
     test('a failed read of the storage stops the run, nothing changed', async () => {
@@ -352,7 +352,7 @@ describe('base documents sync', () => {
       await stub.reset();
       // A run that got past the read would claim this and call Claude, or retire it.
       await db.query(`update base_documents set analysis_status='pending'`);
-      compose(['stop', 'worker']);
+      await compose(['stop', 'worker']);
       const res = await fetch(`${N8N_URL}/webhook/api/documents/sync`, { method: 'POST', headers: SYNC_HEADERS });
       expect(res.status).toBe(502);
       expect(await res.json()).toEqual({ ok: false, error: 'scan_failed' });

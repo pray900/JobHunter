@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,27 +17,60 @@ export const STUB_URL = 'http://localhost:58081';
 export const WEB_URL = 'http://localhost:58080';
 const DB_URL = 'postgres://jobhunter:test@localhost:55433/jobhunter';
 
-export function compose(args: string[]): void {
-  execFileSync('docker', ['compose', '-f', COMPOSE_FILE, ...args], { cwd: ROOT, stdio: 'inherit' });
+export interface RunOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /** Written to the child's stdin. */
+  input?: string;
+  /** Pass the child's stdout and stderr through to this process (default: capture stdout). */
+  inherit?: boolean;
+  /** Discard the child's output. */
+  quiet?: boolean;
+}
+
+/**
+ * Runs a command without blocking the event loop (a long synchronous child call starves vitest's
+ * worker RPC) and resolves with its stdout. Rejects when it exits non-zero or cannot start.
+ */
+export function run(command: string, args: string[], opts: RunOptions = {}): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    const out = opts.inherit ? 'inherit' : opts.quiet ? 'ignore' : 'pipe';
+    const child = spawn(command, args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: [opts.input === undefined ? 'ignore' : 'pipe', out, opts.inherit ? 'inherit' : opts.quiet ? 'ignore' : 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.setEncoding('utf8').on('data', (c: string) => (stdout += c));
+    child.stderr?.setEncoding('utf8').on('data', (c: string) => (stderr += c));
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (code === 0) resolvePromise(stdout);
+      else reject(new Error(`${command} ${args.join(' ')} failed (${code ?? signal}): ${stderr}`));
+    });
+    if (opts.input !== undefined) child.stdin!.end(opts.input);
+  });
+}
+
+export async function compose(args: string[]): Promise<void> {
+  await run('docker', ['compose', '-f', COMPOSE_FILE, ...args], { cwd: ROOT, inherit: true });
 }
 
 /** Runs a compose command and returns its stdout. */
-export function composeOutput(args: string[]): string {
-  return execFileSync('docker', ['compose', '-f', COMPOSE_FILE, ...args], { cwd: ROOT, encoding: 'utf8' });
+export function composeOutput(args: string[]): Promise<string> {
+  return run('docker', ['compose', '-f', COMPOSE_FILE, ...args], { cwd: ROOT });
 }
 
 export const stack = {
   async up(): Promise<void> {
     mkdirSync(JOB_DIR, { recursive: true });
-    compose(['up', '-d', '--build', '--wait']);
+    await compose(['up', '-d', '--build', '--wait']);
     // Bootstrap is a bash script: run it through Git Bash / sh.
-    execFileSync('bash', [join(ROOT, 'scripts', 'n8n-bootstrap.sh'), COMPOSE_FILE], {
-      cwd: ROOT,
-      stdio: 'inherit',
-    });
+    await run('bash', [join(ROOT, 'scripts', 'n8n-bootstrap.sh'), COMPOSE_FILE], { cwd: ROOT, inherit: true });
   },
   async down(): Promise<void> {
-    compose(['down', '-v']);
+    await compose(['down', '-v']);
   },
 };
 
@@ -59,8 +92,8 @@ export function removeJobFile(name: string): void {
 export type DocumentKind = 'cv' | 'cover_letter';
 
 /** Names of every file the worker has stored for a kind (any depth; the pointer file is left out). */
-export function storedDocuments(kind: DocumentKind): string[] {
-  const out = composeOutput([
+export async function storedDocuments(kind: DocumentKind): Promise<string[]> {
+  const out = await composeOutput([
     'exec', '-T', 'worker', 'sh', '-c',
     `test -d ${DOCUMENTS_DIR}/${kind} || exit 0; find ${DOCUMENTS_DIR}/${kind} -type f ! -name .current.json`,
   ]);
@@ -73,8 +106,8 @@ export function storedDocuments(kind: DocumentKind): string[] {
 }
 
 /** Empties the worker's document storage (the test stack's volume only). */
-export function clearStoredDocuments(): void {
-  composeOutput(['exec', '-T', 'worker', 'sh', '-c', `rm -rf ${DOCUMENTS_DIR}/cv ${DOCUMENTS_DIR}/cover_letter`]);
+export async function clearStoredDocuments(): Promise<void> {
+  await composeOutput(['exec', '-T', 'worker', 'sh', '-c', `rm -rf ${DOCUMENTS_DIR}/cv ${DOCUMENTS_DIR}/cover_letter`]);
 }
 
 /** A tiny file that starts with the PDF magic; the stub does not parse it, it only searches its text. */
@@ -91,7 +124,7 @@ const emptyDir = (dir: string) => {
 export async function resetState(): Promise<void> {
   await db.query('truncate jobs, job_status_history, cost_log, base_documents, generation_runs, document_versions');
   emptyDir(JOB_DIR);
-  clearStoredDocuments();
+  await clearStoredDocuments();
   await stub.reset();
 }
 

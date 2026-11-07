@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -11,6 +10,7 @@ import {
   db,
   removeJobFile,
   resetState,
+  run,
   stub,
   triggerSync,
   writeJobFile,
@@ -342,9 +342,9 @@ describe('job intake sync', () => {
 
   describe('when the folder scan fails', () => {
     const FAKE_WORKER = 'jobhunter-test-fake-worker';
-    const removeFakeWorker = () => {
+    const removeFakeWorker = async () => {
       try {
-        execFileSync('docker', ['rm', '-f', FAKE_WORKER], { stdio: 'ignore' });
+        await run('docker', ['rm', '-f', FAKE_WORKER], { quiet: true });
       } catch {
         // not running
       }
@@ -357,12 +357,12 @@ describe('job intake sync', () => {
       await triggerSync();
       await stub.reset();
       await db.query(`update jobs set extraction_status='pending', title=null`);
-      compose(['stop', 'worker']);
+      await compose(['stop', 'worker']);
     });
 
-    afterEach(() => {
-      removeFakeWorker();
-      compose(['up', '-d', '--wait', 'worker']);
+    afterEach(async () => {
+      await removeFakeWorker();
+      await compose(['up', '-d', '--wait', 'worker']);
     });
 
     const expectNothingChanged = async () => {
@@ -381,14 +381,14 @@ describe('job intake sync', () => {
     test('worker answers 503 job_folder_missing: nothing changes', async () => {
       // Stand-in "worker" on the compose network whose scan always reports a missing folder.
       const server = `require('http').createServer((q, r) => { r.writeHead(503, { 'content-type': 'application/json' }); r.end(JSON.stringify({ error: 'job_folder_missing' })); }).listen(3001)`;
-      execFileSync('docker', [
+      await run('docker', [
         'run', '-d', '--rm', '--name', FAKE_WORKER, '--network', 'jobhunter-test_default', '--network-alias', 'worker',
         '--entrypoint', 'node', 'jobhunter-test-worker', '-e', server,
-      ], { stdio: 'ignore' });
+      ], { quiet: true });
       let status = '';
       for (let i = 0; i < 50 && status !== '503'; i++) {
-        const out: string = execFileSync('docker', ['compose', '-f', join(ROOT, 'docker-compose.test.yml'), 'exec', '-T', 'n8n', 'node', '-e',
-          `fetch('http://worker:3001/jobs/scan',{method:'POST'}).then(r=>console.log(r.status)).catch(()=>console.log(0))`], { encoding: 'utf8' });
+        const out: string = await run('docker', ['compose', '-f', join(ROOT, 'docker-compose.test.yml'), 'exec', '-T', 'n8n', 'node', '-e',
+          `fetch('http://worker:3001/jobs/scan',{method:'POST'}).then(r=>console.log(r.status)).catch(()=>console.log(0))`]);
         status = out.trim();
         if (status !== '503') await new Promise((r) => setTimeout(r, 200));
       }
