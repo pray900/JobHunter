@@ -124,6 +124,9 @@ describe('job page API', () => {
     expect(more).toEqual([]);
     expect(run).toMatchObject({ id: body.runId, status: 'pending', instruction: 'x'.repeat(1000), from_version_id: v1 });
     expect(await stub.requests()).toEqual([]);
+    // The job page sees what the run was asked to do, so "Try again" can repeat the same regenerate.
+    const detail = (await (await get(`jobs/detail?id=${jobId}`)).json()) as any;
+    expect(detail.generation).toMatchObject({ status: 'pending', instruction: 'x'.repeat(1000), fromVersionId: v1 });
     // Still one active run per job.
     const again = await post(`jobs/generate?id=${jobId}`, { instruction: 'Shorter.', fromVersionId: v1 });
     expect(again.status).toBe(409);
@@ -249,7 +252,7 @@ describe('job page API', () => {
       id: jobId, title: 'Engineer', employer: 'Acme', rawText: 'The ad text', status: 'new',
       companyNotes: 'Met them at a meetup', url: 'https://x.io/a',
     });
-    expect(body.generation).toEqual({ status: 'done', stage: 'saving', round: 2, attempts: 1, error: null });
+    expect(body.generation).toEqual({ status: 'done', stage: 'saving', round: 2, attempts: 1, error: null, instruction: null, fromVersionId: null });
     expect(Object.keys(body.version).sort()).toEqual([
       'baseCvSourceRef', 'checks', 'costUsd', 'coverLetter', 'createdAt', 'cv', 'id', 'isCurrent', 'keywordCoverage', 'label',
       'manualEdits', 'origin', 'parentVersionId', 'reasons', 'review', 'templateId', 'versionNo',

@@ -102,6 +102,21 @@ describe('DocumentEditor', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  test('M5: Save is off until something changed, and the page is told when there are unsaved edits', async () => {
+    const onDirtyChange = vi.fn();
+    setup({ onDirtyChange });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    await userEvent.type(screen.getByLabelText('Headline'), ' II');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  test('a version finished while editing is mentioned in the editor', () => {
+    setup({ notice: 'A new version finished while you were editing.' });
+    expect(screen.getByRole('status', { name: 'A new version finished' })).toHaveTextContent('A new version finished while you were editing.');
+  });
+
   test('Save is disabled while saving and an error shows in amber', () => {
     setup({ saving: true, error: 'Could not save.' });
     expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();

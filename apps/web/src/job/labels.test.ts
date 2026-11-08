@@ -37,4 +37,5 @@ test('labels the spec calls out', () => {
   expect(checkLabel('unknown_fact')).toBe('Not in your base CV');
   expect(checkLabel('work_rights_dropped')).toBe('Work-rights line left out');
   expect(checkLabel('missing_work_rights')).toBe('Your base CV has no work-rights line');
+  expect(checkLabel('manual_edit_changed')).toBe('Your edit was changed');
 });

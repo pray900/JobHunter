@@ -19,7 +19,11 @@ const CHECK_LABELS: Record<CheckCode, string> = {
   work_rights_dropped: 'Work-rights line left out',
   link_unreachable: "Link didn't answer",
   invalid_document: 'A required part of the document was missing or empty',
+  manual_edit_changed: 'Your edit was changed',
 };
+
+// The note a regenerate puts on a check inside one of Prayush's locked edits (generate-documents).
+export const LOCKED_NOTE = 'Your edit — kept as you asked';
 
 const REVIEW_LABELS: Record<ReviewItemId, string> = {
   relevance: 'Relevant to this job',

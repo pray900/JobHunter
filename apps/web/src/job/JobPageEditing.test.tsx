@@ -54,7 +54,7 @@ const editedVersion = {
   label: 'Edited',
   origin: 'edited' as const,
   parentVersionId: 'v1',
-  manualEdits: ['cv.experience[0].bullets[0]'],
+  manualEdits: [{ path: 'cv.experience[0].bullets[0]', text: 'Built LWC components used by 40 reps.' }],
   review: { ...baseVersion.review, reviewedVersionNo: 1 },
   cv: { ...baseVersion.cv, experience: [{ ...baseVersion.cv.experience[0]!, bullets: ['Built LWC components used by 40 reps.'] }] },
 };

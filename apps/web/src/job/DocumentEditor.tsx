@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { TailoredCv, TailoredLetter } from '../api/types';
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -99,12 +99,19 @@ export function DocumentEditor(props: {
   error: string | null;
   onSave: (cv: TailoredCv, letter: TailoredLetter) => void;
   onCancel: () => void;
+  // Told whenever the editor starts or stops holding unsaved changes (the page guards leaving).
+  onDirtyChange?: (dirty: boolean) => void;
+  // A status line shown at the top of the editor (a run finished while editing).
+  notice?: string | null;
 }) {
-  const { saving, error, onSave, onCancel } = props;
+  const { saving, error, onSave, onCancel, onDirtyChange, notice } = props;
   const [cv, setCv] = useState(props.cv);
   const [letter, setLetter] = useState(props.letter);
   const [confirming, setConfirming] = useState(false);
   const dirty = JSON.stringify(cv) !== JSON.stringify(props.cv) || JSON.stringify(letter) !== JSON.stringify(props.letter);
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   const patchCv = (p: Partial<TailoredCv>) => setCv((c) => ({ ...c, ...p }));
   const patchContact = (p: Partial<TailoredCv['contact']>) => setCv((c) => ({ ...c, contact: { ...c.contact, ...p } }));
@@ -112,11 +119,19 @@ export function DocumentEditor(props: {
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Nothing changed: nothing to save (a save would only add a copy that is no longer "reviewed").
+    if (!dirty || saving) return;
     onSave(cleanCv(cv), cleanLetter(letter));
   }
 
   return (
     <form className="editor" onSubmit={onSubmit} aria-label="Edit documents">
+      {notice && (
+        <p className="editor-notice" role="status" aria-label="A new version finished">
+          <span aria-hidden="true">ℹ </span>
+          {notice}
+        </p>
+      )}
       <section aria-label="CV details">
         <h3>CV</h3>
         <Text label="Name" value={cv.name} />
@@ -234,7 +249,7 @@ export function DocumentEditor(props: {
         </p>
       )}
       <div className="editor-actions">
-        <button type="submit" className="btn btn-primary" disabled={saving}>
+        <button type="submit" className="btn btn-primary" disabled={saving || !dirty}>
           {saving ? 'Saving…' : 'Save'}
         </button>
         <button type="button" className="btn" disabled={saving} onClick={() => (dirty ? setConfirming(true) : onCancel())}>

@@ -150,7 +150,11 @@ describe('versions API', () => {
     expect(v2.cover_letter).toEqual(LETTER);
     expect(v2.checks).toEqual(body.checks);
     expect(v2.review).toEqual({ passed: true, rounds: 1, verdicts: ['pass'], unresolved: [], reviewedVersionNo: 1 });
-    expect(v2.reasons.manualEdits).toEqual(['cv.headline', 'cv.summary']);
+    // Manual edits are kept by text. The source's old path-only entry is read as the text at that path.
+    expect(v2.reasons.manualEdits).toEqual([
+      { path: 'cv.headline', text: CV.headline },
+      { path: 'cv.summary', text: 'A new summary written by hand.' },
+    ]);
     expect(v2.reasons.templateReason).toBe('r');
     expect(v2.keyword_coverage).toEqual({ covered: [], missing: [] });
     await noClaude();
@@ -162,8 +166,51 @@ describe('versions API', () => {
     expect(res2.status).toBe(201);
     const v3 = (await rows(jobId))[2];
     expect(v3.review.reviewedVersionNo).toBe(1);
-    expect(v3.reasons.manualEdits).toEqual(['cv.headline', 'cv.summary']);
+    expect(v3.reasons.manualEdits).toEqual([
+      { path: 'cv.headline', text: 'Staff Engineer' },
+      { path: 'cv.summary', text: 'A new summary written by hand.' },
+    ]);
     expect(v3.parent_version_id).toBe(body.versionId);
+    await noClaude();
+  });
+
+  test('edit tracks manual edits by text: a removed or moved bullet is not an edit, an earlier edit follows its text', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const three = { ...CV, experience: [{ ...CV.experience[0]!, bullets: ['First bullet.', 'MY_EDIT_2201 bullet.', 'Third bullet.'] }] };
+    const v1 = await seed(jobId, {
+      versionNo: 1, cv: three,
+      reasons: { templateReason: 'r', changes: [], stretches: [], factRulings: [], manualEdits: [{ path: 'cv.experience[0].bullets[1]', text: 'MY_EDIT_2201 bullet.' }] },
+    });
+    // The upload's CV reading is not part of the edit.
+    await stub.reset();
+    // Remove the first bullet: the others move up a place. Nothing new was written.
+    const removed = { ...three, experience: [{ ...three.experience[0]!, bullets: ['MY_EDIT_2201 bullet.', 'Third bullet.'] }] };
+    let res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv: removed, coverLetter: LETTER });
+    expect(res.status).toBe(201);
+    let v = (await rows(jobId))[1];
+    expect(v.reasons.manualEdits).toEqual([{ path: 'cv.experience[0].bullets[0]', text: 'MY_EDIT_2201 bullet.' }]);
+    // Swap the two bullets and reword the third one: only the reworded text is a new edit.
+    const swapped = { ...three, experience: [{ ...three.experience[0]!, bullets: ['Third bullet, reworded.', 'MY_EDIT_2201 bullet.'] }] };
+    res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v.id, cv: swapped, coverLetter: LETTER });
+    expect(res.status).toBe(201);
+    v = (await rows(jobId))[2];
+    expect(v.reasons.manualEdits).toEqual([
+      { path: 'cv.experience[0].bullets[0]', text: 'Third bullet, reworded.' },
+      { path: 'cv.experience[0].bullets[1]', text: 'MY_EDIT_2201 bullet.' },
+    ]);
+    // A new skill group is recorded field by field; an emptied email is an edit with no text.
+    const grouped = { ...swapped, contact: { ...swapped.contact, email: null }, skills: [...swapped.skills, { group: 'Cloud', items: ['AWS'] }] };
+    res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v.id, cv: grouped, coverLetter: LETTER });
+    expect(res.status).toBe(201);
+    v = (await rows(jobId))[3];
+    expect(v.reasons.manualEdits).toEqual([
+      { path: 'cv.contact.email', text: null },
+      { path: 'cv.experience[0].bullets[0]', text: 'Third bullet, reworded.' },
+      { path: 'cv.experience[0].bullets[1]', text: 'MY_EDIT_2201 bullet.' },
+      { path: 'cv.skills[1].group', text: 'Cloud' },
+      { path: 'cv.skills[1].items[0]', text: 'AWS' },
+    ]);
     await noClaude();
   });
 
@@ -374,11 +421,12 @@ describe('versions API', () => {
     const v1 = await seed(jobId, { versionNo: 1, cv: { ...CV, name: 'First Person' } });
     const v2 = await seed(jobId, {
       versionNo: 2, origin: 'edited', label: 'Edited', parent: v1, manualEdit: true,
-      reasons: { templateReason: 'r', manualEdits: ['cv.summary'] },
+      reasons: { templateReason: 'r', manualEdits: ['cv.summary', 'cv.experience[7].bullets[0]'] },
     });
     let body = (await (await get(`jobs/detail?id=${jobId}`)).json()) as any;
+    // An old path-only row is answered by text: the text at that path; a path that no longer exists is left out.
     expect(body.version).toMatchObject({
-      id: v2, versionNo: 2, origin: 'edited', parentVersionId: v1, manualEdits: ['cv.summary'], isCurrent: true,
+      id: v2, versionNo: 2, origin: 'edited', parentVersionId: v1, manualEdits: [{ path: 'cv.summary', text: CV.summary }], isCurrent: true,
     });
     expect(body.versions).toBe(2);
     body = (await (await get(`jobs/detail?id=${jobId}&versionId=${v1}`)).json()) as any;
@@ -403,7 +451,9 @@ describe('versions API', () => {
       return /filename="([^"]*)"/.exec(res.headers.get('content-disposition')!)![1];
     };
     expect(await name('')).toBe('Jordan Testcase - CV - Acme.docx');
-    expect(await name(`&versionId=${v1}`)).toBe('First Person - CV - Acme.docx');
+    // A version asked for by id carries its number, so downloads of two versions never share a name.
+    expect(await name(`&versionId=${v1}`)).toBe('First Person - CV - Acme - v1.docx');
+    expect(await name(`&versionId=${v2}`)).toBe('Jordan Testcase - CV - Acme - v2.docx');
     for (const q of [`&versionId=${MISSING}`, `&versionId=${vo}`]) {
       const res = await get(`jobs/download?id=${jobId}&doc=cv&format=docx${q}`);
       expect(res.status).toBe(404);

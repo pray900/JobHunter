@@ -1,5 +1,5 @@
 import type { CheckResult, DocumentVersion, JobDetailJob, UnresolvedItem } from '../api/types';
-import { checkLabel, reviewItemLabel } from './labels';
+import { LOCKED_NOTE, checkLabel, reviewItemLabel } from './labels';
 
 function Warn({ children }: { children: React.ReactNode }) {
   return (
@@ -15,6 +15,7 @@ function Warn({ children }: { children: React.ReactNode }) {
 function unresolvedLine(u: UnresolvedItem): { label: string; detail: string } {
   switch (u.source) {
     case 'check':
+      if (u.locked || u.note === LOCKED_NOTE) return { label: `${LOCKED_NOTE}:`, detail: `${checkLabel(u.code)}. ${u.detail}` };
       return { label: checkLabel(u.code), detail: u.note ? `${u.detail} ${u.note}` : u.detail };
     case 'review':
       return { label: reviewItemLabel(u.id), detail: u.note };
@@ -32,6 +33,7 @@ function CheckList({ checks }: { checks: CheckResult[] }) {
         <li key={i}>
           <Warn>
             <strong>{checkLabel(c.code)}</strong> ({c.doc === 'cv' ? 'CV' : 'Cover letter'}) {c.detail}
+            {c.locked && <span className="muted"> {LOCKED_NOTE}</span>}
           </Warn>
         </li>
       ))}
@@ -43,6 +45,11 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
   const { reasons, keywordCoverage, review, checks } = version;
   const hard = checks.filter((c) => c.severity === 'hard');
   const warnings = checks.filter((c) => c.severity === 'warning');
+  // An edited version (or a restored copy of one) carries the review of an earlier version, which did not see
+  // the edits: its verdict and its list are shown as that version's, and review checks are his to look at.
+  const reviewedNo = review.reviewedVersionNo;
+  const edited = reviewedNo !== undefined;
+  const toLook = edited ? checks.filter((c) => c.severity === 'review') : [];
   return (
     <div className="reasons">
       {job.matchScore !== null && (
@@ -123,7 +130,11 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
 
       <section className="panel" aria-label="Reviewer">
         <h3>Reviewer</h3>
-        {review.passed ? (
+        {edited ? (
+          <p className="muted">
+            Not reviewed: your edits came after the review (version {reviewedNo} was: {review.passed ? 'passed' : 'not satisfied'})
+          </p>
+        ) : review.passed ? (
           <p>
             <span aria-hidden="true">✓ </span>Reviewer: passed
           </p>
@@ -161,7 +172,34 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
         </section>
       )}
 
-      {review.unresolved.length > 0 && (
+      {toLook.length > 0 && (
+        <section className="panel attention" aria-label="Needs a look">
+          <h3>
+            <Warn>Needs a look</Warn>
+          </h3>
+          <p>The reviewer did not see your edit. Check these yourself.</p>
+          <CheckList checks={toLook} />
+        </section>
+      )}
+
+      {edited && review.unresolved.length > 0 && (
+        <section className="panel" aria-label={`From the review of version ${reviewedNo}`}>
+          <h3>From the review of version {reviewedNo}</h3>
+          <p className="muted">Written before your edits; some may no longer apply.</p>
+          <ul className="plain">
+            {review.unresolved.map((u, i) => {
+              const line = unresolvedLine(u);
+              return (
+                <li key={i}>
+                  <strong>{line.label}</strong> {line.detail}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      {!edited && review.unresolved.length > 0 && (
         <section className="panel attention" aria-label="Needs your attention">
           <h3>
             <Warn>Needs your attention</Warn>
@@ -199,7 +237,13 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
         </p>
       )}
 
-      <p className="muted">This generation cost US${version.costUsd.toFixed(2)}</p>
+      <p className="muted">
+        {version.origin === 'edited'
+          ? 'No cost (your edit)'
+          : version.origin === 'restored'
+            ? 'Restored copy (no new cost)'
+            : `This generation cost US$${version.costUsd.toFixed(2)}`}
+      </p>
     </div>
   );
 }

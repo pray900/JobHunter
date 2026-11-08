@@ -24,7 +24,10 @@ describe('VersionHistory', () => {
     expect(items[1]).toHaveTextContent('Edited by you');
     expect(items[1]).toHaveTextContent('Not reviewed');
     expect(items[2]).toHaveTextContent('Regenerated');
-    expect(items[2]).toHaveTextContent('Make it shorter and lead with Apex');
+    // M2: the short label shows; the whole instruction is in the tooltip.
+    expect(items[2]).toHaveTextContent('“Make it shorter”');
+    expect(items[2]).not.toHaveTextContent('lead with Apex');
+    expect(within(items[2]).getByText('“Make it shorter”')).toHaveAttribute('title', 'Make it shorter and lead with Apex');
     expect(items[2]).toHaveTextContent('Passed');
     expect(items[3]).toHaveTextContent('Generated');
     expect(items[3]).not.toHaveTextContent('Current');
@@ -38,6 +41,12 @@ describe('VersionHistory', () => {
     expect(screen.getByRole('button', { name: /Version 2/ })).toHaveAttribute('aria-current', 'true');
     await userEvent.click(screen.getByRole('button', { name: /Version 1/ }));
     expect(onSelect).toHaveBeenCalledWith(versions[3]);
+  });
+
+  test('M2: an old label with line breaks reads as one line', () => {
+    const v = { ...versions[2]!, label: 'Shorter\n\nsummary', instruction: 'Shorter\n\nsummary' };
+    render(<VersionHistory versions={[v]} selectedId={null} onSelect={() => {}} />);
+    expect(screen.getByText('“Shorter summary”')).toBeInTheDocument();
   });
 
   test('says so when there are none', () => {

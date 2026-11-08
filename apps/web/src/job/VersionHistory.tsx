@@ -2,6 +2,8 @@ import type { VersionSummary } from '../api/types';
 import { ORIGIN_ICON, ORIGIN_TEXT, hardChecksText } from './labels';
 
 const when = (iso: string) => new Date(iso).toLocaleString('en-AU', { dateStyle: 'medium', timeStyle: 'short' });
+// Labels made before they were kept on one line may hold line breaks.
+const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 function Verdict({ passed }: { passed: boolean | null }) {
   if (passed === true) {
@@ -49,7 +51,9 @@ export function VersionHistory(props: {
             </span>
             <span className="version-bottom">
               {v.instruction ? (
-                <span className="version-note">“{v.instruction}”</span>
+                <span className="version-note" title={v.instruction}>
+                  “{oneLine(v.label)}”
+                </span>
               ) : v.label !== ORIGIN_TEXT[v.origin] && v.label !== 'Generated' && v.label !== 'Edited' ? (
                 <span className="version-note">{v.label}</span>
               ) : null}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError, downloadUrl, fetchJobDetail, fetchVersions, generate, restoreVersion, saveCompanyNotes, saveEdit, setStatus } from '../api/client';
 import type { CheckResult, JobDetail, JobStatus, TailoredCv, TailoredLetter, VersionSummary } from '../api/types';
 import { STATUSES, statusLabel } from '../jobs/labels';
@@ -10,6 +10,7 @@ import { CvPreview, LetterPreview } from './DocumentPreview';
 import { BaseDiff } from './BaseDiff';
 import { highlightKeywords } from './highlightKeywords';
 import { checkLabel, progressText } from './labels';
+import { editedPaths } from './manualEdits';
 import { ReasonsPanel } from './ReasonsPanel';
 import { RegeneratePanel } from './RegeneratePanel';
 import { SHORTCUTS, useShortcuts } from './useShortcuts';
@@ -24,6 +25,8 @@ function generateErrorText(err: unknown): string {
     if (err.code === 'generation_in_progress') return 'Already running. Progress will show here.';
     if (err.code === 'job_not_ready') return "This job hasn't been read yet. Try again in a moment.";
     if (err.code === 'base_cv_not_ready') return "Your base CV isn't ready. Check My documents.";
+    if (err.code === 'version_not_found') return 'The version to regenerate from no longer exists. Choose Generate again.';
+    if (err.code === 'bad_instruction' || err.code === 'bad_request') return 'The instruction must be 1 to 1000 characters.';
   }
   return "Couldn't start writing the documents. Try again.";
 }
@@ -40,7 +43,27 @@ function saveErrorText(err: unknown): string {
   return "Couldn't save your edit. Try again.";
 }
 
-type Notice = { kind: 'saved'; versionNo: number; hard: CheckResult[] } | { kind: 'restored'; from: number; to: number };
+type Notice = { kind: 'saved'; versionNo: number; hard: CheckResult[]; review: CheckResult[] } | { kind: 'restored'; from: number; to: number };
+
+// The version the editor was opened on. The editor and Save stay on it even when a run finishes meanwhile.
+type EditBase = { id: string; versionNo: number; cv: TailoredCv; coverLetter: TailoredLetter };
+
+const NEWER_WHILE_EDITING =
+  'A new version finished while you were editing. Saving adds your edit as the newest version; the other one stays in the history.';
+const GENERATE_AGAIN_HINT = 'Writes new documents from your base CV. Your edits are not carried over (they stay in the history).';
+const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
+
+function CheckLines({ checks }: { checks: CheckResult[] }) {
+  return (
+    <ul className="check-list">
+      {checks.map((c, i) => (
+        <li key={i}>
+          <strong>{checkLabel(c.code)}</strong> ({c.doc === 'cv' ? 'CV' : 'Cover letter'}) {c.detail}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function JobAd({ text, keywords }: { text: string | null; keywords: string[] }) {
   const segments = useMemo(() => highlightKeywords(text ?? '', keywords), [text, keywords]);
@@ -64,7 +87,12 @@ export function JobPage() {
   const [notes, setNotes] = useState('');
   const [savedNotes, setSavedNotes] = useState('');
   const [notesState, setNotesState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [editing, setEditing] = useState(false);
+  const [editBase, setEditBase] = useState<EditBase | null>(null);
+  const editing = editBase !== null;
+  const [dirty, setDirty] = useState(false);
+  // Where an in-app link would take him while the editor holds unsaved edits (asks first).
+  const [leaveTo, setLeaveTo] = useState<string | null>(null);
+  const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -117,11 +145,49 @@ export function JobPage() {
     firstLoad.current = true;
     viewIdRef.current = null;
     setViewId(null);
-    setEditing(false);
+    setEditBase(null);
     setNotice(null);
     setDetail(null);
     void load();
   }, [load]);
+
+  // Unsaved edits: reload, closing the tab and in-app links ask first.
+  const guard = editing && dirty;
+  useEffect(() => {
+    if (!guard) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+    function onClick(e: MouseEvent) {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
+      if (!(a instanceof HTMLAnchorElement) || a.target === '_blank' || a.hasAttribute('download')) return;
+      const url = new URL(a.href, window.location.href);
+      // Downloads and other sites do not leave the editor.
+      if (url.origin !== window.location.origin || url.pathname.startsWith('/api/')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setLeaveTo(url.pathname + url.search + url.hash);
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('click', onClick, true);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('click', onClick, true);
+    };
+  }, [guard]);
+
+  function closeEditor() {
+    setEditBase(null);
+    setDirty(false);
+  }
+
+  const shown = detail?.version ?? null;
+  const editedSet = useMemo(
+    () => (shown ? editedPaths(shown.manualEdits, { cv: shown.cv, coverLetter: shown.coverLetter }) : new Set<string>()),
+    [shown],
+  );
 
   // The history list follows the number of versions (a save, a restore or a finished run changes it).
   const versionCount = detail?.versions ?? 0;
@@ -169,22 +235,31 @@ export function JobPage() {
   }
 
   function startEdit() {
+    const v = detail?.version;
+    if (!v) return;
     setNotice(null);
     setEditError(null);
-    setEditing(true);
+    setDirty(false);
+    setEditBase({ id: v.id, versionNo: v.versionNo, cv: v.cv, coverLetter: v.coverLetter });
   }
 
   async function onSaveEdit(cv: TailoredCv, letter: TailoredLetter) {
-    if (!detail?.version) return;
+    if (!editBase) return;
     setSaving(true);
     setEditError(null);
     try {
-      const out = await saveEdit(id, detail.version.id, cv, letter);
+      // Always the version the editor was opened on, even if a newer one finished meanwhile.
+      const out = await saveEdit(id, editBase.id, cv, letter);
       if (!mounted.current) return;
       viewIdRef.current = null;
       setViewId(null);
-      setEditing(false);
-      setNotice({ kind: 'saved', versionNo: out.versionNo, hard: out.checks.filter((c) => c.severity === 'hard') });
+      closeEditor();
+      setNotice({
+        kind: 'saved',
+        versionNo: out.versionNo,
+        hard: out.checks.filter((c) => c.severity === 'hard'),
+        review: out.checks.filter((c) => c.severity === 'review'),
+      });
       await load();
     } catch (err) {
       if (mounted.current) setEditError(saveErrorText(err));
@@ -238,11 +313,12 @@ export function JobPage() {
     !!detail && !editing && !confirmRestore,
   );
 
-  async function onGenerate() {
+  async function onGenerate(again?: { instruction: string; fromVersionId: string }) {
     setGenError(null);
     setStarting(true);
     try {
-      await generate(id);
+      if (again) await generate(id, again);
+      else await generate(id);
     } catch (err) {
       if (mounted.current) setGenError(generateErrorText(err));
     }
@@ -303,6 +379,10 @@ export function JobPage() {
   const failed = generation?.status === 'failed' && !running;
   const dlVersion = version && !version.isCurrent ? version.id : undefined;
   const reviewedNo = version?.review.reviewedVersionNo;
+  // A failed regenerate is tried again as the same regenerate (same instruction, same starting version).
+  const retryRegen =
+    generation?.instruction && generation.fromVersionId ? { instruction: generation.instruction, fromVersionId: generation.fromVersionId } : undefined;
+  const newerWhileEditing = editBase && version && version.isCurrent && version.id !== editBase.id ? NEWER_WHILE_EDITING : null;
 
   return (
     <main className="page job-page">
@@ -367,9 +447,23 @@ export function JobPage() {
             )}
           </p>
         ) : (
-          <button type="button" className="btn btn-primary" disabled={starting} onClick={() => void onGenerate()}>
-            {version ? 'Generate again' : 'Generate'}
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={starting}
+              title={version ? GENERATE_AGAIN_HINT : undefined}
+              aria-describedby={version ? 'generate-again-hint' : undefined}
+              onClick={() => void onGenerate()}
+            >
+              {version ? 'Generate again' : 'Generate'}
+            </button>
+            {version && (
+              <p id="generate-again-hint" className="muted gen-hint">
+                {GENERATE_AGAIN_HINT}
+              </p>
+            )}
+          </>
         )}
         {genError && (
           <p className="attention-text" role="alert">
@@ -398,28 +492,31 @@ export function JobPage() {
         </ul>
       )}
 
-      {notice?.kind === 'saved' && notice.hard.length > 0 && (
+      {notice?.kind === 'saved' && (notice.hard.length > 0 || notice.review.length > 0) && (
         <section className="panel attention" role="alert" aria-label="Edit saved">
           <h3>
             <span className="icon-warn" aria-hidden="true">
               ⚠
             </span>
-            Your edit broke {notice.hard.length} {notice.hard.length === 1 ? 'rule' : 'rules'}
+            {notice.hard.length > 0 ? `Your edit broke ${notice.hard.length} ${notice.hard.length === 1 ? 'rule' : 'rules'}` : 'Needs a look'}
           </h3>
-          <p>Saved as version {notice.versionNo}. Nothing was lost, but fix these before you apply.</p>
-          <ul className="check-list">
-            {notice.hard.map((c, i) => (
-              <li key={i}>
-                <strong>{checkLabel(c.code)}</strong> ({c.doc === 'cv' ? 'CV' : 'Cover letter'}) {c.detail}
-              </li>
-            ))}
-          </ul>
+          <p>
+            Saved as version {notice.versionNo}. Nothing was lost, but {notice.hard.length > 0 ? 'fix these' : 'check these'} before you apply.
+          </p>
+          {notice.hard.length > 0 && <CheckLines checks={notice.hard} />}
+          {notice.review.length > 0 && (
+            <>
+              {notice.hard.length > 0 && <h4>Needs a look</h4>}
+              <p>The reviewer did not see your edit. Check these yourself.</p>
+              <CheckLines checks={notice.review} />
+            </>
+          )}
           <button type="button" className="btn btn-small" onClick={() => setNotice(null)}>
             Dismiss
           </button>
         </section>
       )}
-      {notice?.kind === 'saved' && notice.hard.length === 0 && (
+      {notice?.kind === 'saved' && notice.hard.length === 0 && notice.review.length === 0 && (
         <p className="muted" role="status" aria-label="Edit saved">
           <span aria-hidden="true">✓ </span>Saved as version {notice.versionNo}. No rules broken.
         </p>
@@ -438,7 +535,8 @@ export function JobPage() {
             </span>{' '}
             {generation.error ?? 'Something went wrong while generating. Try again.'}
           </p>
-          <button type="button" className="btn" disabled={starting} onClick={() => void onGenerate()}>
+          {retryRegen && <p className="muted">Try again repeats your regenerate: “{oneLine(retryRegen.instruction)}”</p>}
+          <button type="button" className="btn" disabled={starting} onClick={() => void onGenerate(retryRegen)}>
             Try again
           </button>
         </div>
@@ -496,15 +594,19 @@ export function JobPage() {
         {version ? (
           <section className="panel" aria-label="Generated documents">
             {editing ? (
-              <DocumentEditor
-                key={version.id}
-                cv={version.cv}
-                letter={version.coverLetter}
-                saving={saving}
-                error={editError}
-                onSave={(cv, letter) => void onSaveEdit(cv, letter)}
-                onCancel={() => setEditing(false)}
-              />
+              editBase && (
+                <DocumentEditor
+                  key={editBase.id}
+                  cv={editBase.cv}
+                  letter={editBase.coverLetter}
+                  saving={saving}
+                  error={editError}
+                  notice={newerWhileEditing}
+                  onDirtyChange={setDirty}
+                  onSave={(cv, letter) => void onSaveEdit(cv, letter)}
+                  onCancel={closeEditor}
+                />
+              )
             ) : (
               <>
             <div className="doc-head">
@@ -551,9 +653,9 @@ export function JobPage() {
             </div>
             <div role="tabpanel" id="panel-doc" aria-labelledby={`tab-${tab}`}>
               {tab === 'cv' ? (
-                <CvPreview cv={version.cv} />
+                <CvPreview cv={version.cv} edited={editedSet} />
               ) : tab === 'letter' ? (
-                <LetterPreview cv={version.cv} letter={version.coverLetter} />
+                <LetterPreview cv={version.cv} letter={version.coverLetter} edited={editedSet} />
               ) : (
                 <BaseDiff baseCv={detail.baseCv} cv={version.cv} reasons={version.reasons} />
               )}
@@ -564,7 +666,12 @@ export function JobPage() {
               fromVersionId={version.id}
               running={!!running}
               inputRef={regenRef}
-              onStarted={() => void load()}
+              onStarted={() => {
+                // The new version will be the current one: show it when it is saved.
+                viewIdRef.current = null;
+                setViewId(null);
+                void load();
+              }}
             />
               </>
             )}
@@ -618,6 +725,20 @@ export function JobPage() {
       </section>
 
       {version && <ReasonsPanel job={job} version={version} />}
+      {leaveTo !== null && (
+        <ConfirmDialog
+          message="You have unsaved edits — leave anyway?"
+          confirmLabel="Leave"
+          cancelLabel="Keep editing"
+          onConfirm={() => {
+            const to = leaveTo;
+            setLeaveTo(null);
+            closeEditor();
+            navigate(to);
+          }}
+          onCancel={() => setLeaveTo(null)}
+        />
+      )}
       {confirmRestore && version && (
         <ConfirmDialog
           message={`Restore version ${version.versionNo}? This adds a new version with the same content. Nothing is lost.`}

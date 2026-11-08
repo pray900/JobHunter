@@ -26,7 +26,17 @@ describe('RegeneratePanel', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
     await waitFor(() => expect(m.generate).toHaveBeenCalledWith('j1', { instruction: 'Lead with Apex', fromVersionId: 'v3' }));
     expect(onStarted).toHaveBeenCalled();
-    expect(screen.getByText(/never add facts that aren't in your base CV/)).toBeInTheDocument();
+    expect(screen.getByText("Claude keeps your edits exactly as you wrote them. It will never add facts that aren't in your base CV.")).toBeInTheDocument();
+  });
+
+  test('M9: the counter counts characters of the trimmed text, as the server does', () => {
+    setup();
+    fireEvent.change(screen.getByLabelText(/instruction/i), { target: { value: '   hi   ' } });
+    expect(screen.getByText('2 / 1000')).toBeInTheDocument();
+    // An emoji is one character, not two.
+    fireEvent.change(screen.getByLabelText(/instruction/i), { target: { value: '😀'.repeat(1000) } });
+    expect(screen.getByText('1000 / 1000')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Regenerate' })).toBeEnabled();
   });
 
   test('instruction over 1000 chars is blocked', () => {

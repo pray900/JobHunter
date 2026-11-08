@@ -30,8 +30,10 @@ export function RegeneratePanel({ jobId, fromVersionId, running, onStarted, inpu
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const trimmed = text.trim();
-  const tooLong = text.length > MAX || trimmed.length > MAX;
-  const valid = trimmed.length >= 1 && !tooLong;
+  // Counted as the server counts: characters (an emoji is one) of the trimmed text.
+  const count = Array.from(trimmed).length;
+  const tooLong = count > MAX;
+  const valid = count >= 1 && !tooLong;
   const off = running || busy;
 
   async function submit() {
@@ -65,12 +67,12 @@ export function RegeneratePanel({ jobId, fromVersionId, running, onStarted, inpu
         onChange={(e) => setText(e.target.value)}
       />
       <p id="regen-hint" className="muted regen-hint">
-        Claude keeps your edits unless you ask otherwise. It will never add facts that aren't in your base CV.
+        Claude keeps your edits exactly as you wrote them. It will never add facts that aren't in your base CV.
       </p>
       <div className="regen-bar">
         <span id="regen-count" className={tooLong ? 'attention-text' : 'muted'}>
           {tooLong && <span aria-hidden="true">⚠ </span>}
-          {text.length} / {MAX}
+          {count} / {MAX}
           {tooLong ? ' – too long, shorten it' : ''}
         </span>
         <button type="button" className="btn btn-primary" disabled={!valid || off} aria-keyshortcuts="G" onClick={() => void submit()}>

@@ -50,6 +50,26 @@ _Avoid_: Custom CV, generated CV, new CV
 The look of a tailored CV or cover letter (font, layout, section order, length and content rules), separate from its words.
 _Avoid_: Style, format, theme
 
+**Version**:
+One saved pair of a tailored CV and cover letter for a job; versions are only ever added, never changed or deleted, and the current version is the one with the highest number.
+_Avoid_: Draft, revision, copy
+
+**Origin**:
+Where a version came from: Generated, Regenerated (with an instruction), Edited (by Prayush) or Restored (a copy of an older version).
+_Avoid_: Source, type
+
+**Manual edit**:
+A field Prayush changed by hand in a version, kept by its text; on a regenerate it is locked and copied exactly.
+_Avoid_: Override, user change
+
+**Instruction**:
+Prayush's own request for a regenerate, such as "Make the summary shorter"; it never overrides the honesty rules outside his manual edits.
+_Avoid_: Prompt, command
+
+**Regenerate**:
+Asking Claude for a new version of the version on screen, following an instruction and keeping the manual edits.
+_Avoid_: Rewrite, Generate again (which starts from the base CV)
+
 ## Judgement
 
 **Match score**:

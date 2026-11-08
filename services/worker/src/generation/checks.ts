@@ -33,7 +33,10 @@ export type CheckCode =
   | 'work_rights_dropped'
   | 'link_unreachable'
   // Not produced by runChecks: the Generate workflow records it when the worker rejects the writer's documents.
-  | 'invalid_document';
+  | 'invalid_document'
+  // Not produced by runChecks: the Generate workflow records it when a regenerate's writer changed or left out
+  // one of Prayush's locked manual edits.
+  | 'manual_edit_changed';
 
 export interface CheckResult {
   code: CheckCode;

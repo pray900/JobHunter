@@ -73,6 +73,9 @@ export interface DocumentsResponse {
 export interface Generation extends GenerationSummary {
   attempts: number;
   error: string | null;
+  // What the run was asked to do: both null for a plain Generate, both set for a Regenerate.
+  instruction?: string | null;
+  fromVersionId?: string | null;
 }
 
 export interface JobDetailJob {
@@ -134,7 +137,8 @@ export type CheckCode =
   | 'missing_work_rights'
   | 'work_rights_dropped'
   | 'link_unreachable'
-  | 'invalid_document';
+  | 'invalid_document'
+  | 'manual_edit_changed';
 
 export type ReviewItemId =
   | 'relevance'
@@ -158,6 +162,8 @@ export interface CheckResult {
   doc: 'cv' | 'cover_letter';
   detail: string;
   where?: string;
+  // Inside one of Prayush's locked manual edits (a regenerate kept it as he asked).
+  locked?: boolean;
 }
 
 export interface Stretch {
@@ -195,14 +201,21 @@ export interface VersionReview {
 
 export type VersionOrigin = 'generated' | 'regenerated' | 'edited' | 'restored';
 
+// One of Prayush's manual edits: where it is (a dotted path such as cv.experience[0].bullets[2]) and what he
+// wrote there (null: a field he emptied). Kept by text: it moves with its text.
+export interface ManualEdit {
+  path: string;
+  text: string | null;
+}
+
 export interface DocumentVersion {
   id: string;
   versionNo: number;
   label: string;
   origin: VersionOrigin;
   parentVersionId: string | null;
-  // Dotted paths of the fields Prayush changed by hand (empty when never edited).
-  manualEdits: string[];
+  // The fields Prayush changed by hand, by text (empty when never edited).
+  manualEdits: ManualEdit[];
   isCurrent: boolean;
   createdAt: string;
   templateId: string;

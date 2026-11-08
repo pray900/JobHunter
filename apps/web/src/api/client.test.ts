@@ -237,3 +237,34 @@ test('restoreVersion posts the version id', async () => {
 test('downloadUrl can name a version', () => {
   expect(downloadUrl('j1', 'cv', 'docx', 'v 1')).toBe('/api/jobs/download?id=j1&doc=cv&format=docx&versionId=v%201');
 });
+
+test('detail: the run says what it was asked to do, so Try again can repeat it', async () => {
+  const generation = { status: 'failed', stage: 'writing', round: 1, attempts: 3, error: null, instruction: 'Shorter', fromVersionId: 'v1' };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, generation })));
+  expect((await fetchJobDetail('j1')).generation).toEqual(generation);
+  for (const bad of [{ ...generation, instruction: 5 }, { ...generation, fromVersionId: {} }]) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, generation: bad })));
+    await expect(fetchJobDetail('j1')).rejects.toMatchObject({ status: 502 });
+  }
+});
+
+test('detail: manual edits are { path, text }; an old path-only list is read as the text at those paths', async () => {
+  const manualEdits = [{ path: 'cv.summary', text: 'Mine.' }, { path: 'cv.contact.email', text: null }];
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, version: { ...baseVersion, manualEdits } })));
+  expect((await fetchJobDetail('j1')).version!.manualEdits).toEqual(manualEdits);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, version: { ...baseVersion, manualEdits: ['cv.summary', 'cv.nope[3]'] } })));
+  expect((await fetchJobDetail('j1')).version!.manualEdits).toEqual([{ path: 'cv.summary', text: baseVersion.cv.summary }]);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, version: { ...baseVersion, manualEdits: [{ path: 3, text: 'x' }] } })));
+  await expect(fetchJobDetail('j1')).rejects.toMatchObject({ status: 502 });
+});
+
+test('detail: a check can be marked as inside a locked edit, and manual_edit_changed is a known code', async () => {
+  const checks = [
+    { code: 'unknown_fact', severity: 'hard', doc: 'cv', where: 'cv.summary', detail: 'x', locked: true },
+    { code: 'manual_edit_changed', severity: 'hard', doc: 'cv', where: 'cv.summary', detail: 'y' },
+  ];
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, version: { ...baseVersion, checks } })));
+  expect((await fetchJobDetail('j1')).version!.checks).toEqual(checks);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, version: { ...baseVersion, checks: [{ ...checks[0], locked: 'yes' }] } })));
+  await expect(fetchJobDetail('j1')).rejects.toMatchObject({ status: 502 });
+});

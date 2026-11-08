@@ -1,4 +1,5 @@
-import type { JobDetail, VersionSummary } from './types';
+import { valueAt } from '../job/manualEdits';
+import type { JobDetail, ManualEdit, VersionSummary } from './types';
 
 // Runtime shape checks for GET /api/jobs/detail. The page reads every field it renders without
 // guarding, so anything that does not match is refused here (the client turns null into a 502).
@@ -19,6 +20,7 @@ const CHECK_CODES = [
   'cv_pages', 'letter_pages', 'placeholder', 'company_leakage', 'title_leakage', 'banned_phrase', 'us_spelling',
   'tech_casing', 'unknown_fact', 'keyword_not_found', 'link_invalid', 'render_text', 'unmatched_skill',
   'possible_misspelling', 'missing_work_rights', 'work_rights_dropped', 'link_unreachable', 'invalid_document',
+  'manual_edit_changed',
 ];
 const ORIGINS = ['generated', 'regenerated', 'edited', 'restored'];
 const isOrigin = oneOf(ORIGINS);
@@ -50,7 +52,14 @@ function isJob(j: unknown): boolean {
 function isGeneration(g: unknown): boolean {
   return (
     g === null ||
-    (isObj(g) && oneOf(RUN_STATUSES)(g.status) && oneOf(RUN_STAGES)(g.stage) && isNum(g.round) && isNum(g.attempts) && strOrNull(g.error))
+    (isObj(g) &&
+      oneOf(RUN_STATUSES)(g.status) &&
+      oneOf(RUN_STAGES)(g.stage) &&
+      isNum(g.round) &&
+      isNum(g.attempts) &&
+      strOrNull(g.error) &&
+      (g.instruction === undefined || strOrNull(g.instruction)) &&
+      (g.fromVersionId === undefined || strOrNull(g.fromVersionId)))
   );
 }
 
@@ -60,7 +69,8 @@ export const isCheck = (c: unknown): boolean =>
   oneOf(['hard', 'warning', 'review'])(c.severity) &&
   oneOf(['cv', 'cover_letter'])(c.doc) &&
   isStr(c.detail) &&
-  (c.where === undefined || isStr(c.where));
+  (c.where === undefined || isStr(c.where)) &&
+  (c.locked === undefined || typeof c.locked === 'boolean');
 
 function isUnresolved(u: unknown): boolean {
   if (!isObj(u)) return false;
@@ -131,7 +141,7 @@ function isVersion(v: unknown): boolean {
     isStr(v.label) &&
     isOrigin(v.origin) &&
     strOrNull(v.parentVersionId) &&
-    isStrArr(v.manualEdits) &&
+    arrOf(v.manualEdits, (e): e is unknown => isStr(e) || (isObj(e) && isStr(e.path) && strOrNull(e.text))) &&
     typeof v.isCurrent === 'boolean' &&
     isStr(v.createdAt) &&
     isStr(v.templateId) &&
@@ -186,5 +196,22 @@ export function parseJobDetail(body: unknown): JobDetail | null {
   ) {
     return null;
   }
-  return body as unknown as JobDetail;
+  const detail = body as unknown as JobDetail;
+  if (detail.version) detail.version.manualEdits = readManualEdits(detail.version.manualEdits as unknown[], detail.version);
+  return detail;
+}
+
+// An old version's manual edits were paths only: read as the text at that path now (a path that is gone is dropped).
+function readManualEdits(raw: unknown[], v: { cv: unknown; coverLetter: unknown }): ManualEdit[] {
+  const docs = { cv: v.cv, coverLetter: v.coverLetter };
+  const out: ManualEdit[] = [];
+  for (const e of raw) {
+    if (isStr(e)) {
+      const at = valueAt(docs, e);
+      if (at.found && (isStr(at.value) || at.value === null)) out.push({ path: e, text: at.value });
+    } else if (isObj(e)) {
+      out.push({ path: e.path as string, text: e.text as string | null });
+    }
+  }
+  return out;
 }
