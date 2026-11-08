@@ -140,3 +140,7 @@
 - [ ] **Step 3:** Regenerate from that edited version with one instruction (e.g. "Make the summary shorter") (≈ US$0.30–0.90); confirm the manual edit is kept, the instruction applied, version labelled with it, cost logged.
 - [ ] **Step 4:** Restore the first version; download its PDF; check the Diff vs base CV tab reads correctly.
 - [ ] **Step 5:** Record results and cost in the ledger; report anything that reads wrong to Prayush before merging.
+
+### Amendment (Prayush, 2026-11-08, after the Task 2 review)
+
+- **Base CV replaced in place:** `baseCv` in detail is the version's base CV only while that row still has the same content (`content_hash = version.base_cv_hash`). If the row was deleted or its content changed, `baseCv` is `null` and the Diff tab shows "This version was made from an earlier base CV that's no longer stored" instead of a diff.
