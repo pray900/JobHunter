@@ -6,8 +6,12 @@ import type {
   JobDetail,
   JobStatus,
   JobSummary,
+  SaveEditResult,
+  TailoredCv,
+  TailoredLetter,
+  VersionSummary,
 } from './types';
-import { parseJobDetail } from './parseJobDetail';
+import { isCheck, parseJobDetail, parseVersionList } from './parseJobDetail';
 
 export class ApiError extends Error {
   constructor(
@@ -15,6 +19,8 @@ export class ApiError extends Error {
     message: string,
     // The `error` code from the API's `{ error }` body, when there was one.
     public readonly code?: string,
+    // The `path` of an invalid_document answer (e.g. cv.headline).
+    public readonly path?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -27,13 +33,15 @@ const JOBHUNTER_HEADERS = { 'X-JobHunter': '1' };
 
 async function failure(res: Response, message: string): Promise<ApiError> {
   let code: string | undefined;
+  let path: string | undefined;
   try {
-    const body = (await res.json()) as { error?: unknown } | null;
+    const body = (await res.json()) as { error?: unknown; path?: unknown } | null;
     if (body && typeof body.error === 'string') code = body.error;
+    if (body && typeof body.path === 'string') path = body.path;
   } catch {
     // no JSON body
   }
-  return new ApiError(res.status, message, code);
+  return new ApiError(res.status, message, code, path);
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -99,8 +107,9 @@ export async function uploadDocument(kind: DocumentKind, file: File): Promise<{ 
   throw new ApiError(502, `POST ${path} returned an unexpected shape`);
 }
 
-export async function fetchJobDetail(id: string): Promise<JobDetail> {
-  const path = `/api/jobs/detail?id=${encodeURIComponent(id)}`;
+// No versionId = the current version.
+export async function fetchJobDetail(id: string, versionId?: string): Promise<JobDetail> {
+  const path = `/api/jobs/detail?id=${encodeURIComponent(id)}${versionId ? `&versionId=${encodeURIComponent(versionId)}` : ''}`;
   const detail = parseJobDetail(await getJson<unknown>(path));
   if (!detail) throw new ApiError(502, `GET ${path} returned an unexpected shape`);
   return detail;
@@ -142,7 +151,36 @@ export function saveCompanyNotes(id: string, notes: string): Promise<{ notes: st
   });
 }
 
+// Newest first.
+export async function fetchVersions(id: string): Promise<VersionSummary[]> {
+  const path = `/api/jobs/versions?id=${encodeURIComponent(id)}`;
+  const list = parseVersionList(await getJson<unknown>(path));
+  if (!list) throw new ApiError(502, `GET ${path} returned an unexpected shape`);
+  return list;
+}
+
+// Saves the documents as a new "edited" version and answers with the code checks run on it.
+export function saveEdit(id: string, fromVersionId: string, cv: TailoredCv, coverLetter: TailoredLetter): Promise<SaveEditResult> {
+  return postJson(`/api/jobs/versions/edit?id=${encodeURIComponent(id)}`, { fromVersionId, cv, coverLetter }, (b) => {
+    const versionId = field(b, 'versionId');
+    const versionNo = field(b, 'versionNo');
+    const checks = field(b, 'checks');
+    if (typeof versionId !== 'string' || typeof versionNo !== 'number' || !Array.isArray(checks) || !checks.every(isCheck)) return null;
+    return { versionId, versionNo, checks: checks as SaveEditResult['checks'] };
+  });
+}
+
+// Adds a new version that copies an old one.
+export function restoreVersion(id: string, versionId: string): Promise<{ versionId: string; versionNo: number }> {
+  return postJson(`/api/jobs/versions/restore?id=${encodeURIComponent(id)}`, { versionId }, (b) => {
+    const v = field(b, 'versionId');
+    const n = field(b, 'versionNo');
+    return typeof v === 'string' && typeof n === 'number' ? { versionId: v, versionNo: n } : null;
+  });
+}
+
 // A plain link: downloads are GETs, so the browser handles them (no fetch).
-export function downloadUrl(id: string, doc: DownloadDoc, format: DownloadFormat): string {
-  return `/api/jobs/download?id=${encodeURIComponent(id)}&doc=${doc}&format=${format}`;
+export function downloadUrl(id: string, doc: DownloadDoc, format: DownloadFormat, versionId?: string): string {
+  const version = versionId ? `&versionId=${encodeURIComponent(versionId)}` : '';
+  return `/api/jobs/download?id=${encodeURIComponent(id)}&doc=${doc}&format=${format}${version}`;
 }

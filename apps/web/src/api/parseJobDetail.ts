@@ -1,4 +1,4 @@
-import type { JobDetail } from './types';
+import type { JobDetail, VersionSummary } from './types';
 
 // Runtime shape checks for GET /api/jobs/detail. The page reads every field it renders without
 // guarding, so anything that does not match is refused here (the client turns null into a 502).
@@ -20,6 +20,8 @@ const CHECK_CODES = [
   'tech_casing', 'unknown_fact', 'keyword_not_found', 'link_invalid', 'render_text', 'unmatched_skill',
   'possible_misspelling', 'missing_work_rights', 'work_rights_dropped', 'link_unreachable', 'invalid_document',
 ];
+const ORIGINS = ['generated', 'regenerated', 'edited', 'restored'];
+const isOrigin = oneOf(ORIGINS);
 const REVIEW_IDS = [
   'relevance', 'over_tailoring', 'strongest_match_top_third', 'inflated_scope', 'ai_sounding', 'paraphrased_job_ad',
   'keyword_stuffing', 'bullet_rhythm', 'star_form', 'tidiness', 'keyword_coverage_honest', 'reasons_hold_up',
@@ -52,7 +54,7 @@ function isGeneration(g: unknown): boolean {
   );
 }
 
-const isCheck = (c: unknown): boolean =>
+export const isCheck = (c: unknown): boolean =>
   isObj(c) &&
   oneOf(CHECK_CODES)(c.code) &&
   oneOf(['hard', 'warning', 'review'])(c.severity) &&
@@ -127,6 +129,10 @@ function isVersion(v: unknown): boolean {
     isStr(v.id) &&
     isNum(v.versionNo) &&
     isStr(v.label) &&
+    isOrigin(v.origin) &&
+    strOrNull(v.parentVersionId) &&
+    isStrArr(v.manualEdits) &&
+    typeof v.isCurrent === 'boolean' &&
     isStr(v.createdAt) &&
     isStr(v.templateId) &&
     isCv(v.cv) &&
@@ -137,6 +143,7 @@ function isVersion(v: unknown): boolean {
     arrOf(k.missing, (m): m is Obj => isObj(m) && isStr(m.keyword) && isStr(m.why)) &&
     isObj(r) &&
     typeof r.passed === 'boolean' &&
+    (r.reviewedVersionNo === undefined || isNum(r.reviewedVersionNo)) &&
     isNum(r.rounds) &&
     arrOf(r.verdicts, oneOf(['pass', 'fail']) as (x: unknown) => x is string) &&
     arrOf(r.unresolved, (u): u is Obj => isUnresolved(u)) &&
@@ -146,8 +153,37 @@ function isVersion(v: unknown): boolean {
   );
 }
 
+const isBaseCv = (b: unknown): boolean =>
+  b === null || (isObj(b) && isObj(b.structured) && strOrNull(b.sourceRef) && typeof b.isCurrentBase === 'boolean');
+
+export function parseVersionList(body: unknown): VersionSummary[] | null {
+  if (!isObj(body) || !Array.isArray(body.versions)) return null;
+  const ok = body.versions.every(
+    (v) =>
+      isObj(v) &&
+      isStr(v.id) &&
+      isNum(v.versionNo) &&
+      isStr(v.label) &&
+      isOrigin(v.origin) &&
+      isStr(v.createdAt) &&
+      strOrNull(v.instruction) &&
+      (v.passed === null || typeof v.passed === 'boolean') &&
+      isNum(v.hardChecks) &&
+      typeof v.manualEdit === 'boolean',
+  );
+  return ok ? (body.versions as VersionSummary[]) : null;
+}
+
 export function parseJobDetail(body: unknown): JobDetail | null {
-  if (!isObj(body) || !isJob(body.job) || !isGeneration(body.generation) || !('version' in body) || !isVersion(body.version)) {
+  if (
+    !isObj(body) ||
+    !isJob(body.job) ||
+    !isGeneration(body.generation) ||
+    !('version' in body) ||
+    !isVersion(body.version) ||
+    !isNum(body.versions) ||
+    !isBaseCv(body.baseCv)
+  ) {
     return null;
   }
   return body as unknown as JobDetail;

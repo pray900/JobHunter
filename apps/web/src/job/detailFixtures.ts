@@ -4,6 +4,10 @@ export const baseVersion: DocumentVersion = {
   id: 'v1',
   versionNo: 1,
   label: 'Generated',
+  origin: 'generated',
+  parentVersionId: null,
+  manualEdits: [],
+  isCurrent: true,
   createdAt: '2026-11-07T01:00:00.000Z',
   templateId: 'standard-ats',
   cv: {
@@ -73,4 +77,6 @@ export const baseDetail: JobDetail = {
   },
   generation: { status: 'done', stage: 'saving', round: 2, attempts: 1, error: null },
   version: baseVersion,
+  versions: 1,
+  baseCv: null,
 };

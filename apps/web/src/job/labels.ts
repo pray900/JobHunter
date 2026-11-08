@@ -1,4 +1,4 @@
-import type { CheckCode, ReviewItemId } from '../api/types';
+import type { CheckCode, ReviewItemId, VersionOrigin } from '../api/types';
 
 const CHECK_LABELS: Record<CheckCode, string> = {
   cv_pages: 'CV is longer than 1 page',
@@ -55,4 +55,22 @@ export const STAGE_TEXT = {
 // "Writing… round 2"; the queue has no round yet.
 export function progressText(stage: keyof typeof STAGE_TEXT, round: number): string {
   return stage === 'queued' || round < 1 ? STAGE_TEXT[stage] : `${STAGE_TEXT[stage]} round ${round}`;
+}
+
+// Where a version came from. The icon is decoration; the text always shows.
+export const ORIGIN_TEXT: Record<VersionOrigin, string> = {
+  generated: 'Generated',
+  regenerated: 'Regenerated',
+  edited: 'Edited by you',
+  restored: 'Restored',
+};
+export const ORIGIN_ICON: Record<VersionOrigin, string> = {
+  generated: '✦',
+  regenerated: '↻',
+  edited: '✎',
+  restored: '⟲',
+};
+
+export function hardChecksText(n: number): string {
+  return n === 1 ? '1 hard check' : `${n} hard checks`;
 }

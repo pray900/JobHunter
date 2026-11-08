@@ -1,9 +1,9 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import * as client from '../api/client';
-import type { JobDetail } from '../api/types';
+import type { JobDetail, VersionSummary } from '../api/types';
 import { baseDetail, baseVersion } from './detailFixtures';
 import { JobPage } from './JobPage';
 
@@ -15,6 +15,9 @@ vi.mock('../api/client', async () => {
     generate: vi.fn(),
     setStatus: vi.fn(),
     saveCompanyNotes: vi.fn(),
+    fetchVersions: vi.fn(),
+    saveEdit: vi.fn(),
+    restoreVersion: vi.fn(),
     downloadUrl: actual.downloadUrl,
   };
 });
@@ -36,10 +39,25 @@ const running = (stage: 'queued' | 'writing' | 'reviewing', round: number, statu
   generation: { status, stage, round, attempts: 1, error: null },
 });
 
+const summary = (n: number, over: Partial<VersionSummary> = {}): VersionSummary => ({
+  id: `v${n}`,
+  versionNo: n,
+  label: 'Generated',
+  origin: 'generated',
+  createdAt: '2026-11-07T01:00:00.000Z',
+  instruction: null,
+  passed: true,
+  hardChecks: 0,
+  manualEdit: false,
+  ...over,
+});
+
 beforeEach(() => {
   m.fetchJobDetail.mockResolvedValue(baseDetail);
+  m.fetchVersions.mockResolvedValue([summary(1)]);
 });
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   vi.resetAllMocks();
 });

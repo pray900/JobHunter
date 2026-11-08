@@ -186,15 +186,24 @@ export type UnresolvedItem =
 
 export interface VersionReview {
   passed: boolean;
+  // Set on edited versions: the version whose review this is (the reviewer is not re-run on edits).
+  reviewedVersionNo?: number;
   rounds: number;
   verdicts: ('pass' | 'fail')[];
   unresolved: UnresolvedItem[];
 }
 
+export type VersionOrigin = 'generated' | 'regenerated' | 'edited' | 'restored';
+
 export interface DocumentVersion {
   id: string;
   versionNo: number;
   label: string;
+  origin: VersionOrigin;
+  parentVersionId: string | null;
+  // Dotted paths of the fields Prayush changed by hand (empty when never edited).
+  manualEdits: string[];
+  isCurrent: boolean;
   createdAt: string;
   templateId: string;
   cv: TailoredCv;
@@ -207,10 +216,39 @@ export interface DocumentVersion {
   costUsd: number;
 }
 
+export interface VersionBaseCv {
+  structured: TailoredCv | Record<string, unknown>;
+  sourceRef: string | null;
+  isCurrentBase: boolean;
+}
+
 export interface JobDetail {
   job: JobDetailJob;
   generation: Generation | null;
   version: DocumentVersion | null;
+  // How many versions the job has.
+  versions: number;
+  // The base CV the shown version was made from, or null when it is gone or has changed.
+  baseCv: VersionBaseCv | null;
+}
+
+export interface VersionSummary {
+  id: string;
+  versionNo: number;
+  label: string;
+  origin: VersionOrigin;
+  createdAt: string;
+  instruction: string | null;
+  // null = not reviewed (an edited version: the verdict belongs to an earlier version).
+  passed: boolean | null;
+  hardChecks: number;
+  manualEdit: boolean;
+}
+
+export interface SaveEditResult {
+  versionId: string;
+  versionNo: number;
+  checks: CheckResult[];
 }
 
 export type DownloadDoc = 'cv' | 'cover_letter';

@@ -1,7 +1,20 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import * as client from './client';
-import { ApiError, downloadUrl, fetchDocuments, fetchJobDetail, fetchJobs, generate, saveCompanyNotes, setStatus, uploadDocument } from './client';
-import { baseDetail } from '../job/detailFixtures';
+import {
+  ApiError,
+  downloadUrl,
+  fetchDocuments,
+  fetchJobDetail,
+  fetchJobs,
+  fetchVersions,
+  generate,
+  restoreVersion,
+  saveCompanyNotes,
+  saveEdit,
+  setStatus,
+  uploadDocument,
+} from './client';
+import { baseDetail, baseVersion } from '../job/detailFixtures';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -134,4 +147,93 @@ test('setStatus rejects a malformed answer', async () => {
 
 test('downloadUrl builds a plain GET link', () => {
   expect(downloadUrl('a b', 'cover_letter', 'pdf')).toBe('/api/jobs/download?id=a%20b&doc=cover_letter&format=pdf');
+});
+
+const vSummary = {
+  id: 'v2',
+  versionNo: 2,
+  label: 'Edited',
+  origin: 'edited',
+  createdAt: '2026-11-07T02:00:00.000Z',
+  instruction: null,
+  passed: null,
+  hardChecks: 1,
+  manualEdit: true,
+};
+
+test('client validates versions response', async () => {
+  const f = vi.fn().mockResolvedValue(ok({ versions: [vSummary, { ...vSummary, id: 'v1', versionNo: 1, passed: true, origin: 'generated' }] }));
+  vi.stubGlobal('fetch', f);
+  const list = await fetchVersions('j 1');
+  expect(list.map((v) => v.passed)).toEqual([null, true]);
+  expect(f.mock.calls[0][0]).toBe('/api/jobs/versions?id=j%201');
+  const bad = [
+    {},
+    { versions: 'x' },
+    { versions: [{ ...vSummary, origin: 'cloned' }] },
+    { versions: [{ ...vSummary, passed: 'yes' }] },
+    { versions: [{ ...vSummary, hardChecks: 'many' }] },
+    { versions: [{ ...vSummary, id: 5 }] },
+  ];
+  for (const b of bad) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok(b)));
+    await expect(fetchVersions('j1')).rejects.toMatchObject({ name: 'ApiError', status: 502 });
+  }
+});
+
+test('fetchJobDetail can ask for one version and checks the version fields', async () => {
+  const f = vi.fn().mockResolvedValue(ok(baseDetail));
+  vi.stubGlobal('fetch', f);
+  await fetchJobDetail('j1', 'v 1');
+  expect(f.mock.calls[0][0]).toBe('/api/jobs/detail?id=j1&versionId=v%201');
+  for (const version of [
+    { ...baseVersion, origin: 'cloned' },
+    { ...baseVersion, manualEdits: 'x' },
+    { ...baseVersion, isCurrent: 'yes' },
+  ]) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, version })));
+    await expect(fetchJobDetail('j1')).rejects.toMatchObject({ status: 502 });
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, versions: 'x' })));
+  await expect(fetchJobDetail('j1')).rejects.toMatchObject({ status: 502 });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, baseCv: { structured: 1 } })));
+  await expect(fetchJobDetail('j1')).rejects.toMatchObject({ status: 502 });
+});
+
+test('saveEdit posts the documents and returns the new version with its checks', async () => {
+  const checks = [{ code: 'unknown_fact', severity: 'hard', doc: 'cv', detail: '5 years' }];
+  const f = vi.fn().mockResolvedValue(ok({ versionId: 'v3', versionNo: 3, checks }, 201));
+  vi.stubGlobal('fetch', f);
+  const out = await saveEdit('j1', 'v2', baseVersion.cv, baseVersion.coverLetter);
+  expect(out).toEqual({ versionId: 'v3', versionNo: 3, checks });
+  const [url, init] = f.mock.calls[0];
+  expect(url).toBe('/api/jobs/versions/edit?id=j1');
+  expect(init.method).toBe('POST');
+  expect(init.headers['X-JobHunter']).toBe('1');
+  expect(JSON.parse(init.body)).toEqual({ fromVersionId: 'v2', cv: baseVersion.cv, coverLetter: baseVersion.coverLetter });
+});
+
+test('saveEdit rejects a malformed answer and carries the error code and path', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ versionId: 'v3', versionNo: 3, checks: [{ code: 'nope' }] }, 201)));
+  await expect(saveEdit('j1', 'v2', baseVersion.cv, baseVersion.coverLetter)).rejects.toMatchObject({ status: 502 });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ error: 'invalid_document', path: 'cv.headline' }, 400)));
+  await expect(saveEdit('j1', 'v2', baseVersion.cv, baseVersion.coverLetter)).rejects.toMatchObject({
+    status: 400,
+    code: 'invalid_document',
+    path: 'cv.headline',
+  });
+});
+
+test('restoreVersion posts the version id', async () => {
+  const f = vi.fn().mockResolvedValue(ok({ versionId: 'v4', versionNo: 4 }, 201));
+  vi.stubGlobal('fetch', f);
+  expect(await restoreVersion('j1', 'v1')).toEqual({ versionId: 'v4', versionNo: 4 });
+  expect(f.mock.calls[0][0]).toBe('/api/jobs/versions/restore?id=j1');
+  expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ versionId: 'v1' });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({}, 201)));
+  await expect(restoreVersion('j1', 'v1')).rejects.toMatchObject({ status: 502 });
+});
+
+test('downloadUrl can name a version', () => {
+  expect(downloadUrl('j1', 'cv', 'docx', 'v 1')).toBe('/api/jobs/download?id=j1&doc=cv&format=docx&versionId=v%201');
 });
