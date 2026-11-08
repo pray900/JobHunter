@@ -1,0 +1,1106 @@
+{
+  "id": "jh-versions-api",
+  "name": "Versions API",
+  "active": false,
+  "nodes": [
+    {
+      "id": "6f5f2ae0-2932-5670-a5fe-32d51013295e",
+      "name": "Sticky Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -320
+      ],
+      "parameters": {
+        "content": "## Versions API\nThe version history behind the job page. **Nothing here calls Claude.** The two that change data (`edit`, `restore`) first check the `X-JobHunter: 1` header, so a web page on another site cannot trigger them. Ids are checked as UUIDs inside the SQL before use. Every answer is quick (well under 30 s).\n\n- `GET api/jobs/versions` the list, newest first\n- `POST api/jobs/versions/edit` saves an edit as a new version (the code checks run again)\n- `POST api/jobs/versions/restore` copies an old version as a new one\n\nVersions are append-only: nothing here updates or deletes a `document_versions` row. A version must belong to the job in the query, or the answer is `404 version_not_found`.",
+        "height": 330,
+        "width": 640,
+        "color": 7
+      }
+    },
+    {
+      "id": "0b255512-25c9-591c-bfec-8c95cfc9e68b",
+      "name": "GET api/jobs/versions",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        100
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "api/jobs/versions",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "a4b96b81-895e-5e22-a1b7-c492d9fcccc0"
+    },
+    {
+      "id": "ac0150ea-8b17-545c-8b0f-35d2bc4bcc1b",
+      "name": "Read versions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        220,
+        100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\n-- passed is the review's verdict: for an edited version it is the source version's (the reviewer is not\n-- run again on edits), for a restored version it was copied. It is never null.\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\nj as (\n  select jobs.id from jobs, p where jobs.id = p.id and jobs.owner_id = $1::uuid\n)\nselect exists (select 1 from j) as found,\n  coalesce((\n    select json_agg(json_build_object(\n      'id', d.id, 'versionNo', d.version_no, 'label', d.label, 'origin', d.origin,\n      'createdAt', to_char(d.created_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),\n      'instruction', d.instruction,\n      'passed', coalesce((d.review -> 'passed') = 'true'::jsonb, false),\n      'hardChecks', (select count(*) from jsonb_array_elements(case when jsonb_typeof(d.checks) = 'array' then d.checks else '[]'::jsonb end) c\n                     where c ->> 'severity' = 'hard')::int,\n      'manualEdit', d.manual_edit) order by d.version_no desc)\n    from document_versions d join j on d.job_id = j.id), '[]'::json) as versions;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(($json.query || {}).id || '')) ? String(($json.query || {}).id || '') : '') ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "ce48e825-53bc-52cc-94b6-ceabc9712a71",
+      "name": "Answer versions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nreturn { json: { code: 200, body: { versions: Array.isArray(r.versions) ? r.versions : [] } } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "91d4509c-796e-50fb-9518-1d49b921d5c2",
+      "name": "Respond: versions",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        100
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
+        "options": {
+          "responseCode": "={{ $json.code || 500 }}"
+        }
+      }
+    },
+    {
+      "id": "74874dc6-8e54-55b3-945d-deb45e4001c2",
+      "name": "Respond: missing X-JobHunter header",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        560
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"missing_jobhunter_header\" } }}",
+        "options": {
+          "responseCode": 403
+        }
+      }
+    },
+    {
+      "id": "ad928aaf-b3f7-5f52-b242-a1bcd1f00b90",
+      "name": "Sticky Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        370
+      ],
+      "parameters": {
+        "content": "## Edit\n`POST api/jobs/versions/edit?id=` body `{ fromVersionId, cv, coverLetter }`, at most 200 KB (`413 too_large`, before anything else is called). Only the known CV and cover letter fields are kept, an empty location, email, phone, work rights or experience location becomes null (the same as every saved document). The worker checks it (`400 invalid_document {path}` for a missing or wrong-type field), exactly as the Generate workflow does: the job, the **current** base CV and base cover letter, the other jobs. The worker also lists the fields that differ from the source version; they are added to `reasons.manualEdits`.\n\nSaved as a new version: `origin edited`, label `Edited`, `manual_edit` true, `parent_version_id` the source. The review is the source's, marked `reviewedVersionNo` (the reviewer does not run again). Version numbers are taken as max + 1; a clash with a concurrent save is a unique violation and the insert is simply tried again.",
+        "height": 320,
+        "width": 640,
+        "color": 4
+      }
+    },
+    {
+      "id": "d64008b1-79b8-50ca-97e5-491b7ed0f1c4",
+      "name": "POST api/jobs/versions/edit",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        700
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/jobs/versions/edit",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "d62bff3a-fdca-56d8-8953-7d715bfd4706"
+    },
+    {
+      "id": "c5df0d53-c403-5fa4-b673-896421650b9d",
+      "name": "Has X-JobHunter header? (edit)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "16f6797f-8c58-5782-a269-f18d52d8a18f",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "1"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "e98899d9-a971-5353-a0fa-2a5bd0e81898",
+      "name": "Check edit request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Validates the edit request before the database or the worker is touched, and keeps only the known fields.\nconst q = $json.query || {};\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst fail = (code, error) => ({ json: { ok: false, code, body: { error } } });\nif (typeof q.id !== 'string' || !UUID.test(q.id)) return fail(404, 'job_not_found');\nconst b = $json.body;\nconst isObj = (x) => typeof x === 'object' && x !== null && !Array.isArray(x);\nif (!isObj(b)) return fail(400, 'bad_request');\n// 200 KB of UTF-8, measured on the parsed body.\nconst text = JSON.stringify(b);\nlet bytes = 0;\nfor (let i = 0; i < text.length; i++) {\n  const c = text.charCodeAt(i);\n  if (c < 0x80) bytes += 1;\n  else if (c < 0x800) bytes += 2;\n  else if (c >= 0xd800 && c <= 0xdbff) { bytes += 4; i++; }\n  else bytes += 3;\n}\nif (bytes > 200 * 1024) return fail(413, 'too_large');\nif (typeof b.fromVersionId !== 'string' || !UUID.test(b.fromVersionId)) return fail(400, 'bad_request');\nif (!isObj(b.cv) || !isObj(b.coverLetter)) return fail(400, 'bad_request');\n\nconst pick = (o, keys) => {\n  const r = {};\n  for (const k of keys) if (Object.prototype.hasOwnProperty.call(o, k)) r[k] = o[k];\n  return r;\n};\nconst sub = (x, keys) => (isObj(x) ? pick(x, keys) : x);\nconst list = (x, f) => (Array.isArray(x) ? x.map(f) : x);\n// Empty text for an optional value means \"none\": stored as null, like every saved document.\nconst empty = (v) => (typeof v === 'string' && v.trim() === '' ? null : v);\nconst cvIn = b.cv;\nconst contact = isObj(cvIn.contact) ? pick(cvIn.contact, ['location', 'email', 'phone', 'links']) : cvIn.contact;\nif (isObj(contact)) {\n  for (const k of ['location', 'email', 'phone']) if (k in contact) contact[k] = empty(contact[k]);\n  if ('links' in contact) contact.links = list(contact.links, (l) => sub(l, ['label', 'url']));\n}\nconst cv = pick(cvIn, ['name', 'headline', 'summary', 'workRights']);\nif ('workRights' in cv) cv.workRights = empty(cv.workRights);\nif ('contact' in cvIn) cv.contact = contact;\nif ('skills' in cvIn) cv.skills = list(cvIn.skills, (g) => sub(g, ['group', 'items']));\nif ('experience' in cvIn) {\n  cv.experience = list(cvIn.experience, (e) => {\n    const r = sub(e, ['title', 'employer', 'location', 'dates', 'bullets']);\n    if (isObj(r) && 'location' in r) r.location = empty(r.location);\n    return r;\n  });\n}\nif ('education' in cvIn) cv.education = list(cvIn.education, (e) => sub(e, ['qualification', 'institution', 'dates', 'statusText']));\nif ('projects' in cvIn) cv.projects = list(cvIn.projects, (p) => sub(p, ['name', 'bullets']));\nconst coverLetter = pick(b.coverLetter, ['date', 'addressee', 'salutation', 'paragraphs', 'signOff', 'name']);\n\n// PostgreSQL text cannot hold a NUL character.\nconst NUL = String.fromCharCode(0);\nconst stack = [cv, coverLetter];\nwhile (stack.length) {\n  const x = stack.pop();\n  if (typeof x === 'string') { if (x.indexOf(NUL) >= 0) return fail(400, 'bad_request'); }\n  else if (Array.isArray(x)) for (const y of x) stack.push(y);\n  else if (isObj(x)) for (const k of Object.keys(x)) stack.push(x[k]);\n}\nreturn { json: { ok: true, jobId: q.id, fromVersionId: b.fromVersionId, cv, coverLetter } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9d8cc4f1-6a3d-5670-af92-3e1d6fa73825",
+      "name": "Edit request valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0a70f148-acc6-579f-be42-c4d70c329132",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "19c734e2-ae6d-5e14-ab03-9fcaf0713b47",
+      "name": "Load edit inputs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        880,
+        700
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below), [3] source version id (text, checked as a UUID below)\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the list query).\n-- One row: the source version (only when it belongs to this job), the job, the current base CV and base\n-- cover letter (as the Generate workflow reads them), and the names of every other job. When there is no\n-- current analysed base CV, the base CV the version itself was written from is used.\nwith p as (\n  select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as jid,\n         case when $3::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $3::text::uuid end as vid\n),\nj as (select jobs.* from jobs, p where jobs.id = p.jid and jobs.owner_id = $1::uuid),\nsrc as (\n  select d.id, d.version_no, d.template_id, d.cv, d.cover_letter, d.reasons, d.review, d.keyword_coverage, d.base_cv_id\n  from document_versions d, p, j\n  where d.id = p.vid and d.job_id = j.id and d.owner_id = $1::uuid\n),\ncv as (\n  select structured from base_documents\n  where owner_id = $1::uuid and kind = 'cv' and active and analysis_status = 'done' and not source_removed and structured is not null\n  limit 1\n),\ncl as (\n  select structured from base_documents\n  where owner_id = $1::uuid and kind = 'cover_letter' and active and analysis_status = 'done' and not source_removed and structured is not null\n  limit 1\n)\nselect exists (select 1 from j) as job_found,\n  exists (select 1 from src) as version_found,\n  (select to_jsonb(src) from src) as src,\n  (select jsonb_build_object('title', j.title, 'employer', j.employer, 'advertiser', j.advertiser, 'rawText', coalesce(j.raw_text, '')) from j) as job,\n  coalesce((select structured from cv),\n           (select b.structured from base_documents b, src where b.id = src.base_cv_id and b.owner_id = $1::uuid and b.structured is not null)) as cv_structured,\n  (select structured from cl) as cl_structured,\n  coalesce((select jsonb_agg(jsonb_build_object('title', o.title, 'employer', o.employer, 'advertiser', o.advertiser)\n                             order by o.created_at, o.id)\n            from jobs o, j\n            where o.owner_id = $1::uuid and o.id <> j.id\n              and (o.title is not null or o.employer is not null or o.advertiser is not null)),\n           '[]'::jsonb) as other_jobs;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $json.jobId, $json.fromVersionId ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "c5823b4d-8e35-5b3f-b5a7-6791956756d6",
+      "name": "Build edit check request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// The worker's check request: the same input the Generate workflow builds, with the edited documents.\nconst r = $json;\nconst req = $('Check edit request').first().json;\nconst fail = (code, error) => ({ json: { ok: false, code, body: { error } } });\nif (r.error) return fail(500, 'server_error');\nif (!r.job_found) return fail(404, 'job_not_found');\nif (!r.version_found) return fail(404, 'version_not_found');\nif (!r.cv_structured) return fail(422, 'base_cv_not_ready');\nconst src = r.src;\nconst kc = src.keyword_coverage;\nconst covered = kc && Array.isArray(kc.covered) ? kc.covered.filter((k) => typeof k === 'string') : [];\nconst letter = r.cl_structured;\nconst body = {\n  templateId: src.template_id,\n  cv: req.cv,\n  coverLetter: req.coverLetter,\n  keywordsCovered: covered,\n  job: { title: r.job.title, employer: r.job.employer, advertiser: r.job.advertiser, rawText: r.job.rawText ?? '' },\n  baseCv: { structured: r.cv_structured },\n  // The base cover letter goes only as its analysis, never as its text (as in Generate).\n  baseCoverLetter: letter\n    ? { structured: { previousTarget: letter.previousTarget ?? null, reusableParagraphs: letter.reusableParagraphs ?? [], toneNotes: letter.toneNotes ?? '' } }\n    : null,\n  otherJobs: Array.isArray(r.other_jobs) ? r.other_jobs : [],\n};\nreturn { json: { ok: true, body } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "068ac543-6b3d-5aac-aa7c-b664f9ddb218",
+      "name": "Ready to check?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "373329f9-79d6-578b-9eab-909eb7ee051d",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "7d8ccd25-a167-5d70-93a7-e3145fb1b636",
+      "name": "Run code checks (edit)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        700
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WORKER_URL }}/generation/check",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 25000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b43bc1b6-f0d0-54a3-a029-e10e6691d88a",
+      "name": "Read edit check results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// The worker's check results. A document the worker rejects is a 400 naming the path; any other failure is a 500.\nconst res = $json;\nconst b = res.body;\nconst fail = (code, body) => ({ json: { ok: false, code, body } });\nif (res.statusCode === 400 && b && b.error === 'invalid_document' && typeof b.path === 'string'\n    && /^(cv|coverLetter)([.[]|$)/.test(b.path) && /^[A-Za-z0-9_.\\[\\]]{1,200}$/.test(b.path)) {\n  return fail(400, { error: 'invalid_document', path: b.path });\n}\nconst httpOk = typeof res.statusCode === 'number' && res.statusCode >= 200 && res.statusCode < 300;\nif (!httpOk || !b || !Array.isArray(b.checks)) return fail(500, { error: 'server_error' });\nreturn { json: { ok: true, checks: b.checks } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "87eff088-2faa-54ab-931f-973239cfdb36",
+      "name": "Checks ran?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "09f57f0e-49dd-58fe-9c2b-6a51ade12218",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "cbbf9b88-fab2-561a-a693-26aa60cf9248",
+      "name": "Find changed paths",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        700
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WORKER_URL }}/generation/changed-paths",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ before: { cv: $('Load edit inputs').first().json.src.cv, coverLetter: $('Load edit inputs').first().json.src.cover_letter }, after: { cv: $('Check edit request').first().json.cv, coverLetter: $('Check edit request').first().json.coverLetter } }) }}",
+        "options": {
+          "timeout": 25000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b548747e-1b01-51cb-91bd-aacef47ca243",
+      "name": "Build edited version",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// The new version's fields: the checks, the reasons with the edited fields added, the source's review.\nconst res = $json;\nconst b = res.body;\nconst fail = (code, body) => ({ json: { ok: false, code, body } });\nconst httpOk = typeof res.statusCode === 'number' && res.statusCode >= 200 && res.statusCode < 300;\nif (!httpOk || !b || !Array.isArray(b.paths)) return fail(500, { error: 'server_error' });\nconst req = $('Check edit request').first().json;\nconst src = $('Load edit inputs').first().json.src;\nconst checks = $('Read edit check results').first().json.checks;\nconst isObj = (x) => typeof x === 'object' && x !== null && !Array.isArray(x);\nconst earlier = isObj(src.reasons) && Array.isArray(src.reasons.manualEdits) ? src.reasons.manualEdits.filter((p) => typeof p === 'string') : [];\nconst manualEdits = [...new Set([...earlier, ...b.paths.filter((p) => typeof p === 'string')])].sort();\nconst reasons = { ...(isObj(src.reasons) ? src.reasons : {}), manualEdits };\nconst review0 = isObj(src.review) ? src.review : {};\n// The review covers the version it was written for. An edit of an edit keeps that number.\nconst review = { ...review0, reviewedVersionNo: Number.isInteger(review0.reviewedVersionNo) ? review0.reviewedVersionNo : src.version_no };\nreturn { json: {\n  ok: true,\n  checks,\n  params: [\n    '00000000-0000-0000-0000-000000000001', req.jobId, req.fromVersionId, 'edited', 'Edited',\n    JSON.stringify(req.cv), JSON.stringify(req.coverLetter), JSON.stringify(reasons), JSON.stringify(review), JSON.stringify(checks), 'true',\n  ],\n} };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "33a70096-b77d-5dad-b79a-f7339f7476ce",
+      "name": "Ready to save the edit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2640,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "687933ff-53fb-5daf-9601-621be8be0b12",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "8fae12fb-e440-5da5-b474-f5197086d905",
+      "name": "Save edited version",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        2860,
+        700
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below), [3] source version id (text, checked as a UUID below),\n-- [4] origin, [5] label (empty: Restored version N), [6] CV (JSON), [7] cover letter (JSON), [8] reasons (JSON),\n-- [9] review (JSON), [10] checks (JSON) (each empty: copied from the source), [11] manual edit (true, false, or empty: copied)\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the list query).\n-- One new row, only when the source version belongs to this job. The version number is max + 1; two saves\n-- at once can pick the same number, one then fails on the unique index (job, version number) and the\n-- workflow runs this statement again.\nwith p as (\n  select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as jid,\n         case when $3::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $3::text::uuid end as vid\n),\nsrc as (\n  select d.* from document_versions d, p\n  where d.id = p.vid and d.job_id = p.jid and d.owner_id = $1::uuid\n),\nins as (\n  insert into document_versions (owner_id, job_id, run_id, version_no, label, base_cv_id, base_cv_hash,\n                                 base_cover_letter_id, base_cover_letter_hash, template_id, cv, cover_letter,\n                                 reasons, keyword_coverage, review, checks, instruction, manual_edit, origin, parent_version_id)\n  select src.owner_id, src.job_id, null,\n         (select coalesce(max(v.version_no), 0) + 1 from document_versions v where v.job_id = src.job_id),\n         coalesce(nullif($5::text, ''), 'Restored version ' || src.version_no),\n         src.base_cv_id, src.base_cv_hash, src.base_cover_letter_id, src.base_cover_letter_hash, src.template_id,\n         coalesce(nullif($6::text, '')::jsonb, src.cv), coalesce(nullif($7::text, '')::jsonb, src.cover_letter),\n         coalesce(nullif($8::text, '')::jsonb, src.reasons), src.keyword_coverage,\n         coalesce(nullif($9::text, '')::jsonb, src.review), coalesce(nullif($10::text, '')::jsonb, src.checks),\n         case when $4::text = 'restored' then src.instruction end,\n         case $11::text when 'true' then true when 'false' then false else src.manual_edit end,\n         $4::text, src.id\n  from src\n  returning id, version_no\n)\nselect (select id from ins) as version_id, (select version_no from ins) as version_no,\n       exists (select 1 from src) as found,\n       exists (select 1 from jobs, p where jobs.id = p.jid and jobs.owner_id = $1::uuid) as job_found;",
+        "options": {
+          "queryReplacement": "={{ $('Build edited version').first().json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "69178918-672a-5c67-9beb-1a3d537870f6",
+      "name": "Answer edit save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Turns the insert's outcome into the HTTP answer. A clash on the version number (two saves at once) is tried again.\nconst r = $json;\nif (r.error) {\n  const msg = typeof r.error === 'string' ? r.error : String((r.error && (r.error.message || r.error.description)) || '');\n  if (/duplicate key|unique constraint|23505/i.test(msg) && $runIndex < 12) return { json: { retry: true } };\n  return { json: { retry: false, code: 500, body: { error: 'server_error' } } };\n}\nif (!r.found) return { json: { retry: false, code: 404, body: { error: r.job_found ? 'version_not_found' : 'job_not_found' } } };\nif (!r.version_id) return { json: { retry: false, code: 500, body: { error: 'server_error' } } };\nreturn { json: { retry: false, code: 201, body: { versionId: r.version_id, versionNo: r.version_no, checks: $('Build edited version').first().json.checks } } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "57ae1593-6013-57db-bc42-6ec9e121e1db",
+      "name": "Try the edit save again?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3300,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "be0897a5-a097-5e97-8457-8414f50f9c6f",
+              "leftValue": "={{ $json.retry }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "25bc6c0f-f68a-5f96-9e32-3d2b584a7ed1",
+      "name": "Respond: edit",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3520,
+        900
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
+        "options": {
+          "responseCode": "={{ $json.code || 500 }}"
+        }
+      }
+    },
+    {
+      "id": "80d7eda6-a856-5f85-ae47-3ef8ab878987",
+      "name": "Sticky Note 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        1240
+      ],
+      "parameters": {
+        "content": "## Restore\n`POST api/jobs/versions/restore?id=` body `{ versionId }`. Copies that version's documents, reasons, checks, review and keyword coverage into a **new** version: `origin restored`, label `Restored version N`, `parent_version_id` the restored one. The old row is not touched. `404 version_not_found` when the version is not this job's. Same retry on a version number clash as Edit.",
+        "height": 220,
+        "width": 640,
+        "color": 4
+      }
+    },
+    {
+      "id": "046bfd31-e0d1-563a-ab94-7be63c56f046",
+      "name": "POST api/jobs/versions/restore",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1500
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/jobs/versions/restore",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "14557f31-b6e1-57f4-8ba5-2802f55489bc"
+    },
+    {
+      "id": "4c91411f-5241-5cf5-9e2e-aa2d3fdc7127",
+      "name": "Has X-JobHunter header? (restore)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        1500
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a4095cb8-3558-53a6-9dde-a97094f5f27a",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "1"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "5063cdbd-6df7-5740-8122-9b76f80554b1",
+      "name": "Check restore request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        1500
+      ],
+      "parameters": {
+        "jsCode": "// Validates the restore request before the database is touched.\nconst q = $json.query || {};\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst fail = (code, error) => ({ json: { ok: false, code, body: { error } } });\nif (typeof q.id !== 'string' || !UUID.test(q.id)) return fail(404, 'job_not_found');\nconst b = $json.body;\nif (typeof b !== 'object' || b === null || Array.isArray(b) || typeof b.versionId !== 'string' || !UUID.test(b.versionId)) return fail(400, 'bad_request');\nreturn { json: { ok: true, params: ['00000000-0000-0000-0000-000000000001', q.id, b.versionId, 'restored', '', '', '', '', '', '', ''] } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "bf646b67-a4c1-5763-b229-76bc8555f6d5",
+      "name": "Restore request valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        1500
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2eaa57db-3a04-5ad6-9239-f97ce7497008",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "cc5512ca-421a-558f-9e0e-4ebc54bdb833",
+      "name": "Save restored version",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        880,
+        1500
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below), [3] source version id (text, checked as a UUID below),\n-- [4] origin, [5] label (empty: Restored version N), [6] CV (JSON), [7] cover letter (JSON), [8] reasons (JSON),\n-- [9] review (JSON), [10] checks (JSON) (each empty: copied from the source), [11] manual edit (true, false, or empty: copied)\n-- Note: never write a dollar sign followed by a digit in SQL comments (see the list query).\n-- One new row, only when the source version belongs to this job. The version number is max + 1; two saves\n-- at once can pick the same number, one then fails on the unique index (job, version number) and the\n-- workflow runs this statement again.\nwith p as (\n  select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as jid,\n         case when $3::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $3::text::uuid end as vid\n),\nsrc as (\n  select d.* from document_versions d, p\n  where d.id = p.vid and d.job_id = p.jid and d.owner_id = $1::uuid\n),\nins as (\n  insert into document_versions (owner_id, job_id, run_id, version_no, label, base_cv_id, base_cv_hash,\n                                 base_cover_letter_id, base_cover_letter_hash, template_id, cv, cover_letter,\n                                 reasons, keyword_coverage, review, checks, instruction, manual_edit, origin, parent_version_id)\n  select src.owner_id, src.job_id, null,\n         (select coalesce(max(v.version_no), 0) + 1 from document_versions v where v.job_id = src.job_id),\n         coalesce(nullif($5::text, ''), 'Restored version ' || src.version_no),\n         src.base_cv_id, src.base_cv_hash, src.base_cover_letter_id, src.base_cover_letter_hash, src.template_id,\n         coalesce(nullif($6::text, '')::jsonb, src.cv), coalesce(nullif($7::text, '')::jsonb, src.cover_letter),\n         coalesce(nullif($8::text, '')::jsonb, src.reasons), src.keyword_coverage,\n         coalesce(nullif($9::text, '')::jsonb, src.review), coalesce(nullif($10::text, '')::jsonb, src.checks),\n         case when $4::text = 'restored' then src.instruction end,\n         case $11::text when 'true' then true when 'false' then false else src.manual_edit end,\n         $4::text, src.id\n  from src\n  returning id, version_no\n)\nselect (select id from ins) as version_id, (select version_no from ins) as version_no,\n       exists (select 1 from src) as found,\n       exists (select 1 from jobs, p where jobs.id = p.jid and jobs.owner_id = $1::uuid) as job_found;",
+        "options": {
+          "queryReplacement": "={{ $('Check restore request').first().json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "59b39739-3b5c-56ab-b1cf-ee3e28a038da",
+      "name": "Answer restore save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        1500
+      ],
+      "parameters": {
+        "jsCode": "// Turns the insert's outcome into the HTTP answer. A clash on the version number (two saves at once) is tried again.\nconst r = $json;\nif (r.error) {\n  const msg = typeof r.error === 'string' ? r.error : String((r.error && (r.error.message || r.error.description)) || '');\n  if (/duplicate key|unique constraint|23505/i.test(msg) && $runIndex < 12) return { json: { retry: true } };\n  return { json: { retry: false, code: 500, body: { error: 'server_error' } } };\n}\nif (!r.found) return { json: { retry: false, code: 404, body: { error: r.job_found ? 'version_not_found' : 'job_not_found' } } };\nif (!r.version_id) return { json: { retry: false, code: 500, body: { error: 'server_error' } } };\nreturn { json: { retry: false, code: 201, body: { versionId: r.version_id, versionNo: r.version_no } } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5f6810bb-9fe9-5f1d-a3df-d98238f1e63c",
+      "name": "Try the restore save again?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        1500
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "efcf75c2-daf6-5b0d-b746-d14b50eb9a0b",
+              "leftValue": "={{ $json.retry }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "ad67e0c4-9732-5747-817c-b4173a7a74e6",
+      "name": "Respond: restore",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        1700
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
+        "options": {
+          "responseCode": "={{ $json.code || 500 }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "GET api/jobs/versions": {
+      "main": [
+        [
+          {
+            "node": "Read versions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read versions": {
+      "main": [
+        [
+          {
+            "node": "Answer versions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer versions": {
+      "main": [
+        [
+          {
+            "node": "Respond: versions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST api/jobs/versions/edit": {
+      "main": [
+        [
+          {
+            "node": "Has X-JobHunter header? (edit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header? (edit)": {
+      "main": [
+        [
+          {
+            "node": "Check edit request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check edit request": {
+      "main": [
+        [
+          {
+            "node": "Edit request valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit request valid?": {
+      "main": [
+        [
+          {
+            "node": "Load edit inputs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: edit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load edit inputs": {
+      "main": [
+        [
+          {
+            "node": "Build edit check request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build edit check request": {
+      "main": [
+        [
+          {
+            "node": "Ready to check?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready to check?": {
+      "main": [
+        [
+          {
+            "node": "Run code checks (edit)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: edit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run code checks (edit)": {
+      "main": [
+        [
+          {
+            "node": "Read edit check results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read edit check results": {
+      "main": [
+        [
+          {
+            "node": "Checks ran?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Checks ran?": {
+      "main": [
+        [
+          {
+            "node": "Find changed paths",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: edit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find changed paths": {
+      "main": [
+        [
+          {
+            "node": "Build edited version",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build edited version": {
+      "main": [
+        [
+          {
+            "node": "Ready to save the edit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready to save the edit?": {
+      "main": [
+        [
+          {
+            "node": "Save edited version",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: edit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save edited version": {
+      "main": [
+        [
+          {
+            "node": "Answer edit save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer edit save": {
+      "main": [
+        [
+          {
+            "node": "Try the edit save again?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Try the edit save again?": {
+      "main": [
+        [
+          {
+            "node": "Save edited version",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: edit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST api/jobs/versions/restore": {
+      "main": [
+        [
+          {
+            "node": "Has X-JobHunter header? (restore)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header? (restore)": {
+      "main": [
+        [
+          {
+            "node": "Check restore request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check restore request": {
+      "main": [
+        [
+          {
+            "node": "Restore request valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore request valid?": {
+      "main": [
+        [
+          {
+            "node": "Save restored version",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: restore",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save restored version": {
+      "main": [
+        [
+          {
+            "node": "Answer restore save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer restore save": {
+      "main": [
+        [
+          {
+            "node": "Try the restore save again?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Try the restore save again?": {
+      "main": [
+        [
+          {
+            "node": "Save restored version",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: restore",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "tags": []
+}

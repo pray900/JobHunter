@@ -155,7 +155,9 @@ describe('job page API', () => {
     const res = await get(`jobs/detail?id=${jobId}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
-    expect(Object.keys(body).sort()).toEqual(['generation', 'job', 'version']);
+    expect(Object.keys(body).sort()).toEqual(['baseCv', 'generation', 'job', 'version', 'versions']);
+    expect(body.versions).toBe(2);
+    expect(body.baseCv).toBeNull();
     expect(Object.keys(body.job).sort()).toEqual([
       'advertiser', 'companyNotes', 'employer', 'id', 'matchBreakdown', 'matchExplanation', 'matchScore',
       'rawText', 'status', 'title', 'url', 'warnings',
@@ -166,8 +168,8 @@ describe('job page API', () => {
     });
     expect(body.generation).toEqual({ status: 'done', stage: 'saving', round: 2, attempts: 1, error: null });
     expect(Object.keys(body.version).sort()).toEqual([
-      'baseCvSourceRef', 'checks', 'costUsd', 'coverLetter', 'createdAt', 'cv', 'id', 'keywordCoverage', 'label',
-      'reasons', 'review', 'templateId', 'versionNo',
+      'baseCvSourceRef', 'checks', 'costUsd', 'coverLetter', 'createdAt', 'cv', 'id', 'isCurrent', 'keywordCoverage', 'label',
+      'manualEdits', 'origin', 'parentVersionId', 'reasons', 'review', 'templateId', 'versionNo',
     ]);
     expect(body.version).toMatchObject({
       id: v2, versionNo: 2, label: 'Generated', templateId: 'standard-ats', cv: CV, coverLetter: LETTER,

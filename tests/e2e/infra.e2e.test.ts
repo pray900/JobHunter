@@ -54,7 +54,7 @@ describe('e2e infrastructure', () => {
 
     await run('bash', [join(ROOT, 'scripts', 'n8n-bootstrap.sh'), composeFile], { cwd: ROOT, inherit: true });
 
-    expect(await activeIds()).toEqual(['jh-base-documents-sync', 'jh-documents-api', 'jh-generate-documents', 'jh-job-intake-sync', 'jh-job-match-scoring', 'jh-job-page-api', 'jh-jobs-api']);
+    expect(await activeIds()).toEqual(['jh-base-documents-sync', 'jh-documents-api', 'jh-generate-documents', 'jh-job-intake-sync', 'jh-job-match-scoring', 'jh-job-page-api', 'jh-jobs-api', 'jh-versions-api']);
     expect((await n8n(['sh', '-c', 'test -e /tmp/jh-credentials.json && echo present || echo absent'])).trim()).toBe('absent');
   }, 300_000);
 });

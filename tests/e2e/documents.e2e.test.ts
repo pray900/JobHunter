@@ -44,7 +44,7 @@ describe('base documents sync', () => {
   test('webhook without X-JobHunter header is refused and runs nothing', async () => {
     await putDocument('cv', 'a.pdf', makePdf('CV A'));
     // A run that got past the check would insert this stored document again and call Claude.
-    await db.query('truncate cost_log, base_documents, document_versions');
+    await db.query('truncate cost_log, base_documents, document_versions, generation_runs');
     await stub.reset();
     const res = await fetch(`${N8N_URL}/webhook/api/documents/sync`, { method: 'POST' });
     expect(res.status).toBe(403);
