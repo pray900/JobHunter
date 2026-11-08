@@ -237,7 +237,7 @@
         280
       ],
       "parameters": {
-        "content": "## Job page data\n`GET api/jobs/detail?id=` answers the job, its latest generation run and its latest document version (with the cost of that run), or the version asked for with `versionId` (it must belong to the job, else `404 version_not_found`). `versions` is how many versions the job has; `baseCv` is the base CV the shown version was written from (`null` when that row is gone) with `isCurrentBase` false once the CV was replaced. If that row was deleted or its content changed (the same file name saved again), `baseCv` is `null`. A match score is shown only when it was worked out from the CV in use now, the same rule as the job list. The run also carries its `instruction` and `fromVersionId` (both null for a plain Generate), so \"Try again\" after a failed regenerate repeats the same regenerate. `version.manualEdits` is answered by text, `{ path, text }`, only where that text is in the version (an old path-only row is read as the text at that path). Error executions are not saved (`saveDataErrorExecution: none`): every request here can carry the full CV and cover letter. The run's `error` is returned only when it is one of the Generate workflow's own messages; anything else (raw error text) becomes a fixed generic message.",
+        "content": "## Job page data\n`GET api/jobs/detail?id=` answers the job, its latest generation run and its latest document version (with the cost of that run), or the version asked for with `versionId` (it must belong to the job, else `404 version_not_found`). `versions` is how many versions the job has; `baseCv` is the base CV the shown version was written from (`null` when that row is gone) with `isCurrentBase` false once the CV was replaced. If that row was deleted or its content changed (the same file name saved again), `baseCv` is `null`. A match score is shown only when it was worked out from the CV in use now, the same rule as the job list. The run also carries its `instruction` and `fromVersionId` (both null for a plain Generate), so \"Try again\" after a failed regenerate repeats the same regenerate. `version.manualEdits` is answered by text, `{ path, text }`, only where that text is in the version (an old path-only row is read as the text at that path). The run's `error` is returned only when it is one of the Generate workflow's own messages; anything else (raw error text) becomes a fixed generic message.",
         "height": 300,
         "width": 520,
         "color": 4
@@ -1163,8 +1163,7 @@
   "settings": {
     "executionOrder": "v1",
     "saveDataSuccessExecution": "none",
-    "saveManualExecutions": false,
-    "saveDataErrorExecution": "none"
+    "saveManualExecutions": false
   },
   "pinData": {},
   "tags": []

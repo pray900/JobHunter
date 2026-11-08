@@ -551,10 +551,8 @@ describe('shipped workflows', () => {
     for (const file of files) {
       const { settings } = JSON.parse(readFileSync(join(dir, file), 'utf8'));
       expect(settings, file).toMatchObject({ saveDataSuccessExecution: 'none', saveManualExecutions: false });
-      // Failed runs are still kept for debugging, except by the two APIs that carry the full CV and cover
-      // letter on every request (a crash there must not store the documents in n8n's database).
-      const keepsNothing = ['job-page-api.json', 'versions-api.json'].includes(file);
-      expect(settings.saveDataErrorExecution ?? 'all', file).toBe(keepsNothing ? 'none' : 'all');
+      // Failed runs are still kept for debugging.
+      expect(settings.saveDataErrorExecution ?? 'all', file).toBe('all');
     }
   });
 

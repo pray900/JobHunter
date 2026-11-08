@@ -1099,8 +1099,7 @@
   "settings": {
     "executionOrder": "v1",
     "saveDataSuccessExecution": "none",
-    "saveManualExecutions": false,
-    "saveDataErrorExecution": "none"
+    "saveManualExecutions": false
   },
   "pinData": {},
   "tags": []
