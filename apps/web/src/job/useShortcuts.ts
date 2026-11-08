@@ -5,6 +5,7 @@ export const SHORTCUTS: { key: string; text: string }[] = [
   { key: 'E', text: 'Edit the documents' },
   { key: 'A', text: 'Mark applied' },
   { key: 'S', text: 'Skip (mark closed)' },
+  { key: 'G', text: 'Go to the regenerate box' },
 ];
 
 function isTyping(el: EventTarget | null): boolean {

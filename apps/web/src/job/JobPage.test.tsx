@@ -317,7 +317,7 @@ describe('JobPage', () => {
     await userEvent.keyboard('{ArrowLeft}');
     expect(screen.getByRole('tab', { name: 'CV' })).toHaveFocus();
     await userEvent.keyboard('{End}');
-    expect(screen.getByRole('tab', { name: 'Cover letter' })).toHaveFocus();
+    expect(screen.getByRole('tab', { name: 'Diff vs base CV' })).toHaveFocus();
     await userEvent.keyboard('{Home}');
     expect(screen.getByRole('tab', { name: 'CV' })).toHaveAttribute('aria-selected', 'true');
   });

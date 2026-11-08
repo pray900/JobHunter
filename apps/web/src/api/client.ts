@@ -130,8 +130,10 @@ async function postJson<T>(path: string, body: object | undefined, pick: (b: unk
 const field = (b: unknown, k: string): unknown => (b && typeof b === 'object' ? (b as Record<string, unknown>)[k] : undefined);
 
 // Queues a run; it does not wait for it. Poll fetchJobDetail for progress.
-export function generate(id: string): Promise<{ runId: string }> {
-  return postJson(`/api/jobs/generate?id=${encodeURIComponent(id)}`, undefined, (b) => {
+// With an instruction it rewrites from that version (both or neither are sent).
+export function generate(id: string, regenerate?: { instruction: string; fromVersionId: string }): Promise<{ runId: string }> {
+  const body = regenerate ? { instruction: regenerate.instruction, fromVersionId: regenerate.fromVersionId } : undefined;
+  return postJson(`/api/jobs/generate?id=${encodeURIComponent(id)}`, body, (b) => {
     const runId = field(b, 'runId');
     return typeof runId === 'string' ? { runId } : null;
   });

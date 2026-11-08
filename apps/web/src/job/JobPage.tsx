@@ -7,9 +7,11 @@ import { safeHref } from '../jobs/safeHref';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DocumentEditor } from './DocumentEditor';
 import { CvPreview, LetterPreview } from './DocumentPreview';
+import { BaseDiff } from './BaseDiff';
 import { highlightKeywords } from './highlightKeywords';
 import { checkLabel, progressText } from './labels';
 import { ReasonsPanel } from './ReasonsPanel';
+import { RegeneratePanel } from './RegeneratePanel';
 import { SHORTCUTS, useShortcuts } from './useShortcuts';
 import { VersionHistory } from './VersionHistory';
 
@@ -54,7 +56,7 @@ export function JobPage() {
   const { id = '' } = useParams();
   const [detail, setDetail] = useState<JobDetail | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [tab, setTab] = useState<'cv' | 'letter'>('cv');
+  const [tab, setTab] = useState<'cv' | 'letter' | 'diff'>('cv');
   const [genError, setGenError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [status, setStatusValue] = useState<JobStatus>('new');
@@ -75,6 +77,7 @@ export function JobPage() {
   const [restoreError, setRestoreError] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
+  const regenRef = useRef<HTMLTextAreaElement | null>(null);
   const firstLoad = useRef(true);
   const mounted = useRef(true);
 
@@ -151,7 +154,7 @@ export function JobPage() {
 
   // Tabs pattern: arrow keys (and Home / End) move between the CV and the cover letter.
   function onTabKey(e: React.KeyboardEvent<HTMLDivElement>) {
-    const order = ['cv', 'letter'] as const;
+    const order = ['cv', 'letter', 'diff'] as const;
     const at = order.indexOf(tab);
     const next =
       e.key === 'ArrowRight' ? order[(at + 1) % order.length]
@@ -162,7 +165,7 @@ export function JobPage() {
     if (!next) return;
     e.preventDefault();
     setTab(next);
-    document.getElementById(next === 'cv' ? 'tab-cv' : 'tab-letter')?.focus();
+    document.getElementById(`tab-${next}`)?.focus();
   }
 
   function startEdit() {
@@ -220,8 +223,10 @@ export function JobPage() {
     }
   }
 
-  // G (focus the regenerate box) arrives with Regenerate in Task 5; the key is already routed here.
-  function focusRegenerate() {}
+  function focusRegenerate() {
+    const box = regenRef.current;
+    if (box && !box.disabled) box.focus();
+  }
 
   useShortcuts(
     {
@@ -526,6 +531,17 @@ export function JobPage() {
               >
                 Cover letter
               </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-diff"
+                aria-selected={tab === 'diff'}
+                aria-controls="panel-doc"
+                tabIndex={tab === 'diff' ? 0 : -1}
+                onClick={() => setTab('diff')}
+              >
+                Diff vs base CV
+              </button>
             </div>
             {version.isCurrent && (
               <button type="button" className="btn btn-small" aria-keyshortcuts="E" onClick={startEdit}>
@@ -533,9 +549,23 @@ export function JobPage() {
               </button>
             )}
             </div>
-            <div role="tabpanel" id="panel-doc" aria-labelledby={tab === 'cv' ? 'tab-cv' : 'tab-letter'}>
-              {tab === 'cv' ? <CvPreview cv={version.cv} /> : <LetterPreview cv={version.cv} letter={version.coverLetter} />}
+            <div role="tabpanel" id="panel-doc" aria-labelledby={`tab-${tab}`}>
+              {tab === 'cv' ? (
+                <CvPreview cv={version.cv} />
+              ) : tab === 'letter' ? (
+                <LetterPreview cv={version.cv} letter={version.coverLetter} />
+              ) : (
+                <BaseDiff baseCv={detail.baseCv} cv={version.cv} reasons={version.reasons} />
+              )}
             </div>
+            <RegeneratePanel
+              key={version.id}
+              jobId={id}
+              fromVersionId={version.id}
+              running={!!running}
+              inputRef={regenRef}
+              onStarted={() => void load()}
+            />
               </>
             )}
           </section>

@@ -18,3 +18,4 @@ dist/
 
 # Test scratch
 .tmp/
+apps/web/tsconfig.tsbuildinfo
