@@ -1,8 +1,10 @@
+import pg from 'pg';
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 import { CV, LETTER } from '../../services/worker/test/fixtures';
 import { N8N_URL, SYNC_HEADERS, WEB_URL, db, makePdf, putDocument, resetState, stub } from './lib';
 
 const OWNER = '00000000-0000-0000-0000-000000000001';
+const DB_URL = 'postgres://jobhunter:test@localhost:55433/jobhunter';
 const MISSING = '00000000-0000-0000-0000-0000000000ff';
 
 const post = (path: string, body?: unknown, headers: Record<string, string> = SYNC_HEADERS) =>
@@ -36,13 +38,14 @@ interface SeedOpts {
   reasons?: unknown;
   checks?: unknown;
   baseCvId?: string | null;
+  baseCvHash?: string;
   runId?: string | null;
 }
 async function seed(jobId: string, o: SeedOpts): Promise<string> {
   const [v] = await db.query(
     `insert into document_versions (owner_id, job_id, run_id, version_no, label, base_cv_id, base_cv_hash, template_id, cv, cover_letter,
        reasons, keyword_coverage, review, checks, instruction, manual_edit, origin, parent_version_id)
-     values ($1,$2,$3,$4,$5,$6,'bh','standard-ats',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
+     values ($1,$2,$3,$4,$5,$6,$17,'standard-ats',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
     [
       OWNER, jobId, o.runId ?? null, o.versionNo, o.label ?? 'Generated', o.baseCvId ?? null,
       JSON.stringify(o.cv ?? CV), JSON.stringify(LETTER),
@@ -50,7 +53,7 @@ async function seed(jobId: string, o: SeedOpts): Promise<string> {
       JSON.stringify({ covered: [], missing: [] }),
       JSON.stringify(o.review ?? { passed: true, rounds: 1, verdicts: ['pass'], unresolved: [] }),
       JSON.stringify(o.checks ?? []),
-      o.instruction ?? null, o.manualEdit ?? false, o.origin ?? 'generated', o.parent ?? null,
+      o.instruction ?? null, o.manualEdit ?? false, o.origin ?? 'generated', o.parent ?? null, o.baseCvHash ?? 'bh',
     ],
   );
   return v.id;
@@ -89,11 +92,26 @@ describe('versions API', () => {
     ]);
     expect(body.versions.map((v: any) => [v.versionNo, v.origin, v.label, v.passed, v.hardChecks, v.manualEdit, v.instruction])).toEqual([
       [4, 'restored', 'Restored version 1', true, 0, false, null],
-      [3, 'edited', 'Edited', false, 0, true, null],
+      [3, 'edited', 'Edited', null, 0, true, null],
       [2, 'regenerated', 'Make it shorter', false, 2, false, 'Make it shorter'],
       [1, 'generated', 'Generated', true, 1, false, null],
     ]);
     expect(new Date(body.versions[0].createdAt).toISOString()).toBe(body.versions[0].createdAt);
+  });
+
+  test('passed is null (not reviewed) for edited versions and for a review that is not an object', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const v1 = await seed(jobId, { versionNo: 1 });
+    const res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv: { ...CV, headline: 'Edited headline' }, coverLetter: LETTER });
+    expect(res.status).toBe(201);
+    const restored = await post(`jobs/versions/restore?id=${jobId}`, { versionId: ((await res.json()) as any).versionId });
+    expect(restored.status).toBe(201);
+    await seed(jobId, { versionNo: 4, review: 'unexpected text' });
+    const list = ((await (await get(`jobs/versions?id=${jobId}`)).json()) as any).versions;
+    expect(list.map((v: any) => [v.versionNo, v.origin, v.passed])).toEqual([
+      [4, 'generated', null], [3, 'restored', null], [2, 'edited', null], [1, 'generated', true],
+    ]);
   });
 
   test('versions: unknown job is 404 and a job with none is empty', async () => {
@@ -400,7 +418,8 @@ describe('versions API', () => {
     await withCv();
     const jobId = await addJob();
     const [base] = await db.query(`select id, source_ref from base_documents where kind='cv' and active`);
-    const v1 = await seed(jobId, { versionNo: 1, baseCvId: base.id });
+    const [{ content_hash }] = await db.query(`select content_hash from base_documents where id=$1`, [base.id]);
+    const v1 = await seed(jobId, { versionNo: 1, baseCvId: base.id, baseCvHash: content_hash });
     await seed(jobId, { versionNo: 2 });
     let body = (await (await get(`jobs/detail?id=${jobId}&versionId=${v1}`)).json()) as any;
     expect(Object.keys(body.baseCv).sort()).toEqual(['isCurrentBase', 'sourceRef', 'structured']);
@@ -413,6 +432,10 @@ describe('versions API', () => {
     body = (await (await get(`jobs/detail?id=${jobId}&versionId=${v1}`)).json()) as any;
     expect(body.baseCv.isCurrentBase).toBe(false);
     expect(body.baseCv.structured).toBeTruthy();
+    // The same row saved again with other content (same file name): not the version's base any more.
+    await db.query(`update base_documents set active=true, content_hash='changed-in-place' where id=$1`, [base.id]);
+    body = (await (await get(`jobs/detail?id=${jobId}&versionId=${v1}`)).json()) as any;
+    expect(body.baseCv).toBeNull();
     // Deleted: null.
     await db.query(`delete from base_documents where id=$1`, [base.id]);
     body = (await (await get(`jobs/detail?id=${jobId}&versionId=${v1}`)).json()) as any;
@@ -428,6 +451,102 @@ describe('versions API', () => {
     expect((await post(`jobs/versions/restore?id=${jobId}`, { versionId: v1 })).status).toBe(201);
     expect((await get(`jobs/versions?id=${jobId}`)).status).toBe(200);
     await noClaude();
+  });
+
+  // Holds an uncommitted version row so the next save collides on the unique index; commits once a save is
+  // blocked on it. The save then has to run its insert again to get the next number.
+  async function collide(jobId: string, versionNo: number, fire: () => Promise<Response>): Promise<Response> {
+    const client = new pg.Client({ connectionString: DB_URL });
+    await client.connect();
+    try {
+      await client.query('begin');
+      await client.query(
+        `insert into document_versions (owner_id, job_id, version_no, label, base_cv_hash, template_id, cv, cover_letter, reasons, keyword_coverage, review, checks)
+         values ($1,$2,$3,'Blocker','bh','standard-ats','{}','{}','{}','{}','{}','[]')`,
+        [OWNER, jobId, versionNo],
+      );
+      const pending = fire();
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        const waiting = await db.query(
+          `select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database() and pid <> pg_backend_pid()`,
+        );
+        blocked = waiting.length > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(blocked).toBe(true);
+      await client.query('commit');
+      return await pending;
+    } finally {
+      await client.end();
+    }
+  }
+
+  test('a version number clash is retried (restore)', async () => {
+    const jobId = await addJob();
+    const v1 = await seed(jobId, { versionNo: 1 });
+    const res = await collide(jobId, 2, () => post(`jobs/versions/restore?id=${jobId}`, { versionId: v1 }));
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as any).versionNo).toBe(3);
+    expect((await rows(jobId)).map((r) => [r.version_no, r.label])).toEqual([[1, 'Generated'], [2, 'Blocker'], [3, 'Restored version 1']]);
+  }, 60_000);
+
+  test('a version number clash is retried (edit)', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const v1 = await seed(jobId, { versionNo: 1 });
+    const res = await collide(jobId, 2, () =>
+      post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv: { ...CV, headline: 'Retried' }, coverLetter: LETTER }),
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.versionNo).toBe(3);
+    expect((await rows(jobId))[2]).toMatchObject({ id: body.versionId, origin: 'edited' });
+  }, 60_000);
+
+  test('the edit is checked with the same input as Generate (other jobs, base cover letter, current base CV)', async () => {
+    await withCv();
+    await putDocument('cover_letter', 'letter.pdf', makePdf('Base letter'));
+    const jobId = await addJob();
+    await addJob({ title: 'Barista', employer: 'Globexia Holdings' });
+    await db.query(
+      `update base_documents set structured = jsonb_set(structured, '{previousTarget}', '{"company":"Initech Pty","addressee":null,"role":null}') where kind='cover_letter' and active`,
+    );
+    const v1 = await seed(jobId, { versionNo: 1 });
+    const letter = { ...LETTER, paragraphs: ['I admire Globexia Holdings.', 'I also wrote to Initech Pty last week.'] };
+    const res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv: CV, coverLetter: letter });
+    expect(res.status).toBe(201);
+    const checks = ((await res.json()) as any).checks as any[];
+    const leaks = checks.filter((c) => c.code === 'company_leakage' && c.severity === 'hard').map((c) => String(c.detail));
+    expect(leaks.some((d) => d.includes('Globexia Holdings') && d.includes('another job employer'))).toBe(true);
+    expect(leaks.some((d) => d.includes('Initech Pty') && d.includes('previousTarget.company'))).toBe(true);
+    // A fact only the CURRENT base CV has is not flagged.
+    const cv = { ...CV, experience: [{ ...CV.experience[0], bullets: ['Led 4711 engineers across five continents.'] }] };
+    const flagged = async () =>
+      (((await (await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv, coverLetter: LETTER })).json()) as any).checks as any[]).some(
+        (c) => c.code === 'unknown_fact' && String(c.detail).includes('4711'),
+      );
+    expect(await flagged()).toBe(true);
+    await db.query(`update base_documents set structured = structured || '{"note":"Led 4711 engineers"}'::jsonb where kind='cv' and active`);
+    expect(await flagged()).toBe(false);
+  }, 90_000);
+
+  test('an unpaired surrogate is bad_request; an empty or repeated versionId is not the current version', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const v1 = await seed(jobId, { versionNo: 1 });
+    const bad = String.fromCharCode(0xd800);
+    const res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv: { ...CV, summary: `lone ${bad} surrogate` }, coverLetter: LETTER });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'bad_request' });
+    for (const q of ['versionId=', `versionId=${v1}&versionId=${v1}`]) {
+      const d = await get(`jobs/detail?id=${jobId}&${q}`);
+      expect(d.status, q).toBe(404);
+      expect(await d.json()).toEqual({ error: 'version_not_found' });
+      const dl = await get(`jobs/download?id=${jobId}&doc=cv&format=docx&${q}`);
+      expect(dl.status, q).toBe(400);
+      await dl.arrayBuffer();
+    }
   });
 
   test('CORS allows only the web origins', async () => {
