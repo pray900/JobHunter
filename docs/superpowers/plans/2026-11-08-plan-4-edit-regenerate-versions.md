@@ -144,3 +144,13 @@
 ### Amendment (Prayush, 2026-11-08, after the Task 2 review)
 
 - **Base CV replaced in place:** `baseCv` in detail is the version's base CV only while that row still has the same content (`content_hash = version.base_cv_hash`). If the row was deleted or its content changed, `baseCv` is `null` and the Diff tab shows "This version was made from an earlier base CV that's no longer stored" instead of a diff.
+
+### Amendment (Prayush, 2026-11-08, after the final review)
+
+- **Manual edits are kept always (replaces "honesty rules outrank the instruction" for manual edits only).** On a regenerate, every manually edited field (by path **and** text, see below) is locked: the writer must copy it exactly, whatever the instruction or the checks say. The instruction still cannot make the writer invent facts in any other field.
+  - Code checks whose location is inside a locked edit are not sent back to the writer and do not trigger another round; they are listed in `unresolved` as "Your edit — kept as you asked" with the check's label.
+  - The reviewer is told which text is Prayush's locked edit: it may note problems there, but does not fail a checklist item or object only because of locked text.
+  - A version whose locked edits break a hard check is saved with `review.passed = false` (shown plainly); the loop stops as soon as only locked-edit problems remain, so no round is paid to "fix" them.
+  - If the writer changes a locked edit anyway, that is a hard check `manual_edit_changed` (sent back to the writer).
+- **Edits tracked by text:** `reasons.manualEdits` becomes `{ path, text }[]`; after a regenerate an edit counts as kept only where that text is still present (path updated if it moved); markers follow the text.
+- **Unsaved edits:** leaving the editor with unsaved changes (in-app link, reload, closing the tab) asks "You have unsaved edits — leave anyway?" first.
