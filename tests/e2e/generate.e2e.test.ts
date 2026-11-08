@@ -804,6 +804,212 @@ describe('generate documents', () => {
     expect(await writerRequests()).toHaveLength(2);
   });
 
+  describe('regenerate with an instruction', () => {
+    const REGEN_LINE = 'Apply the instruction in <instruction> to the documents in <current_version>';
+    /** A generated version 1, then version 2: Prayush's edit of its summary (as the Versions API saves it). */
+    async function editedVersion(jobId: string) {
+      await queueRun(jobId);
+      await triggerGeneration();
+      const [v1] = await versions(jobId);
+      const cv = { ...v1.cv, summary: 'MANUAL_EDIT_5512 builds small stub teams.' };
+      const reasons = { ...v1.reasons, manualEdits: ['cv.experience[3].bullets[0]', 'cv.summary'] };
+      const [v2] = await db.query(
+        `insert into document_versions (owner_id, job_id, run_id, version_no, label, base_cv_id, base_cv_hash, template_id, cv,
+           cover_letter, reasons, keyword_coverage, review, checks, manual_edit, origin, parent_version_id)
+         select owner_id, job_id, null, 2, 'Edited', base_cv_id, base_cv_hash, template_id, $2::jsonb, cover_letter, $3::jsonb,
+                keyword_coverage, review || '{"reviewedVersionNo":1}'::jsonb, checks, true, 'edited', id
+         from document_versions where id = $1 returning id`,
+        [v1.id, JSON.stringify(cv), JSON.stringify(reasons)],
+      );
+      await stub.reset();
+      return { id: v2.id as string, cv, coverLetter: v1.cover_letter };
+    }
+    /** What a Regenerate click sends (the job page API), as the web app does. */
+    const regenerate = async (jobId: string, instruction: string, fromVersionId: string): Promise<string> => {
+      const res = await fetch(`${N8N_URL}/webhook/api/jobs/generate?id=${jobId}`, {
+        method: 'POST',
+        headers: { 'X-JobHunter': '1', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction, fromVersionId }),
+      });
+      const body = (await res.json()) as any;
+      expect(res.status, JSON.stringify(body)).toBe(202);
+      return body.runId;
+    };
+    /** The documents in the writer's own format ("" for none in the 5 optional fields). */
+    const writerFormat = (cv: any, coverLetter: any) => ({
+      cv: {
+        ...cv,
+        contact: { ...cv.contact, location: cv.contact.location ?? '', email: cv.contact.email ?? '', phone: cv.contact.phone ?? '' },
+        workRights: cv.workRights ?? '',
+        experience: cv.experience.map((e: any) => ({ ...e, location: e.location ?? '' })),
+      },
+      coverLetter,
+    });
+
+    test('regenerate passes instruction, current version and manual edits to the writer', async () => {
+      const jobId = await readyJob();
+      const from = await editedVersion(jobId);
+      const runId = await regenerate(jobId, '  Make the summary shorter.  ', from.id);
+      expect(await runRow(runId)).toMatchObject({ status: 'pending', instruction: 'Make the summary shorter.', from_version_id: from.id });
+      expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
+
+      const writes = await writerRequests();
+      expect(writes).toHaveLength(1);
+      expect(normalise(writes[0].system)).toBe(normalise(WRITER_PROMPT));
+      const text = sentText(writes[0]);
+      // The version it starts from, with Prayush's edit, in the writer's own "" format.
+      expect(JSON.parse(tag(text, 'current_version'))).toEqual(writerFormat(from.cv, from.coverLetter));
+      expect(tag(text, 'current_version')).toContain('MANUAL_EDIT_5512');
+      expect(JSON.parse(tag(text, 'manual_edits'))).toEqual(['cv.experience[3].bullets[0]', 'cv.summary']);
+      expect(tag(text, 'instruction')).toBe('Make the summary shorter.');
+      expect(text).toContain(REGEN_LINE);
+      expect(text).not.toContain('<previous_round>');
+      // The usual inputs are all still there.
+      for (const t of ['job_ad', 'job_facts', 'base_cv_facts', 'base_cover_letter', 'company_notes']) expect(() => tag(text, t)).not.toThrow();
+      expect(await runRow(runId)).toMatchObject({ status: 'done', instruction: 'Make the summary shorter.', from_version_id: from.id });
+    });
+
+    test('a regenerate revision round still carries the instruction and the manual edits', async () => {
+      const jobId = await readyJob();
+      const from = await editedVersion(jobId);
+      const pass = await canned('review_documents');
+      await stub.scriptPurpose('review_documents', [{ ...pass, verdict: 'fail', objections: [{ target: 'cv.summary', problem: 'OBJECTION_8120 vague.', fix: 'Be specific.' }] }]);
+      await regenerate(jobId, 'Make the summary shorter.', from.id);
+      await triggerGeneration();
+      const writes = await writerRequests();
+      expect(writes).toHaveLength(2);
+      const text = sentText(writes[1]);
+      expect(tag(text, 'previous_round')).toContain('OBJECTION_8120');
+      expect(tag(text, 'instruction')).toBe('Make the summary shorter.');
+      expect(JSON.parse(tag(text, 'manual_edits'))).toEqual(['cv.experience[3].bullets[0]', 'cv.summary']);
+      // Round 2 revises its own previous round, as in Plan 3.
+      expect(text).not.toContain('<current_version>');
+      expect(text).not.toContain(REGEN_LINE);
+    });
+
+    test('reviewer gets the instruction but not the writer prompt', async () => {
+      const jobId = await readyJob();
+      const from = await editedVersion(jobId);
+      await regenerate(jobId, 'Make the summary shorter.', from.id);
+      await triggerGeneration();
+      const [r] = await reviewRequests();
+      expect(normalise(r.system)).toBe(normalise(REVIEW_PROMPT));
+      const text = sentText(r);
+      expect(tag(text, 'instruction')).toBe('Make the summary shorter.');
+      expect(JSON.parse(tag(text, 'manual_edits'))).toEqual(['cv.experience[3].bullets[0]', 'cv.summary']);
+      expect(JSON.parse(tag(text, 'documents'))).toEqual(await canned('write_documents'));
+      expect(text).not.toContain('<current_version>');
+      const writerLine = WRITER_PROMPT.split(/\r?\n/).find((l) => l.startsWith('You write a tailored CV'))!;
+      const regenLine = WRITER_PROMPT.split(/\r?\n/).find((l) => l.includes('<current_version>'))!;
+      expect(regenLine).toBeTruthy();
+      for (const s of [WRITER_PROMPT.split(/\r?\n/)[0], writerLine.slice(0, 60), regenLine.slice(0, 60)]) expect(JSON.stringify(r)).not.toContain(s);
+    });
+
+    test('regenerate saves origin regenerated with the instruction as label', async () => {
+      const jobId = await readyJob();
+      const from = await editedVersion(jobId);
+      const runId = await regenerate(jobId, 'Make the summary shorter.', from.id);
+      await triggerGeneration();
+      const writer = await canned('write_documents');
+      let all = await versions(jobId);
+      expect(all.map((v) => v.version_no)).toEqual([1, 2, 3]);
+      expect(all[2]).toMatchObject({
+        run_id: runId,
+        origin: 'regenerated',
+        label: 'Make the summary shorter.',
+        instruction: 'Make the summary shorter.',
+        parent_version_id: from.id,
+        cv: writer.cv,
+        cover_letter: writer.coverLetter,
+      });
+      expect(all[2].review).toMatchObject({ passed: true, rounds: 1, verdicts: ['pass'] });
+      // The manual edits carried over: only the paths the new documents still have.
+      expect(all[2].reasons).toEqual({
+        templateReason: writer.templateReason,
+        changes: writer.changes,
+        stretches: [],
+        factRulings: [],
+        manualEdits: ['cv.summary'],
+      });
+
+      // A long instruction is cut to 80 characters for the label; the whole instruction is kept.
+      const long = `Rewrite the summary ${'and keep it plain '.repeat(6)}please.`;
+      expect(long.length).toBeGreaterThan(80);
+      await regenerate(jobId, long, all[2].id);
+      await triggerGeneration();
+      all = await versions(jobId);
+      expect(all[3]).toMatchObject({ origin: 'regenerated', instruction: long, parent_version_id: all[2].id });
+      expect(all[3].label).toBe(`${long.slice(0, 79).trimEnd()}…`);
+      expect(Array.from(all[3].label as string).length).toBeLessThanOrEqual(80);
+
+      // "Generate again" with no instruction is Plan 3's generate.
+      await queueRun(jobId);
+      await triggerGeneration();
+      all = await versions(jobId);
+      expect(all[4]).toMatchObject({ origin: 'generated', label: 'Generated', instruction: null, parent_version_id: null });
+      expect(all[4].reasons).not.toHaveProperty('manualEdits');
+    });
+
+    test('instruction cannot bypass the checks', async () => {
+      const jobId = await readyJob();
+      const from = await editedVersion(jobId);
+      const base = await canned('write_documents');
+      // The writer does what the dishonest instruction asks, every round.
+      const invented = { ...base, cv: { ...base.cv, experience: [{ ...base.cv.experience[0], bullets: ['Led a team of 10'] }] } };
+      await stub.scriptPurpose('write_documents', [invented, invented, invented]);
+      const runId = await regenerate(jobId, 'Say I led a team of 10.', from.id);
+      await triggerGeneration();
+      expect(await writerRequests()).toHaveLength(3);
+      const run = await runRow(runId);
+      expect(run).toMatchObject({ status: 'done', round: 3 });
+      expect(run.rounds.map((r: any) => r.passed)).toEqual([false, false, false]);
+      const v = (await versions(jobId))[2];
+      expect(v).toMatchObject({ origin: 'regenerated', label: 'Say I led a team of 10.' });
+      expect(v.review.passed).toBe(false);
+      expect(v.review.unresolved).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'check', code: 'unknown_fact', severity: 'hard', detail: expect.stringContaining('"10"') })]),
+      );
+      // The writer is told the rules outrank the instruction.
+      expect(WRITER_PROMPT).toMatch(/outrank the instruction/);
+    });
+
+    test('a retry of a regenerate keeps the instruction and the version it starts from', async () => {
+      const jobId = await readyJob();
+      const from = await editedVersion(jobId);
+      await stub.scriptPurpose('write_documents', [{ __stub_status: 529 }]);
+      const runId = await regenerate(jobId, 'Make the summary shorter.', from.id);
+      await triggerGeneration();
+      expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1 });
+      await db.query(`update generation_runs set updated_at = updated_at - interval '2 minutes' where id=$1`, [runId]);
+      await triggerGeneration();
+      const writes = await writerRequests();
+      expect(writes).toHaveLength(2);
+      const text = sentText(writes[1]);
+      expect(tag(text, 'instruction')).toBe('Make the summary shorter.');
+      expect(JSON.parse(tag(text, 'current_version'))).toEqual(writerFormat(from.cv, from.coverLetter));
+      expect(await runRow(runId)).toMatchObject({ status: 'done', attempts: 2 });
+      expect((await versions(jobId))[2]).toMatchObject({ origin: 'regenerated', parent_version_id: from.id });
+    });
+
+    test('a version to regenerate from that cannot be used fails the run without a Claude call', async () => {
+      const jobId = await readyJob();
+      const from = await editedVersion(jobId);
+      // Documents that do not validate (no CV name), and a run whose version has gone.
+      await db.query(`update document_versions set cv = cv - 'name' where id=$1`, [from.id]);
+      const bad = await regenerate(jobId, 'Make the summary shorter.', from.id);
+      await triggerGeneration();
+      expect(await runRow(bad)).toMatchObject({ status: 'failed', attempts: 1, error: 'The version to regenerate from could not be used.' });
+      const [gone] = await db.query(
+        `insert into generation_runs (owner_id, job_id, instruction) values ($1, $2, 'Shorter.') returning id`,
+        [OWNER, jobId],
+      );
+      await triggerGeneration();
+      expect(await runRow(gone.id)).toMatchObject({ status: 'failed', attempts: 1, error: 'The version to regenerate from could not be used.' });
+      expect(await stub.requests()).toEqual([]);
+      expect(await versions(jobId)).toHaveLength(2);
+    });
+  });
+
   // Checks on the workflow JSON itself, for behaviour the fixed test env cannot reach.
   describe('workflow definition', () => {
     const wf = JSON.parse(readFileSync(join(ROOT, 'n8n', 'workflows', 'generate-documents.json'), 'utf8'));
@@ -1468,12 +1674,171 @@ describe('generate documents', () => {
       });
     });
 
+    describe('regenerate', () => {
+      const REGEN = {
+        instruction: 'Make it shorter.',
+        from_version_id: 'v2',
+        from_version_no: 2,
+        current_version: {
+          cv: { name: 'N', contact: { location: null, email: 'e@x.io', phone: null }, workRights: null, experience: [{ location: null }] },
+          coverLetter: { name: 'N' },
+        },
+        manual_edits: ['cv.summary'],
+      };
+      const INPUTS = {
+        job_id: 'j1',
+        cv_block: { type: 'text', text: '<document>\nCV\n</document>' },
+        job_ad: 'Ad',
+        job_facts: { title: 'T', employer: 'E', advertiser: null, shortDescription: null },
+        base_cv_facts: { name: 'N' },
+        base_cover_letter: null,
+        company_notes: '',
+        cv_id: 'cv1',
+        cv_hash: 'h1',
+        cl_id: null,
+        cl_hash: null,
+      };
+      const nodeWith = (node: string, json: object, inputs: object, extra: Record<string, object> = {}) =>
+        new Function('$json', '$', '$now', code(node))(
+          json,
+          (name: string) => ({
+            first: () => {
+              if (name === 'Look up model prices') return prices();
+              if (name === 'Writer and reviewer prompts') return { json: { writer_prompt: 'W', writer_schema: {}, review_prompt: 'R', review_schema: {} } };
+              if (name === 'Prepare inputs') return { json: { inputs } };
+              return { json: extra[name] ?? {} };
+            },
+          }),
+          { toFormat: () => '8 November 2026' },
+        ).json;
+      const textOf = (out: any) => out.request.messages[0].content[1].text as string;
+      const tagOf = (text: string, name: string) => new RegExp(`<${name}>\\n([\\s\\S]*?)\\n</${name}>`).exec(text)?.[1];
+
+      test('the writer gets the current version in its own format, the manual edits and the instruction on round 1 only', () => {
+        const first = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't1', round: 1, rounds: [] }, { ...INPUTS, regenerate: REGEN }));
+        expect(JSON.parse(tagOf(first, 'current_version')!)).toEqual({
+          cv: { name: 'N', contact: { location: '', email: 'e@x.io', phone: '' }, workRights: '', experience: [{ location: '' }] },
+          coverLetter: { name: 'N' },
+        });
+        expect(JSON.parse(tagOf(first, 'manual_edits')!)).toEqual(['cv.summary']);
+        expect(tagOf(first, 'instruction')).toBe('Make it shorter.');
+        // The stored version itself is not changed by the "" mapping.
+        expect(REGEN.current_version.cv.workRights).toBeNull();
+        const prev = { round: 1, writer: { cv: {} }, checks: [], review: { verdict: 'fail', items: [], objections: [], factRulings: [], spellingRulings: [] }, passed: false };
+        const second = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't2', round: 2, rounds: [prev] }, { ...INPUTS, regenerate: REGEN }));
+        expect(tagOf(second, 'previous_round')).toBeTruthy();
+        expect(tagOf(second, 'instruction')).toBe('Make it shorter.');
+        expect(JSON.parse(tagOf(second, 'manual_edits')!)).toEqual(['cv.summary']);
+        expect(tagOf(second, 'current_version')).toBeUndefined();
+        // A plain Generate has none of them.
+        const plain = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't1', round: 1, rounds: [] }, { ...INPUTS, regenerate: null }));
+        for (const t of ['current_version', 'manual_edits', 'instruction']) expect(plain).not.toContain(`<${t}>`);
+      });
+
+      test('the reviewer gets the instruction and the manual edits, not the current version', () => {
+        const checked = { run_id: 'r1', round: 1, writer: { cv: {} }, checks: [] };
+        const out = nodeWith('Build review request', { id: 'r1', claimed_at: 't1', round: 1 }, { ...INPUTS, regenerate: REGEN }, { 'Read check results': checked });
+        const text = textOf(out);
+        expect(tagOf(text, 'instruction')).toBe('Make it shorter.');
+        expect(JSON.parse(tagOf(text, 'manual_edits')!)).toEqual(['cv.summary']);
+        expect(text).not.toContain('<current_version>');
+        expect(out.request.system).toBe('R');
+        const plain = textOf(nodeWith('Build review request', { id: 'r1', claimed_at: 't1', round: 1 }, { ...INPUTS, regenerate: null }, { 'Read check results': checked }));
+        expect(plain).not.toContain('<instruction>');
+      });
+
+      test('the saved version: label cut to 80 characters, manual edits whose paths still exist', () => {
+        const writer = {
+          templateId: 'standard-ats',
+          templateReason: 'r',
+          cv: { summary: 's', experience: [{ bullets: ['a', 'b'] }], contact: { email: null } },
+          coverLetter: { paragraphs: ['p'] },
+          keywordCoverage: { covered: [], missing: [] },
+          changes: [],
+          stretches: [],
+        };
+        const rounds = [{ round: 1, writer, checks: [], review: { verdict: 'pass', items: [], objections: [], factRulings: [], spellingRulings: [], stretches: [] }, passed: true }];
+        const edits = ['cv.summary', 'cv.experience[0].bullets[1]', 'cv.experience[0].bullets[2]', 'cv.experience[1].title', 'cv.contact.email', 'coverLetter.paragraphs[0]', 'cv.nope'];
+        const choose = (regenerate: object | null) =>
+          nodeWith('Choose the version to save', { run_id: 'r1', claimed_at: 't9', rounds }, { ...INPUTS, regenerate });
+        const out = choose({ ...REGEN, manual_edits: edits });
+        expect(out).toMatchObject({ save: true, label: 'Make it shorter.' });
+        expect(out.reasons.manualEdits).toEqual(['cv.summary', 'cv.experience[0].bullets[1]', 'cv.contact.email', 'coverLetter.paragraphs[0]']);
+        // Cut by characters, not UTF-16 units: an emoji at the cut stays whole.
+        const long = 'x'.repeat(78) + '😀 and more';
+        expect(choose({ ...REGEN, instruction: long }).label).toBe('x'.repeat(78) + '😀…');
+        expect(choose({ ...REGEN, instruction: 'y'.repeat(80) }).label).toBe('y'.repeat(80));
+        expect(choose({ ...REGEN, instruction: 'y'.repeat(81) }).label).toBe('y'.repeat(79) + '…');
+        const plain = choose(null);
+        expect(plain.label).toBe('Generated');
+        expect(plain.reasons).not.toHaveProperty('manualEdits');
+      });
+
+      test('preparing a regenerate: the run carries the instruction and version; unusable documents end the run', () => {
+        const GOOD_CV = {
+          name: 'N', headline: '', contact: { location: null, email: null, phone: null, links: [] }, summary: '', workRights: null,
+          skills: [], experience: [{ title: 'T', employer: 'E', location: null, dates: '', bullets: ['b'] }], education: [], projects: [],
+        };
+        const GOOD_LETTER = { date: 'd', addressee: '', salutation: 's', paragraphs: ['p'], signOff: 'k', name: 'N' };
+        const prepare = (run: object, fromVersion: object | null) =>
+          new Function('$json', '$', code('Prepare inputs'))(
+            { statusCode: 200, body: { documents: [{ kind: 'cv', contentHash: 'h1', pdfBase64: 'UERG' }] } },
+            (name: string) => ({
+              first: () => {
+                if (name === 'Claim one run') return { json: { id: 'r1', claimed_at: 't1', rounds: [], ...run } };
+                if (name === 'Look up model prices') return prices();
+                return { json: { job_id: 'j1', extraction_status: 'done', cv_id: 'c1', cv_hash: 'h1', cv_structured: {}, cl_structured: null, raw_text: 'ad', other_jobs: [], from_version: fromVersion } };
+              },
+            }),
+          ).json;
+        const fv = { id: 'v2', version_no: 2, cv: GOOD_CV, cover_letter: GOOD_LETTER, reasons: { manualEdits: ['cv.summary', 5] } };
+        expect(prepare({ instruction: null, from_version_id: null }, null)).toMatchObject({ ready: true, inputs: { regenerate: null } });
+        expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, fv).inputs.regenerate).toEqual({
+          instruction: 'Shorter.',
+          from_version_id: 'v2',
+          from_version_no: 2,
+          current_version: { cv: GOOD_CV, coverLetter: GOOD_LETTER },
+          manual_edits: ['cv.summary'],
+        });
+        expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, { ...fv, reasons: {} }).inputs.regenerate.manual_edits).toEqual([]);
+        const unusable = { ready: false, final: true, error: 'The version to regenerate from could not be used.' };
+        expect(prepare({ instruction: 'Shorter.', from_version_id: null }, null)).toMatchObject(unusable);
+        expect(prepare({ instruction: null, from_version_id: 'v2' }, fv)).toMatchObject(unusable);
+        expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, null)).toMatchObject(unusable);
+        for (const bad of [
+          { ...fv, cv: { ...GOOD_CV, name: '' } },
+          { ...fv, cv: { ...GOOD_CV, experience: [{ ...GOOD_CV.experience[0], bullets: [3] }] } },
+          { ...fv, cover_letter: { ...GOOD_LETTER, paragraphs: 'p' } },
+          { ...fv, cv: null },
+        ]) {
+          expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, bad)).toMatchObject(unusable);
+        }
+      });
+
+      test('the claim and the inputs carry the run\'s instruction and version; the save takes origin and parent from the run', () => {
+        expect(nodeByName('Claim one run').parameters.query).toMatch(/returning[^;]*\binstruction\b[^;]*\bfrom_version_id\b/);
+        const load = nodeByName('Load inputs');
+        expect(load.parameters.query).toMatch(/document_versions/);
+        expect(load.parameters.query).toMatch(/\.job_id = \$2/);
+        expect(load.parameters.options.queryReplacement).toContain('from_version_id');
+        const save = nodeByName('Save version').parameters.query;
+        expect(save).toMatch(/returning id, owner_id, job_id, instruction, from_version_id/);
+        expect(save).toMatch(/case when run\.from_version_id is not null then 'regenerated' else 'generated' end/);
+        expect(save).toMatch(/origin, parent_version_id/);
+        expect(nodeByName('Save version').parameters.options.queryReplacement).toContain('$json.label');
+      });
+    });
+
     test('prompts and schemas in the workflow match n8n/prompts', () => {
       const v = values();
       expect(normalise(v.writer_prompt)).toBe(normalise(WRITER_PROMPT));
       expect(normalise(v.review_prompt)).toBe(normalise(REVIEW_PROMPT));
       expect(JSON.parse(v.writer_schema)).toEqual(JSON.parse(promptFile('write-documents.schema.json')));
       expect(JSON.parse(v.review_schema)).toEqual(JSON.parse(promptFile('review-documents.schema.json')));
+      // Regenerate: the writer and the reviewer are told about the instruction and the manual edits.
+      for (const t of ['<current_version>', '<manual_edits>', '<instruction>']) expect(WRITER_PROMPT, t).toContain(t);
+      for (const t of ['<manual_edits>', '<instruction>']) expect(REVIEW_PROMPT, t).toContain(t);
+      expect(REVIEW_PROMPT).not.toContain('<current_version>');
       expect(WRITER_PROMPT.split(/\r?\n/)[0]).toBe('purpose: write_documents');
       expect(REVIEW_PROMPT.split(/\r?\n/)[0]).toBe('purpose: review_documents');
     });

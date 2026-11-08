@@ -13,7 +13,7 @@
         -300
       ],
       "parameters": {
-        "content": "## Job page API\nFive endpoints behind the job page. **Nothing here calls Claude.** The three that change data (`generate`, `status`, `notes`) first check the `X-JobHunter: 1` header, so a web page on another site cannot trigger them. Ids are checked as UUIDs inside the SQL before use. Every answer is quick (well under 30 s).\n\n- `POST api/jobs/generate` queues a run\n- `GET api/jobs/detail` the job page data\n- `POST api/jobs/status`, `POST api/jobs/notes`\n- `GET api/jobs/download` Word or PDF",
+        "content": "## Job page API\nFive endpoints behind the job page. **Nothing here calls Claude.** The three that change data (`generate`, `status`, `notes`) first check the `X-JobHunter: 1` header, so a web page on another site cannot trigger them. Ids are checked as UUIDs inside the SQL before use. Every answer is quick (well under 30 s).\n\n- `POST api/jobs/generate` queues a run (a Regenerate: with an instruction and the version it starts from)\n- `GET api/jobs/detail` the job page data\n- `POST api/jobs/status`, `POST api/jobs/notes`\n- `GET api/jobs/download` Word or PDF",
         "height": 280,
         "width": 560,
         "color": 7
@@ -90,18 +90,66 @@
       }
     },
     {
+      "id": "8c78855a-b134-5018-a2a2-00dabb2def33",
+      "name": "Check generate request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Validates the optional body before the database is touched. No body (or {}) is a plain Generate.\n// A Regenerate sends both { instruction, fromVersionId }: Prayush's instruction (trimmed, 1 to 1000\n// characters, no NUL) and the version it starts from (it must be this job's: checked in the insert).\nconst q = $json.query || {};\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst fail = (code, error) => ({ json: { ok: false, code, body: { error } } });\nif (typeof q.id !== 'string' || !UUID.test(q.id)) return fail(404, 'job_not_found');\nconst b = $json.body === undefined || $json.body === null || $json.body === '' ? {} : $json.body;\nif (typeof b !== 'object' || Array.isArray(b)) return fail(400, 'bad_request');\n// A key that is sent counts as given (null too: a null instruction is a bad instruction, not a plain Generate).\nconst given = (k) => b[k] !== undefined;\nif (!given('instruction') && !given('fromVersionId')) return { json: { ok: true, jobId: q.id, instruction: '', fromVersionId: '' } };\n// Both or neither.\nif (!given('instruction') || !given('fromVersionId')) return fail(400, 'bad_request');\nif (typeof b.fromVersionId !== 'string' || !UUID.test(b.fromVersionId)) return fail(400, 'bad_request');\nif (typeof b.instruction !== 'string') return fail(400, 'bad_instruction');\nconst instruction = b.instruction.trim();\n// PostgreSQL text cannot hold a NUL character, or an unpaired UTF-16 surrogate.\nconst lone = (s) => {\n  for (let i = 0; i < s.length; i++) {\n    const c = s.charCodeAt(i);\n    if (c >= 0xd800 && c <= 0xdbff) {\n      const n = s.charCodeAt(i + 1);\n      if (n >= 0xdc00 && n <= 0xdfff) { i++; continue; }\n      return true;\n    }\n    if (c >= 0xdc00 && c <= 0xdfff) return true;\n  }\n  return false;\n};\nconst length = Array.from(instruction).length;\nif (length < 1 || length > 1000 || instruction.indexOf(String.fromCharCode(0)) >= 0 || lone(instruction)) return fail(400, 'bad_instruction');\nreturn { json: { ok: true, jobId: q.id, instruction, fromVersionId: b.fromVersionId.toLowerCase() } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "dd7a7b65-bdbe-558c-a027-b01b3ff99e75",
+      "name": "Generate request valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a8e54aad-1d73-5202-a388-259f8cb4bd20",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
       "id": "545ebe88-ffba-55da-a96b-579f48e57d8f",
       "name": "Sticky Note 2",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        440,
+        880,
         -300
       ],
       "parameters": {
-        "content": "## Generate\nOnly **records** a request: one `pending` generation run. The Generate documents workflow picks it up on its schedule.\nThe insert is a single statement. The partial unique index (one active run per job) decides a double click or a second tab: `on conflict do nothing` returns no row, and the answer is `409 generation_in_progress`. Not ready: the job's details are not read yet (`422 job_not_ready`) or there is no analysed base CV (`422 base_cv_not_ready`). Nothing is queued then.",
-        "height": 300,
-        "width": 480,
+        "content": "## Generate and Regenerate\nOnly **records** a request: one `pending` generation run. The Generate documents workflow picks it up on its schedule.\n**Check generate request** reads the optional JSON body. No body (or `{}`) is a plain Generate. A Regenerate sends both `{ instruction, fromVersionId }`: one without the other, a `fromVersionId` that is not a UUID, or a body that is not an object is `400 bad_request`; an instruction that is not text, empty after trimming, over 1000 characters or with a NUL is `400 bad_instruction`. The run stores the trimmed instruction and the version.\nThe insert is a single statement. The partial unique index (one active run per job) decides a double click or a second tab: `on conflict do nothing` returns no row, and the answer is `409 generation_in_progress`. A version that is not this job's is `404 version_not_found`. Not ready: the job's details are not read yet (`422 job_not_ready`) or there is no analysed base CV (`422 base_cv_not_ready`). Nothing is queued then.",
+        "height": 380,
+        "width": 640,
         "color": 4
       }
     },
@@ -111,14 +159,14 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.8,
       "position": [
-        440,
+        880,
         0
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\n-- One statement: the insert only happens when the job and the base CV are ready. A second active\n-- run for the job violates the partial unique index; on conflict do nothing then returns no row.\nwith p as (select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id),\nj as (\n  select jobs.id, jobs.extraction_status from jobs, p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid\n), cv as (\n  select 1 as one from base_documents\n  where owner_id = $1::uuid and kind = 'cv' and active and analysis_status = 'done' and not source_removed\n  limit 1\n), ins as (\n  insert into generation_runs (owner_id, job_id)\n  select $1::uuid, j.id from j\n  where j.extraction_status = 'done' and exists (select 1 from cv)\n  on conflict do nothing\n  returning id\n)\nselect (select id from ins) as run_id,\n       exists (select 1 from j) as job_found,\n       coalesce((select extraction_status from j), '') as extraction_status,\n       exists (select 1 from cv) as cv_ready;",
+        "query": "-- Parameters: [1] owner, [2] job id (text, checked as a UUID below), [3] instruction (text, empty: a plain\n-- Generate), [4] the version a regenerate starts from (text, checked as a UUID below, empty: none)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\n-- One statement: the insert only happens when the job and the base CV are ready and, on a regenerate,\n-- the version is this job's. A second active run for the job violates the partial unique index;\n-- on conflict do nothing then returns no row.\nwith p as (\n  select case when $2::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $2::text::uuid end as id,\n         case when $4::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $4::text::uuid end as vid,\n         nullif($3::text, '') as instruction\n),\nj as (\n  select jobs.id, jobs.extraction_status from jobs, p\n  where jobs.id = p.id and jobs.owner_id = $1::uuid\n), v as (\n  select d.id from document_versions d, p, j\n  where d.id = p.vid and d.job_id = j.id and d.owner_id = $1::uuid\n), cv as (\n  select 1 as one from base_documents\n  where owner_id = $1::uuid and kind = 'cv' and active and analysis_status = 'done' and not source_removed\n  limit 1\n), ins as (\n  insert into generation_runs (owner_id, job_id, instruction, from_version_id)\n  select $1::uuid, j.id, p.instruction, (select id from v) from j, p\n  where j.extraction_status = 'done' and exists (select 1 from cv)\n    and (p.instruction is null) = (p.vid is null)\n    and (p.vid is null or exists (select 1 from v))\n  on conflict do nothing\n  returning id\n)\nselect (select id from ins) as run_id,\n       exists (select 1 from j) as job_found,\n       coalesce((select extraction_status from j), '') as extraction_status,\n       exists (select 1 from cv) as cv_ready,\n       ($4::text <> '') as version_requested,\n       exists (select 1 from v) as version_found;",
         "options": {
-          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(($json.query || {}).id || '')) ? String(($json.query || {}).id || '') : '') ] }}"
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $json.jobId, $json.instruction, $json.fromVersionId ] }}"
         }
       },
       "credentials": {
@@ -135,11 +183,11 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        660,
+        1100,
         0
       ],
       "parameters": {
-        "jsCode": "// Turns the insert's outcome into the HTTP answer.\nconst r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (r.run_id) return { json: { code: 202, body: { runId: r.run_id } } };\nif (!r.job_found) return { json: { code: 404, body: { error: 'job_not_found' } } };\nif (r.extraction_status !== 'done') return { json: { code: 422, body: { error: 'job_not_ready' } } };\nif (!r.cv_ready) return { json: { code: 422, body: { error: 'base_cv_not_ready' } } };\n// Ready, but no row: the job already has an active run.\nreturn { json: { code: 409, body: { error: 'generation_in_progress' } } };"
+        "jsCode": "// Turns the insert's outcome into the HTTP answer.\nconst r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (r.run_id) return { json: { code: 202, body: { runId: r.run_id } } };\nif (!r.job_found) return { json: { code: 404, body: { error: 'job_not_found' } } };\n// A regenerate from a version that is not this job's.\nif (r.version_requested && !r.version_found) return { json: { code: 404, body: { error: 'version_not_found' } } };\nif (r.extraction_status !== 'done') return { json: { code: 422, body: { error: 'job_not_ready' } } };\nif (!r.cv_ready) return { json: { code: 422, body: { error: 'base_cv_not_ready' } } };\n// Ready, but no row: the job already has an active run.\nreturn { json: { code: 409, body: { error: 'generation_in_progress' } } };"
       },
       "onError": "continueRegularOutput"
     },
@@ -149,7 +197,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        880,
+        1320,
         0
       ],
       "parameters": {
@@ -229,7 +277,7 @@
         500
       ],
       "parameters": {
-        "jsCode": "// Builds the answer. A generation error is shown only when it is one of the Generate workflow's own\n// user-facing messages (grep \"error\" in generate-documents.json). Anything else may hold raw error\n// text, so it is replaced by a fixed message.\nconst r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\n// A version asked for by id that is not this job's.\nif (r.version_requested && !r.version) return { json: { code: 404, body: { error: 'version_not_found' } } };\nconst FIXED = new Set([\n  'The job was not found.',\n  \"The job's details have not been read yet.\",\n  \"Your base CV isn't ready.\",\n  'Your base CV file could not be read; it will be tried again.',\n  'The last attempt stopped before it finished; it will be tried again.',\n  'Generation stopped and gave up after 3 attempts.',\n  'Claude declined to write the documents.',\n  'Claude declined to review the documents.',\n  \"Claude's answer was cut off (max_tokens).\",\n  \"The writer's answer was not in the expected format.\",\n  \"The reviewer's answer was not in the expected format.\",\n  \"The writer's documents were not in the expected format.\",\n  'Your base documents changed while this was being written. Choose Generate again.',\n]);\nconst PATTERNS = [\n  /^The request to Claude failed \\((HTTP \\d{3}|no response)\\)\\.$/,\n  // A summarised Claude error body (generate-documents keeps only plain text: letters, digits and . , : ; ' \" ( ) - /).\n  /^The request to Claude failed \\(HTTP \\d{3}: [\\w .,:;'\"()\\-\\/]{1,260}\\)\\.$/,\n  /^Claude stopped unexpectedly \\(([a-z_]{1,40}|no stop reason)\\)\\.$/,\n  /^The document checks could not run \\((HTTP \\d{3}|no response)\\)\\.$/,\n];\nconst GENERIC = 'Something went wrong while generating. Try again.';\nlet generation = r.generation || null;\nif (generation && generation.error != null) {\n  const e = String(generation.error);\n  generation = { ...generation, error: FIXED.has(e) || PATTERNS.some((p) => p.test(e)) ? e : GENERIC };\n}\nreturn { json: { code: 200, body: { job: r.job, generation, version: r.version || null, versions: r.version_count ?? 0, baseCv: r.base_cv || null } } };"
+        "jsCode": "// Builds the answer. A generation error is shown only when it is one of the Generate workflow's own\n// user-facing messages (grep \"error\" in generate-documents.json). Anything else may hold raw error\n// text, so it is replaced by a fixed message.\nconst r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (!r.found) return { json: { code: 404, body: { error: 'job_not_found' } } };\n// A version asked for by id that is not this job's.\nif (r.version_requested && !r.version) return { json: { code: 404, body: { error: 'version_not_found' } } };\nconst FIXED = new Set([\n  'The job was not found.',\n  \"The job's details have not been read yet.\",\n  \"Your base CV isn't ready.\",\n  'Your base CV file could not be read; it will be tried again.',\n  'The last attempt stopped before it finished; it will be tried again.',\n  'Generation stopped and gave up after 3 attempts.',\n  'Claude declined to write the documents.',\n  'Claude declined to review the documents.',\n  \"Claude's answer was cut off (max_tokens).\",\n  \"The writer's answer was not in the expected format.\",\n  \"The reviewer's answer was not in the expected format.\",\n  \"The writer's documents were not in the expected format.\",\n  'Your base documents changed while this was being written. Choose Generate again.',\n  'The version to regenerate from could not be used.',\n]);\nconst PATTERNS = [\n  /^The request to Claude failed \\((HTTP \\d{3}|no response)\\)\\.$/,\n  // A summarised Claude error body (generate-documents keeps only plain text: letters, digits and . , : ; ' \" ( ) - /).\n  /^The request to Claude failed \\(HTTP \\d{3}: [\\w .,:;'\"()\\-\\/]{1,260}\\)\\.$/,\n  /^Claude stopped unexpectedly \\(([a-z_]{1,40}|no stop reason)\\)\\.$/,\n  /^The document checks could not run \\((HTTP \\d{3}|no response)\\)\\.$/,\n];\nconst GENERIC = 'Something went wrong while generating. Try again.';\nlet generation = r.generation || null;\nif (generation && generation.error != null) {\n  const e = String(generation.error);\n  generation = { ...generation, error: FIXED.has(e) || PATTERNS.some((p) => p.test(e)) ? e : GENERIC };\n}\nreturn { json: { code: 200, body: { job: r.job, generation, version: r.version || null, versions: r.version_count ?? 0, baseCv: r.base_cv || null } } };"
       },
       "onError": "continueRegularOutput"
     },
@@ -802,7 +850,7 @@
       "main": [
         [
           {
-            "node": "Queue one run",
+            "node": "Check generate request",
             "type": "main",
             "index": 0
           }
@@ -1076,6 +1124,35 @@
         [
           {
             "node": "Respond: render failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check generate request": {
+      "main": [
+        [
+          {
+            "node": "Generate request valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate request valid?": {
+      "main": [
+        [
+          {
+            "node": "Queue one run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: generate",
             "type": "main",
             "index": 0
           }

@@ -110,11 +110,94 @@ describe('job page API', () => {
     expect(await db.query(`select id from generation_runs`)).toEqual([]);
   });
 
+  test('regenerate queues a run with the trimmed instruction and the version it starts from', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const v1 = await addVersion(jobId);
+    await stub.reset();
+    const instruction = `  ${'x'.repeat(1000)}\n `;
+    const res = await post(`jobs/generate?id=${jobId}`, { instruction, fromVersionId: v1 });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as any;
+    expect(Object.keys(body)).toEqual(['runId']);
+    const [run, ...more] = await runs(jobId);
+    expect(more).toEqual([]);
+    expect(run).toMatchObject({ id: body.runId, status: 'pending', instruction: 'x'.repeat(1000), from_version_id: v1 });
+    expect(await stub.requests()).toEqual([]);
+    // Still one active run per job.
+    const again = await post(`jobs/generate?id=${jobId}`, { instruction: 'Shorter.', fromVersionId: v1 });
+    expect(again.status).toBe(409);
+    // No body, or an empty one, is Generate as before.
+    await db.query(`update generation_runs set status='done'`);
+    expect((await post(`jobs/generate?id=${jobId}`, {})).status).toBe(202);
+    const plain = (await runs(jobId)).find((r) => r.status === 'pending');
+    expect(plain).toMatchObject({ instruction: null, from_version_id: null });
+  });
+
+  test('bad instruction 400', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const v1 = await addVersion(jobId);
+    for (const instruction of ['', '   \n ', 'y'.repeat(1001), `a${String.fromCharCode(0)}b`, 5, null, ['x'], { a: 1 }, 'a\ud800b']) {
+      const res = await post(`jobs/generate?id=${jobId}`, { instruction, fromVersionId: v1 });
+      expect(res.status, JSON.stringify(instruction)).toBe(400);
+      expect(await res.json()).toEqual({ error: 'bad_instruction' });
+    }
+    // 1000 characters, counted as characters (an emoji is one).
+    expect((await post(`jobs/generate?id=${jobId}`, { instruction: '😀'.repeat(1000), fromVersionId: v1 })).status).toBe(202);
+    expect(await runs(jobId)).toHaveLength(1);
+  });
+
+  test('instruction without fromVersionId 400', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const v1 = await addVersion(jobId);
+    for (const body of [
+      { instruction: 'Shorter.' },
+      { fromVersionId: v1 },
+      { instruction: 'Shorter.', fromVersionId: 'nope' },
+      { instruction: 'Shorter.', fromVersionId: 5 },
+      { instruction: 'Shorter.', fromVersionId: null },
+      { instruction: null, fromVersionId: null },
+      [1, 2],
+      'Shorter.',
+    ]) {
+      const res = await post(`jobs/generate?id=${jobId}`, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(await res.json()).toEqual({ error: 'bad_request' });
+    }
+    expect(await runs(jobId)).toEqual([]);
+  });
+
+  test("regenerate from another job's version, or an unknown one, is 404 version_not_found", async () => {
+    await withCv();
+    const jobId = await addJob();
+    const other = await addJob();
+    const theirs = await addVersion(other);
+    for (const fromVersionId of [theirs, MISSING]) {
+      const res = await post(`jobs/generate?id=${jobId}`, { instruction: 'Shorter.', fromVersionId });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'version_not_found' });
+    }
+    // An unknown job is still job_not_found.
+    const res = await post(`jobs/generate?id=${MISSING}`, { instruction: 'Shorter.', fromVersionId: theirs });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'job_not_found' });
+    // Not ready is checked as before.
+    const notReady = await addJob({ extraction_status: 'failed' });
+    const mine = await addVersion(notReady);
+    const r2 = await post(`jobs/generate?id=${notReady}`, { instruction: 'Shorter.', fromVersionId: mine });
+    expect(r2.status).toBe(422);
+    expect(await r2.json()).toEqual({ error: 'job_not_ready' });
+    expect(await db.query(`select id from generation_runs`)).toEqual([]);
+  });
+
   test('state-changing endpoints need the header', async () => {
     await withCv();
     const jobId = await addJob();
     for (const [path, body] of [
       [`jobs/generate?id=${jobId}`, undefined],
+      [`jobs/generate?id=${jobId}`, { instruction: 'Shorter.', fromVersionId: MISSING }],
       [`jobs/status?id=${jobId}`, { status: 'applied' }],
       [`jobs/notes?id=${jobId}`, { notes: 'x' }],
     ] as const) {
@@ -222,6 +305,7 @@ describe('job page API', () => {
       'Claude stopped unexpectedly (pause_turn).',
       "The writer's documents were not in the expected format.",
       'Your base documents changed while this was being written. Choose Generate again.',
+      'The version to regenerate from could not be used.',
     ];
     const hidden = [
       'connect ECONNREFUSED 172.18.0.4:5432 password=hunter2',
