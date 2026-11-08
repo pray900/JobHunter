@@ -10,6 +10,7 @@ import {
   type TemplateId,
 } from './types.js';
 import { runChecks, type CheckInput } from './checks.js';
+import { changedPaths } from './changedPaths.js';
 import { InvalidDocumentError, validateTailoredCv, validateTailoredLetter } from './validate.js';
 
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -88,6 +89,26 @@ export function registerGenerationRoutes(app: FastifyInstance, deps: GenerationD
     } catch (err) {
       request.log.error({ reason: err instanceof PdfRenderError ? err.message : 'check failed' }, 'check failed');
       return reply.code(err instanceof PdfRenderError ? 502 : 500).send({ error: err instanceof PdfRenderError ? 'pdf_render_failed' : 'check_failed' });
+    }
+  });
+
+  app.post<{ Body: { before?: unknown; after?: unknown } | undefined }>('/generation/changed-paths', async (request, reply) => {
+    const body = request.body ?? {};
+    const read = (name: 'before' | 'after') => {
+      const side = body[name];
+      if (!isObj(side)) throw new InvalidDocumentError(name);
+      try {
+        return { cv: validateTailoredCv(side.cv), coverLetter: validateTailoredLetter(side.coverLetter) };
+      } catch (err) {
+        if (err instanceof InvalidDocumentError) throw new InvalidDocumentError(`${name}.${err.path}`);
+        throw err;
+      }
+    };
+    try {
+      return { paths: changedPaths(read('before'), read('after')) };
+    } catch (err) {
+      if (err instanceof InvalidDocumentError) return reply.code(400).send({ error: 'invalid_document', path: err.path });
+      throw err;
     }
   });
 }

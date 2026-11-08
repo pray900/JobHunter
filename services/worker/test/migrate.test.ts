@@ -25,6 +25,7 @@ test('applies 001_init once and seeds the single user', async () => {
     '002_base_documents.sql',
     '003_single_base_document.sql',
     '004_generation.sql',
+    '005_versions.sql',
   ]);
   expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual([]);
   const { rows } = await pool.query('select id, name from users');
@@ -41,6 +42,8 @@ async function migrateUpTo(files: string[]): Promise<string[]> {
     await fs.rm(dir, { recursive: true, force: true });
   }
 }
+
+const MIG4 = ['001_init.sql', '002_base_documents.sql', '003_single_base_document.sql', '004_generation.sql'];
 
 test('applies 002 after 001', async () => {
   await pool.query('drop schema public cascade; create schema public;');
@@ -98,7 +101,7 @@ test('jobs.score_status defaults to pending', async () => {
 test('applies 004 after 003', async () => {
   await pool.query('drop schema public cascade; create schema public;');
   await migrateUpTo(['001_init.sql', '002_base_documents.sql', '003_single_base_document.sql']);
-  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['004_generation.sql']);
+  expect(await migrateUpTo(['001_init.sql', '002_base_documents.sql', '003_single_base_document.sql', '004_generation.sql'])).toEqual(['004_generation.sql']);
   const { rows } = await pool.query(
     `select to_regclass('generation_runs') as r, to_regclass('document_versions') as v,
        (select count(*) from information_schema.columns where table_name='jobs' and column_name='company_notes')::int as n,
@@ -127,7 +130,7 @@ test('004 re-queues a done CV without a name', async () => {
     values ($1,$2,$3,'h','application/pdf',$4,'done',1,$5::jsonb)`;
   await pool.query(insert, [USER_ID, 'cv', 'noname.pdf', true, JSON.stringify({ headline: 'x' })]);
   await pool.query(insert, [USER_ID, 'cover_letter', 'letter.pdf', true, JSON.stringify({ tone: 'x' })]);
-  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['004_generation.sql']);
+  expect(await migrateUpTo(MIG4)).toEqual(['004_generation.sql']);
   const { rows } = await pool.query(`select source_ref, analysis_status, analysis_attempts from base_documents order by source_ref`);
   expect(rows).toEqual([
     { source_ref: 'letter.pdf', analysis_status: 'done', analysis_attempts: 1 },
@@ -137,7 +140,27 @@ test('004 re-queues a done CV without a name', async () => {
   await pool.query('drop schema public cascade; create schema public;');
   await migrateUpTo(['001_init.sql', '002_base_documents.sql', '003_single_base_document.sql']);
   await pool.query(insert, [USER_ID, 'cv', 'named.pdf', true, JSON.stringify({ name: 'A Person' })]);
-  await runMigrations(pool, MIGRATIONS_DIR);
+  await migrateUpTo(MIG4);
   const { rows: after } = await pool.query(`select analysis_status, analysis_attempts from base_documents`);
   expect(after).toEqual([{ analysis_status: 'done', analysis_attempts: 1 }]);
+});
+
+test('applies 005 after 004; origin defaults to generated', async () => {
+  await pool.query('drop schema public cascade; create schema public;');
+  await migrateUpTo(MIG4);
+  const { rows: job } = await pool.query(
+    `insert into jobs(owner_id, source, source_ref, content_hash, raw_text) values ($1,'folder','v.docx','h','t') returning id`,
+    [USER_ID],
+  );
+  const insert = `insert into document_versions(owner_id, job_id, version_no, label, base_cv_hash, template_id, cv, cover_letter, reasons, keyword_coverage, review, checks)
+    values ($1,$2,1,'v1','h','standard-ats','{}','{}','{}','{}','{}','{}') returning id`;
+  await pool.query(insert, [USER_ID, job[0].id]);
+  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['005_versions.sql']);
+  const { rows } = await pool.query(`select origin, parent_version_id from document_versions`);
+  expect(rows).toEqual([{ origin: 'generated', parent_version_id: null }]);
+  await expect(pool.query(`update document_versions set origin = 'bogus'`)).rejects.toThrow(/check/);
+  const { rows: c } = await pool.query(
+    `select count(*)::int as n from information_schema.columns where table_name='generation_runs' and column_name='from_version_id'`,
+  );
+  expect(c[0].n).toBe(1);
 });

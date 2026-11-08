@@ -48,3 +48,20 @@ test('check route answers 400 invalid_document and 502 when gotenberg fails', as
   expect(down.statusCode).toBe(502);
   await a.close();
 });
+
+test('route validates both documents', async () => {
+  const a = app();
+  const ok = await a.inject({ method: 'POST', url: '/generation/changed-paths', payload: { before: { cv: CV, coverLetter: LETTER }, after: { cv: { ...CV, summary: 'x' }, coverLetter: LETTER } } });
+  expect(ok.statusCode).toBe(200);
+  expect(ok.json()).toEqual({ paths: ['cv.summary'] });
+  const badBefore = await a.inject({ method: 'POST', url: '/generation/changed-paths', payload: { before: { cv: { ...CV, name: '' }, coverLetter: LETTER }, after: { cv: CV, coverLetter: LETTER } } });
+  expect(badBefore.statusCode).toBe(400);
+  expect(badBefore.json()).toEqual({ error: 'invalid_document', path: 'before.cv.name' });
+  const badAfter = await a.inject({ method: 'POST', url: '/generation/changed-paths', payload: { before: { cv: CV, coverLetter: LETTER }, after: { cv: CV, coverLetter: { ...LETTER, paragraphs: 'no' } } } });
+  expect(badAfter.statusCode).toBe(400);
+  expect(badAfter.json().error).toBe('invalid_document');
+  expect(badAfter.json().path).toMatch(/^after\.coverLetter/);
+  const missing = await a.inject({ method: 'POST', url: '/generation/changed-paths', payload: {} });
+  expect(missing.json()).toEqual({ error: 'invalid_document', path: 'before' });
+  await a.close();
+});
