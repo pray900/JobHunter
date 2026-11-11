@@ -820,13 +820,13 @@ describe('generate documents', () => {
      * A generated version 1, then version 2: Prayush's edit of its summary (as the Versions API saves it).
      * `legacy`: the edits as rows saved before edits were kept by text (paths only, one no longer there).
      */
-    async function editedVersion(jobId: string, opts: { text?: string; legacy?: boolean } = {}) {
+    async function editedVersion(jobId: string, opts: { text?: string; legacy?: boolean; links?: object[]; edits?: object[] } = {}) {
       await queueRun(jobId);
       await triggerGeneration();
       const [v1] = await versions(jobId);
       const text = opts.text ?? EDIT;
-      const cv = { ...v1.cv, summary: text };
-      const manualEdits = opts.legacy ? ['cv.experience[3].bullets[0]', 'cv.summary'] : [{ path: 'cv.summary', text }];
+      const cv = { ...v1.cv, summary: text, ...(opts.links ? { contact: { ...v1.cv.contact, links: opts.links } } : {}) };
+      const manualEdits = opts.edits ?? (opts.legacy ? ['cv.experience[3].bullets[0]', 'cv.summary'] : [{ path: 'cv.summary', text }]);
       const reasons = { ...v1.reasons, manualEdits };
       const [v2] = await db.query(
         `insert into document_versions (owner_id, job_id, run_id, version_no, label, base_cv_id, base_cv_hash, template_id, cv,
@@ -1060,6 +1060,31 @@ describe('generate documents', () => {
       );
       expect(v.checks).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'unknown_fact', locked: true })]));
       expect(v.reasons.manualEdits).toEqual([{ path: 'cv.summary', text: broken }]);
+    });
+
+    test('R1: a label-only edit does not lock the link: a url the writer invents goes back to it', async () => {
+      const jobId = await readyJob();
+      const label = { path: 'cv.contact.links[0].label', text: 'Portfolio' };
+      const from = await editedVersion(jobId, { links: [{ label: 'Portfolio', url: 'https://stub.example.com/me' }], edits: [label] });
+      const w = await canned('write_documents');
+      const evil = { ...w, cv: { ...w.cv, summary: EDIT, contact: { ...w.cv.contact, links: [{ label: 'Portfolio', url: 'https://evil.example/x' }] } } };
+      await stub.scriptPurpose('write_documents', [evil, evil, evil]);
+      const runId = await regenerate(jobId, 'Make the summary shorter.', from.id);
+      await triggerGeneration();
+      // Not his to keep: every round goes back to the writer, up to the limit.
+      const writes = await writerRequests();
+      expect(writes).toHaveLength(3);
+      const prev = JSON.parse(tag(sentText(writes[1]), 'previous_round'));
+      const linkCheck = prev.failedChecks.find((x: any) => x.where === 'cv.contact.links[0]');
+      expect(linkCheck).toBeTruthy();
+      expect(linkCheck.locked).toBeUndefined();
+      const run = await runRow(runId);
+      expect(run.rounds.some((r: any) => r.lockedOnly)).toBe(false);
+      const v = (await versions(jobId))[2];
+      expect(v.review.passed).toBe(false);
+      const listed = v.review.unresolved.filter((u: any) => u.where === 'cv.contact.links[0]');
+      expect(listed.length).toBeGreaterThan(0);
+      for (const u of listed) expect(u.note).not.toBe('Your edit — kept as you asked');
     });
 
     test('a writer that changes a locked edit gets the hard check manual_edit_changed back', async () => {
@@ -1972,7 +1997,8 @@ describe('generate documents', () => {
             ['unknown_fact', 'cv.summary', true],
             ['unmatched_skill', 'cv.experience[0].bullets[1]', true],
             ['unknown_fact', 'cv.experience[0].bullets[0]', false],
-            ['link_invalid', 'cv.contact.links[0]', true],
+            // R1: the link check covers the label and the url; only the url is locked, so it is not his to keep.
+            ['link_invalid', 'cv.contact.links[0]', false],
             ['cv_pages', null, false],
             ['manual_edit_changed', 'coverLetter.paragraphs[1]', false],
           ]);
@@ -2068,6 +2094,61 @@ describe('generate documents', () => {
             { source: 'check', code: 'unmatched_skill', severity: 'review', doc: 'cv', where: 'cv.summary', detail: LOCKED_SKILL.detail, locked: true, note: 'Your edit — kept as you asked' },
           ]);
           expect(out.reasons.manualEdits).toEqual([{ path: 'cv.summary', text: MINE }]);
+        });
+
+        test('R1: a check on a parent of a locked edit is locked only when every field under it is locked', () => {
+          const run = (edits: object[], linkWriter: object) =>
+            nodeWith(
+              'Read check results',
+              { statusCode: 200, body: { checks: [c('unknown_fact', 'hard', 'cv.contact.links[0]', 'The link "https://evil.example/x" is not in the base CV.')], cvPages: 1, letterPages: 1 } },
+              { ...INPUTS, regenerate: { ...REGEN, manual_edits: edits } },
+              { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer: linkWriter, body: {} } },
+            ).checks[0];
+          const w = { cv: { contact: { links: [{ label: 'Portfolio', url: 'https://evil.example/x' }] } }, coverLetter: {} };
+          // He edited only the label; the writer changed the url: the check goes back to the writer.
+          expect(run([{ path: 'cv.contact.links[0].label', text: 'Portfolio' }], w).locked).toBeUndefined();
+          // He wrote both the label and the url, and both are intact: his to keep.
+          expect(
+            run([{ path: 'cv.contact.links[0].label', text: 'Portfolio' }, { path: 'cv.contact.links[0].url', text: 'https://evil.example/x' }], w).locked,
+          ).toBe(true);
+
+          // An objection on a whole role does not count as locked because one bullet in it is.
+          const pass = CANNED.review_documents;
+          const LOCKED_HARD = { ...c('unknown_fact', 'hard', 'cv.experience[0].bullets[0]', 'The number "4711" is not in the base CV.'), locked: true };
+          const out = readAnswer(
+            "Read the reviewer's answer",
+            {
+              ...STATE,
+              writer: { cv: { experience: [{ bullets: ['Led 4711 teams.', 'Wrote stubs.'] }] }, coverLetter: {} },
+              checks: [LOCKED_HARD],
+              cvPages: 1,
+              letterPages: 1,
+              locked_edits: [{ path: 'cv.experience[0].bullets[0]', text: 'Led 4711 teams.' }],
+            },
+            envelope({ ...pass, verdict: 'fail', objections: [{ target: 'cv.experience[0]', problem: 'p', fix: 'f' }] }),
+          );
+          expect(out.round_record.lockedOnly).toBeUndefined();
+        });
+
+        test('R2: a locked claim repeated in an unlocked field is not his to keep', () => {
+          const pass = CANNED.review_documents;
+          const LOCKED_SKILL = { ...c('unmatched_skill', 'review', 'cv.summary', 'The technology "Kubernetes" is not in the base CV.'), locked: true };
+          const COPY = c('unmatched_skill', 'review', 'cv.headline', 'The technology "Kubernetes" is not in the base CV.');
+          const invented = { ...pass, verdict: 'fail', factRulings: [{ text: 'Kubernetes', ruling: 'invented', why: 'w' }], objections: [{ target: 'cv.headline', problem: 'p', fix: 'f' }] };
+          const out = readAnswer(
+            "Read the reviewer's answer",
+            { ...STATE, writer: { w: 1 }, checks: [LOCKED_SKILL, COPY], cvPages: 1, letterPages: 1, locked_edits: [{ path: 'cv.summary', text: MINE }] },
+            envelope(invented),
+          );
+          expect(out.round_record.lockedOnly).toBeUndefined();
+          // The writer is told about the ruling, because an unlocked check names it.
+          const prev = { round: 1, writer: { cv: { summary: MINE } }, checks: [LOCKED_SKILL, COPY], review: { ...invented, items: [] }, passed: false };
+          const text = textOf(
+            nodeWith('Build writer request', { id: 'r1', claimed_at: 't2', round: 2, rounds: [prev] }, { ...INPUTS, regenerate: { ...REGEN, manual_edits: [{ path: 'cv.summary', text: MINE }] } }),
+          );
+          const sent = JSON.parse(tagOf(text, 'previous_round')!);
+          expect(sent.rulingsAgainst.facts.map((f: any) => f.text)).toEqual(['Kubernetes']);
+          expect(sent.failedChecks.map((x: any) => x.where)).toEqual(['cv.headline']);
         });
 
         test('a revision is not asked to fix what is inside a locked edit', () => {

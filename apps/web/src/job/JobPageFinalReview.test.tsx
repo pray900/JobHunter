@@ -309,3 +309,47 @@ describe('manual edit markers follow the text', () => {
     expect(marks[1]!.closest('li')).toHaveTextContent('Built LWC components.');
   });
 });
+
+describe('R3: Back and Forward with unsaved edits ask first', () => {
+  beforeEach(() => window.history.replaceState(null, '', window.location.href));
+  test('browser Back asks; Keep editing stays; Leave goes back past the guard entry', async () => {
+    const go = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    expect(window.history.state?.jhGuard).toBeUndefined();
+    await userEvent.type(screen.getByLabelText('Headline'), ' II');
+    // A guard entry sits on top of the page, so Back lands on it instead of leaving.
+    expect(window.history.state?.jhGuard).toBe(true);
+    act(() => {
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+    });
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('You have unsaved edits — leave anyway?');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Keep editing' }));
+    expect(screen.getByLabelText('Headline')).toHaveValue('Salesforce Developer II');
+    expect(window.history.state?.jhGuard).toBe(true);
+    act(() => {
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+    });
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Leave' }));
+    expect(go).toHaveBeenCalledWith(-2);
+    go.mockRestore();
+  });
+
+  test('once the edits are saved or discarded, Back is not blocked', async () => {
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await userEvent.type(screen.getByLabelText('Headline'), ' II');
+    expect(window.history.state?.jhGuard).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Discard changes' }));
+    // The guard entry is taken off again.
+    await waitFor(() => expect(back).toHaveBeenCalledTimes(1));
+    back.mockRestore();
+    act(() => {
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+    });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});

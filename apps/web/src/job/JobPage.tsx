@@ -52,6 +52,8 @@ const NEWER_WHILE_EDITING =
   'A new version finished while you were editing. Saving adds your edit as the newest version; the other one stays in the history.';
 const GENERATE_AGAIN_HINT = 'Writes new documents from your base CV. Your edits are not carried over (they stay in the history).';
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
+// leaveTo for the browser's Back button (not an address).
+const BACK = '\u0000back';
 
 function CheckLines({ checks }: { checks: CheckResult[] }) {
   return (
@@ -92,6 +94,8 @@ export function JobPage() {
   const [dirty, setDirty] = useState(false);
   // Where an in-app link would take him while the editor holds unsaved edits (asks first).
   const [leaveTo, setLeaveTo] = useState<string | null>(null);
+  // Set when he confirms leaving with Back: the guard cleanup must not step back on its own.
+  const leavingBack = useRef(false);
   const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -170,11 +174,23 @@ export function JobPage() {
       e.stopPropagation();
       setLeaveTo(url.pathname + url.search + url.hash);
     }
+    // Back / Forward: a guard entry (same address) sits on top of the page, so Back first lands on the page
+    // itself; that pop is caught, the guard entry is put back and he is asked.
+    function onPopState() {
+      window.history.pushState({ ...(window.history.state ?? {}), jhGuard: true }, '', window.location.href);
+      setLeaveTo(BACK);
+    }
+    if (!window.history.state?.jhGuard) window.history.pushState({ ...(window.history.state ?? {}), jhGuard: true }, '', window.location.href);
     window.addEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('popstate', onPopState);
     document.addEventListener('click', onClick, true);
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('popstate', onPopState);
       document.removeEventListener('click', onClick, true);
+      // Edits saved or discarded: take the guard entry off again (unless he chose to leave, which goes past it).
+      if (leavingBack.current) leavingBack.current = false;
+      else if (window.history.state?.jhGuard) window.history.back();
     };
   }, [guard]);
 
@@ -733,6 +749,13 @@ export function JobPage() {
           onConfirm={() => {
             const to = leaveTo;
             setLeaveTo(null);
+            if (to === BACK) {
+              // Past the guard entry and the page entry: where Back would have gone.
+              leavingBack.current = true;
+              closeEditor();
+              window.history.go(-2);
+              return;
+            }
             closeEditor();
             navigate(to);
           }}
