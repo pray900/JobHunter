@@ -9,5 +9,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test-setup.ts'],
+    // The editor tests simulate a lot of typing; on a busy PC they can take just over vitest's 5 s default.
+    testTimeout: 20_000,
   },
 });
