@@ -149,3 +149,9 @@
 - [ ] **Step 3:** Edit the qualification to "Master of Information Technology (Extension)", save, and confirm the jobs re-score.
 - [ ] **Step 4:** On the job from 2026-11-13, click Generate again and confirm the new version's education line has no sub-major and the version passes. Record the cost.
 - [ ] **Step 5: Commit** `docs: base document editing`
+
+### Amendment (Prayush, 2026-11-13, after the Task 2 review)
+
+- **Version check on save:** `BaseDocumentFacts` gains `contentHash` (the file's `content_hash`). The save body becomes `{ kind, id, contentHash, facts }`, and the save lands only while the row still has that `content_hash` (both the load and the update `where` clauses). A file replaced under the same name answers `409 document_changed`. A missing or malformed `contentHash` is `400 bad_request`. Web: `saveBaseFacts(kind, id, contentHash, facts)`.
+- **Cleaned vs cleaned:** "unchanged save stores no edit" compares the normalised edited facts with Claude's `structured` normalised by the same rules (trim, blank nullable → null, blank list entries dropped), using a lenient normaliser that applies no size limits. The worker's `/documents/facts/check` takes an optional `base` and answers `sameAsBase: boolean`. **Undo** (`facts: null`) never runs the strict validator: it clears the edit and recomputes the warnings from `structured` through `/documents/checks`.
+- *(Claude's call, follows the Decision "replacing the file drops the edits")* "Retire replaced documents" also clears `edited_facts` / `edited_at`, so an earlier file uploaded again later never brings old edits back.
