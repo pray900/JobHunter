@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { ApiError, downloadUrl, fetchJobDetail, fetchVersions, generate, restoreVersion, saveCompanyNotes, saveEdit, setStatus } from '../api/client';
 import type { CheckResult, JobDetail, JobStatus, TailoredCv, TailoredLetter, VersionSummary } from '../api/types';
 import { STATUSES, statusLabel } from '../jobs/labels';
 import { safeHref } from '../jobs/safeHref';
+import { useLeaveGuard } from '../useLeaveGuard';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DocumentEditor } from './DocumentEditor';
 import { CvPreview, LetterPreview } from './DocumentPreview';
@@ -52,8 +53,6 @@ const NEWER_WHILE_EDITING =
   'A new version finished while you were editing. Saving adds your edit as the newest version; the other one stays in the history.';
 const GENERATE_AGAIN_HINT = 'Writes new documents from your base CV. Your edits are not carried over (they stay in the history).';
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
-// leaveTo for the browser's Back button (not an address).
-const BACK = '\u0000back';
 
 function CheckLines({ checks }: { checks: CheckResult[] }) {
   return (
@@ -92,11 +91,6 @@ export function JobPage() {
   const [editBase, setEditBase] = useState<EditBase | null>(null);
   const editing = editBase !== null;
   const [dirty, setDirty] = useState(false);
-  // Where an in-app link would take him while the editor holds unsaved edits (asks first).
-  const [leaveTo, setLeaveTo] = useState<string | null>(null);
-  // Set when he confirms leaving with Back: the guard cleanup must not step back on its own.
-  const leavingBack = useRef(false);
-  const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -156,43 +150,7 @@ export function JobPage() {
   }, [load]);
 
   // Unsaved edits: reload, closing the tab and in-app links ask first.
-  const guard = editing && dirty;
-  useEffect(() => {
-    if (!guard) return;
-    function onBeforeUnload(e: BeforeUnloadEvent) {
-      e.preventDefault();
-      e.returnValue = '';
-    }
-    function onClick(e: MouseEvent) {
-      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
-      if (!(a instanceof HTMLAnchorElement) || a.target === '_blank' || a.hasAttribute('download')) return;
-      const url = new URL(a.href, window.location.href);
-      // Downloads and other sites do not leave the editor.
-      if (url.origin !== window.location.origin || url.pathname.startsWith('/api/')) return;
-      e.preventDefault();
-      e.stopPropagation();
-      setLeaveTo(url.pathname + url.search + url.hash);
-    }
-    // Back / Forward: a guard entry (same address) sits on top of the page, so Back first lands on the page
-    // itself; that pop is caught, the guard entry is put back and he is asked.
-    function onPopState() {
-      window.history.pushState({ ...(window.history.state ?? {}), jhGuard: true }, '', window.location.href);
-      setLeaveTo(BACK);
-    }
-    if (!window.history.state?.jhGuard) window.history.pushState({ ...(window.history.state ?? {}), jhGuard: true }, '', window.location.href);
-    window.addEventListener('beforeunload', onBeforeUnload);
-    window.addEventListener('popstate', onPopState);
-    document.addEventListener('click', onClick, true);
-    return () => {
-      window.removeEventListener('beforeunload', onBeforeUnload);
-      window.removeEventListener('popstate', onPopState);
-      document.removeEventListener('click', onClick, true);
-      // Edits saved or discarded: take the guard entry off again (unless he chose to leave, which goes past it).
-      if (leavingBack.current) leavingBack.current = false;
-      else if (window.history.state?.jhGuard) window.history.back();
-    };
-  }, [guard]);
+  const leave = useLeaveGuard(editing && dirty, closeEditor);
 
   function closeEditor() {
     setEditBase(null);
@@ -741,25 +699,13 @@ export function JobPage() {
       </section>
 
       {version && <ReasonsPanel job={job} version={version} />}
-      {leaveTo !== null && (
+      {leave.pending && (
         <ConfirmDialog
           message="You have unsaved edits — leave anyway?"
           confirmLabel="Leave"
           cancelLabel="Keep editing"
-          onConfirm={() => {
-            const to = leaveTo;
-            setLeaveTo(null);
-            if (to === BACK) {
-              // Past the guard entry and the page entry: where Back would have gone.
-              leavingBack.current = true;
-              closeEditor();
-              window.history.go(-2);
-              return;
-            }
-            closeEditor();
-            navigate(to);
-          }}
-          onCancel={() => setLeaveTo(null)}
+          onConfirm={leave.confirm}
+          onCancel={leave.cancel}
         />
       )}
       {confirmRestore && version && (
