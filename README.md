@@ -64,6 +64,18 @@ Where the files are kept:
 - `docker compose down` keeps the volume; `docker compose down -v` deletes it together with the database, after which you upload your CV and cover letter again.
 - The old `PersonalDetailsCV/` and `PersonalDetailsCoverLetter/` folders are no longer used. JobHunter never reads or changes them; you can delete them yourself. After updating, upload your CV and cover letter once on the My documents page.
 
+### View and correct what was read
+
+Each ready slot has a **View and edit** link. The page shows the original file on the left (a PDF is shown on the page; a Word file gets a **Download original** button) and the facts Claude read from it on the right, with warnings in amber.
+
+- **Edit** (or press **E**) turns the facts into a form where every field can be changed. Lists can add, remove and move items. **Save** stores your corrections. Saving is free and never calls Claude.
+- A CV edit re-scores every job once (about US$0.016 each, the same as a new CV). The form shows the total before you save. Saving facts identical to what was read stores no edit and re-scores nothing. Cover letter edits re-score nothing.
+- **Undo all edits** goes back to what was read from the file.
+- Once edited, the corrected facts are your base CV or cover letter everywhere: scoring, Generate, Regenerate, the edit checks and the Diff vs base CV tab. The original CV file is no longer sent to Claude, so the writer and the reviewer never see two versions.
+- Replacing the file drops your edits (the Replace dialog warns you first). Uploading the same file again keeps them. An earlier file uploaded again later comes back without its old edits.
+- If the CV changed since the page opened, Save is refused until you reload the page.
+- Versions made before a CV edit show "made from an earlier base CV" on their Diff tab until the edit is undone.
+
 ## How match scores work
 
 Each job card shows a score from 0 to 100: how well your one base CV fits that job ad, with a **"Why this score?"** explanation (what matched, what is missing). The board sorts best match first.
@@ -93,7 +105,7 @@ In the left menu click **Workflows**, then open one. Each workflow has coloured 
 The shipped workflows **don't save successful runs** (workflow settings `saveDataSuccessExecution: none`, `saveManualExecutions: false`), so the execution list only shows failed runs and the database doesn't fill up with a run every 30 seconds. While learning, switch it on per workflow: open the workflow, **⋯ → Settings**, set **Save successful production executions** to *Save* (and **Save manual executions** to *Save*), then save. You will then see every run under **Executions**. Re-running the bootstrap resets it.
 ## Reading the workflows in n8n
 
-There are eight shipped workflows: Job intake sync, Jobs API, Base documents sync (reads your CV and cover letter), Documents API (serves and changes the My documents page), Job match scoring, Generate documents (writes, checks and reviews a tailored CV and cover letter after a Generate or Regenerate click), Job page API (the job page: details, status, notes, downloads, and queueing Generate / Regenerate) and Versions API (version history, saving an edit, restoring a version; never calls Claude). The first two are described step by step below; open the others in n8n and read their sticky notes the same way.
+There are eight shipped workflows: Job intake sync, Jobs API, Base documents sync (reads your CV and cover letter), Documents API (serves and changes the My documents page, reads and saves your corrections to the base CV and cover letter, and serves the original file), Job match scoring, Generate documents (writes, checks and reviews a tailored CV and cover letter after a Generate or Regenerate click), Job page API (the job page: details, status, notes, downloads, and queueing Generate / Regenerate) and Versions API (version history, saving an edit, restoring a version; never calls Claude). The first two are described step by step below; open the others in n8n and read their sticky notes the same way.
 
 ### Job intake sync
 
@@ -133,6 +145,7 @@ Real costs measured on 2026-11-07, in US dollars (Anthropic bills in US$):
 | Reviewing them (one round) | Opus 5.5 | about US$0.14 (measured on a real run, 2026-11-08) | once per writing round |
 | Regenerate with an instruction | Opus 5.5 | the same as Generate (about US$0.30–0.90) | only after you click Regenerate |
 | Edit, save an edit, restore, version history, Diff vs base CV, download | none | free | any time |
+| Save a base document edit | none | free (a CV edit re-scores every job once, like a new CV) | after you click Save |
 
 A Generate click costs one round (about US$0.30) when the first draft passes the review, and at most `GENERATION_MAX_ROUNDS` rounds (3: about US$0.90), so about US$0.30–0.90 per click. A failed attempt (an API error, or n8n restarted mid-run) is retried after 1, then 5 minutes, at most 3 attempts, and a retry **continues from the last finished round** (rounds already paid for are kept and count towards `GENERATION_MAX_ROUNDS`). Only the round that was cut off is paid for twice, so the worst case for one click is 2 × (rounds + 2) calls: 10 calls (about US$1.50, at about US$0.15 per call) at 3 rounds, 14 calls (about US$2.10) at the maximum of 5. A round whose documents are malformed is not reviewed, so it costs only the writer call. A Regenerate is a Generate with your instruction and the same limits; when the only problems left are inside your own kept edits, it stops at once instead of paying for rounds that cannot fix them. Nothing is written or reviewed without a click: the "Generate documents" workflow only picks up runs that a Generate click queued, and every call's cost is logged with its job and generation run.
 

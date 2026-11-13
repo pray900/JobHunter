@@ -178,6 +178,7 @@ The reviewer also checks the honesty of each reason and the keyword-coverage cla
 - Facts must be consistent across all generated versions for the same person.
 - Degree status and work-rights line must appear as in the base CVs; if a base CV lacks the work-rights line, flag it.
 - *As built:* role titles, employers, dates, education entries, contact details, links and the work-rights line are **copied exactly** from the base CV (links may gain `https://`; phone numbers compare by digits). A work-rights line in the output when the base has none, or one dropped when the base has it, is a hard fail. **Decided 2026-11-08 (Prayush):** words inside those copied fields (e.g. a past employer called "Dynamic …", a title with US spelling) are exempt from the spelling and banned-word checks while they match the base CV exactly; bracketed text added to an employer is a hard fail.
+- *Changed 2026-11-13 (Plan 6):* once Prayush corrects the facts in the app, the corrected facts are the source of facts, and the original CV file is no longer sent to Claude.
 
 ### 6.3a Cover letter sources *(Claude's call)*
 
@@ -275,6 +276,7 @@ Prayush supplied 3 job files and real base documents. Use them (redacted where n
 - **Decided 2026-11-07 (Prayush): "yes try again if upload failed".** Uploading again a file whose analysis failed 3 times (`failed`) resets it and analyses it afresh, even if the content is identical; only an upload does this, never the schedule or a plain sync.
 - Warnings: missing work-rights line, unclear degree status, banned phrases.
 - Every generated version records which base document (and its version) it came from.
+- *Changed 2026-11-13 (Plan 6):* each slot has a view and edit page showing the original file beside the facts read from it. Prayush can correct the facts (a CV edit re-scores every job once), undo all edits, and Replace drops the edits.
 
 ### 7.4 Settings (minimal)
 - Job-listing folder path. API key (stored server-side, never in the browser). Model IDs. Review round limit. Banned-word and tech-casing lists.
@@ -285,6 +287,8 @@ Visual mockups from brainstorming: `.superpowers/brainstorm/*/content/job-cards-
 ## 8. Data (shape, not schema)
 
 Entities: **User** (one row: Prayush), **Job** (source, source ref, URL, raw JD, extracted title/company/short desc, status, status history, warnings), **BaseDocument** (kind CV/cover letter, role label, original file, extracted text/structure, version), **Template**, **GenerationVersion** (job, base docs used, template, structured CV, structured cover letter, reasons, match score + explanation, reviewer rounds and verdicts, code-check results, instruction, manual-edit flag, created at), **CostLog** (per Claude call: model, tokens, cost, version).
+
+*Changed 2026-11-13 (Plan 6):* BaseDocument gains `edited_facts` and `edited_at` (null when not edited). A generated `facts_hash` is the basis for scores and versions; it equals the file's content hash until the facts are edited.
 
 Every row that belongs to a person carries a **user/owner id** from day one (§9).
 

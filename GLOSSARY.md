@@ -35,12 +35,16 @@ _Avoid_: Company, poster
 ## Documents
 
 **Base CV**:
-Prayush's own CV, the one he uploads; it is the only source of facts.
+Prayush's own CV as he uploaded it, with any corrections he made in the app; it is the only source of facts.
 _Avoid_: Master CV, original CV, template
 
 **Base cover letter**:
 Prayush's own cover letter, used only as a sample of tone and reusable paragraphs.
 _Avoid_: Template letter
+
+**Base edit**:
+A correction Prayush makes in the app to the facts read from his base CV or cover letter; it replaces those facts everywhere until he undoes it or replaces the file.
+_Avoid_: Override, manual edit (which is a change to a tailored version).
 
 **Tailored CV**:
 A CV written for one job from the base CV.
