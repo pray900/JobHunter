@@ -59,6 +59,12 @@ describe('validateFacts', () => {
     (input.roles[2] as unknown as Record<string, unknown>).salary = '1';
     expect(bad('cv', input)).toBe('facts.roles[2].salary');
   });
+  test('rejects extra keys named like inherited Object.prototype members', () => {
+    expect(bad('cv', { ...cv(), constructor: 1 })).toBe('facts.constructor');
+    expect(bad('cv', { ...cv(), toString: 1 })).toBe('facts.toString');
+    const parsed = JSON.parse(JSON.stringify(cv()).replace(/^\{/, '{"__proto__":1,'));
+    expect(bad('cv', parsed)).toBe('facts.__proto__');
+  });
   test('rejects a list over 100 items', () => {
     const input = cv();
     input.skills = Array.from({ length: 101 }, (_, i) => `s${i}`);

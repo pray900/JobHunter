@@ -79,7 +79,7 @@ function walk(spec: Spec, v: unknown, path: string): unknown {
     }
     case 'object': {
       if (!isPlainObject(v)) throw new Invalid(path);
-      for (const key of Object.keys(v)) if (!(key in spec.fields)) throw new Invalid(`${path}.${key}`);
+      for (const key of Object.keys(v)) if (!Object.hasOwn(spec.fields, key)) throw new Invalid(`${path}.${key}`);
       const out: Record<string, unknown> = {};
       for (const [key, sub] of Object.entries(spec.fields)) {
         if (!Object.hasOwn(v, key)) throw new Invalid(`${path}.${key}`);
