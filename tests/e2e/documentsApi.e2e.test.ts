@@ -446,6 +446,17 @@ describe('base document facts API', () => {
     expect(r.warnings).toEqual(before.warnings);
   });
 
+  test('extra key with odd characters is 400 invalid_facts', async () => {
+    await putDocument('cv', 'cv.pdf', makePdf('Base CV'));
+    const before = await readFacts('cv');
+    for (const key of ['a b', 'x-y']) {
+      const { status, body } = await save(before, { ...before.facts, [key]: 'x' });
+      expect(status).toBe(400);
+      expect(body).toEqual({ error: 'invalid_facts', path: 'facts' });
+    }
+    expect((await row('cv.pdf')).edited_facts).toBeNull();
+  });
+
   test('save without X-JobHunter is 403 and saves nothing', async () => {
     await putDocument('cv', 'cv.pdf', makePdf('Base CV'));
     const before = await readFacts('cv');
