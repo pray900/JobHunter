@@ -8,7 +8,7 @@ import { useLeaveGuard } from '../useLeaveGuard';
 import { BaseCvForm } from './BaseCvForm';
 import { BaseLetterForm } from './BaseLetterForm';
 import { FactsView } from './FactsView';
-import { InvalidPathContext } from './FormParts';
+import { InvalidPathContext } from '../forms/listEditing';
 import { documentWarningText } from './labels';
 
 const COST_PER_JOB = 0.016;

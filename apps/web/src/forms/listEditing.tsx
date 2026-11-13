@@ -52,19 +52,19 @@ export function TextField(props: { label: string; path: string; value: string | 
   );
 }
 
-// A list of text lines that can be added to, removed from and reordered.
-export function StringList(props: { noun: string; path: string; items: string[]; onChange: (items: string[]) => void; multiline?: boolean }) {
+// A list of text lines (path optional: only needed to mark a bad line) that can be added to, removed from and reordered.
+export function StringList(props: { noun: string; path?: string; items: string[]; onChange: (items: string[]) => void; multiline?: boolean }) {
   const { noun, path, items, onChange, multiline } = props;
   const bad = useContext(InvalidPathContext);
   return (
     <div className="edit-list">
       {items.map((text, i) => {
-        const p = `${path}[${i}]`;
+        const p = path === undefined ? null : `${path}[${i}]`;
         const common = {
           'aria-label': `${noun} ${i + 1}`,
-          'data-path': p,
-          'aria-invalid': bad === p ? (true as const) : undefined,
-          className: bad === p ? 'invalid' : undefined,
+          'data-path': p ?? undefined,
+          'aria-invalid': p !== null && bad === p ? (true as const) : undefined,
+          className: p !== null && bad === p ? 'invalid' : undefined,
           value: text,
         };
         return (

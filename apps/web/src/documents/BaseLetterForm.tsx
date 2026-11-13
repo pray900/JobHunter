@@ -1,5 +1,5 @@
 import type { BaseCoverLetterFacts } from '../api/types';
-import { StringList, TextField } from './FormParts';
+import { StringList, TextField } from '../forms/listEditing';
 
 export function BaseLetterForm(props: { facts: BaseCoverLetterFacts; onChange: (facts: BaseCoverLetterFacts) => void }) {
   const { facts: f, onChange } = props;

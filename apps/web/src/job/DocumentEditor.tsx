@@ -1,60 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { TailoredCv, TailoredLetter } from '../api/types';
+import { RowTools, StringList, applyTool, replaceAt } from '../forms/listEditing';
 import { ConfirmDialog } from './ConfirmDialog';
 
 const COPIED_NOTE = 'Copied from your base CV — change it there';
-
-function move<T>(list: T[], i: number, by: -1 | 1): T[] {
-  const j = i + by;
-  if (j < 0 || j >= list.length) return list;
-  const next = [...list];
-  [next[i], next[j]] = [next[j]!, next[i]!];
-  return next;
-}
-const without = <T,>(list: T[], i: number): T[] => list.filter((_, k) => k !== i);
-const replaceAt = <T,>(list: T[], i: number, v: T): T[] => list.map((x, k) => (k === i ? v : x));
-
-function RowTools(props: { noun: string; i: number; count: number; onChange: (next: 'up' | 'down' | 'remove') => void }) {
-  const { noun, i, count, onChange } = props;
-  return (
-    <span className="row-tools">
-      <button type="button" className="btn btn-small" aria-label={`Move ${noun} ${i + 1} up`} disabled={i === 0} onClick={() => onChange('up')}>
-        <span aria-hidden="true">↑</span>
-      </button>
-      <button type="button" className="btn btn-small" aria-label={`Move ${noun} ${i + 1} down`} disabled={i === count - 1} onClick={() => onChange('down')}>
-        <span aria-hidden="true">↓</span>
-      </button>
-      <button type="button" className="btn btn-small" aria-label={`Remove ${noun} ${i + 1}`} onClick={() => onChange('remove')}>
-        <span aria-hidden="true">✕</span>
-      </button>
-    </span>
-  );
-}
-
-function applyTool<T>(list: T[], i: number, what: 'up' | 'down' | 'remove'): T[] {
-  return what === 'remove' ? without(list, i) : move(list, i, what === 'up' ? -1 : 1);
-}
-
-function StringList(props: { noun: string; items: string[]; onChange: (items: string[]) => void; multiline?: boolean }) {
-  const { noun, items, onChange, multiline } = props;
-  return (
-    <div className="edit-list">
-      {items.map((text, i) => (
-        <div className="edit-row" key={i}>
-          {multiline ? (
-            <textarea aria-label={`${noun} ${i + 1}`} rows={4} value={text} onChange={(e) => onChange(replaceAt(items, i, e.target.value))} />
-          ) : (
-            <input type="text" aria-label={`${noun} ${i + 1}`} value={text} onChange={(e) => onChange(replaceAt(items, i, e.target.value))} />
-          )}
-          <RowTools noun={noun} i={i} count={items.length} onChange={(w) => onChange(applyTool(items, i, w))} />
-        </div>
-      ))}
-      <button type="button" className="btn btn-small" onClick={() => onChange([...items, ''])}>
-        Add {noun}
-      </button>
-    </div>
-  );
-}
 
 function Text(props: { label: string; value: string | null; onChange?: (v: string) => void; area?: boolean; rows?: number }) {
   const { label, value, onChange, area, rows } = props;

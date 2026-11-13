@@ -1,5 +1,5 @@
 import type { BaseCvFacts } from '../api/types';
-import { RowTools, StringList, TextField, applyTool, replaceAt } from './FormParts';
+import { RowTools, StringList, TextField, applyTool, replaceAt } from '../forms/listEditing';
 
 type Education = BaseCvFacts['education'][number];
 type Role = BaseCvFacts['roles'][number];
