@@ -59,7 +59,44 @@ export interface BaseDocumentSummary {
   analysisStatus: ExtractionStatus;
   analysisError: string | null;
   warnings: DocumentWarning[];
+  edited: boolean;
+  editedAt: string | null;
   updatedAt: string;
+}
+
+// Facts Claude read from a base CV (mirrors the worker's BaseCvFacts).
+export interface BaseCvFacts {
+  name: string | null;
+  headline: string | null;
+  summary: string | null;
+  workRights: string | null;
+  education: { qualification: string; institution: string; dates: string; statusText: string }[];
+  roles: { title: string; employer: string; dates: string; bullets: string[] }[];
+  projects: { name: string; bullets: string[] }[];
+  skills: string[];
+  metrics: string[];
+  contact: { location: string | null; email: string | null; phone: string | null; links: string[] };
+}
+
+export interface BaseCoverLetterFacts {
+  previousTarget: { company: string | null; addressee: string | null; role: string | null };
+  reusableParagraphs: string[];
+  toneNotes: string;
+}
+
+// GET/POST /api/documents/facts. `facts` are the effective facts (edited if edited, else as read).
+export interface BaseDocumentFacts {
+  id: string;
+  kind: DocumentKind;
+  sourceRef: string;
+  mediaType: string;
+  contentHash: string;
+  facts: BaseCvFacts | BaseCoverLetterFacts;
+  edited: boolean;
+  editedAt: string | null;
+  warnings: DocumentWarning[];
+  // Jobs a CV edit re-scores; 0 for a cover letter.
+  rescoreJobs: number;
 }
 
 // The one uploaded CV and the one uploaded cover letter; null when that slot is empty.

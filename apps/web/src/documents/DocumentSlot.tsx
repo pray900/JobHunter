@@ -1,6 +1,9 @@
+import { Link } from 'react-router-dom';
 import { useRef, useState } from 'react';
 import type { BaseDocumentSummary, DocumentKind } from '../api/types';
 import { documentWarningText } from './labels';
+
+const ROUTE: Record<DocumentKind, string> = { cv: '/documents/cv', cover_letter: '/documents/cover-letter' };
 
 const COPY: Record<DocumentKind, { heading: string; empty: string; upload: string; chooser: string }> = {
   cv: { heading: 'Your CV', empty: 'No CV yet', upload: 'Upload CV', chooser: 'Choose CV file' },
@@ -62,6 +65,12 @@ export function DocumentSlot(props: {
           {doc.analysisStatus === 'failed' && (
             <p className="note note-bad">Couldn't read this document: {doc.analysisError ?? 'unknown error'}</p>
           )}
+          {doc.edited && (
+            <p className="note">
+              Edited in the app
+              {doc.editedAt ? ` on ${new Date(doc.editedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}` : ''}
+            </p>
+          )}
           {doc.warnings.length > 0 && (
             <ul className="warnings">
               {doc.warnings.map((w, i) => (
@@ -85,6 +94,11 @@ export function DocumentSlot(props: {
         }}
       />
       <div className="slot-actions">
+        {doc?.analysisStatus === 'done' && (
+          <Link className="btn" to={ROUTE[kind]}>
+            View and edit
+          </Link>
+        )}
         {doc === null ? (
           <button type="button" className="btn btn-primary" disabled={busy} onClick={pick}>
             {copy.upload}
@@ -97,7 +111,11 @@ export function DocumentSlot(props: {
       </div>
       {confirming && doc !== null && (
         <ConfirmDialog
-          message={`Replace ${doc.sourceRef}? The current file will be replaced.`}
+          message={
+            doc.edited
+              ? `Replace ${doc.sourceRef}? Your edits in the app will be lost; the new file is read fresh.`
+              : `Replace ${doc.sourceRef}? The current file will be replaced.`
+          }
           confirmLabel="Replace file"
           onCancel={() => setConfirming(false)}
           onConfirm={() => {

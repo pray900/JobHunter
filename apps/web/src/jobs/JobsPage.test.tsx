@@ -106,6 +106,8 @@ describe('JobsPage', () => {
         analysisStatus: 'done',
         analysisError: null,
         warnings: [],
+        edited: false,
+        editedAt: null,
         updatedAt: '',
       },
       coverLetter: null,

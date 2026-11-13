@@ -1,4 +1,7 @@
 import type {
+  BaseCoverLetterFacts,
+  BaseCvFacts,
+  BaseDocumentFacts,
   DocumentKind,
   DocumentsResponse,
   DownloadDoc,
@@ -185,4 +188,51 @@ export function restoreVersion(id: string, versionId: string): Promise<{ version
 export function downloadUrl(id: string, doc: DownloadDoc, format: DownloadFormat, versionId?: string): string {
   const version = versionId ? `&versionId=${encodeURIComponent(versionId)}` : '';
   return `/api/jobs/download?id=${encodeURIComponent(id)}&doc=${doc}&format=${format}${version}`;
+}
+
+function parseBaseFacts(b: unknown): BaseDocumentFacts | null {
+  const facts = field(b, 'facts');
+  const kind = field(b, 'kind');
+  const editedAt = field(b, 'editedAt');
+  if (
+    typeof field(b, 'id') !== 'string' ||
+    (kind !== 'cv' && kind !== 'cover_letter') ||
+    typeof field(b, 'sourceRef') !== 'string' ||
+    typeof field(b, 'mediaType') !== 'string' ||
+    typeof field(b, 'contentHash') !== 'string' ||
+    !facts ||
+    typeof facts !== 'object' ||
+    Array.isArray(facts) ||
+    typeof field(b, 'edited') !== 'boolean' ||
+    (editedAt !== null && typeof editedAt !== 'string') ||
+    !Array.isArray(field(b, 'warnings')) ||
+    typeof field(b, 'rescoreJobs') !== 'number'
+  ) {
+    return null;
+  }
+  return b as BaseDocumentFacts;
+}
+
+// The facts of a base document (edited facts if edited). 404 no_document when the slot is empty or unread.
+export async function fetchBaseFacts(kind: DocumentKind): Promise<BaseDocumentFacts> {
+  const path = `/api/documents/facts?kind=${kind}`;
+  const out = parseBaseFacts(await getJson<unknown>(path));
+  if (!out) throw new ApiError(502, `GET ${path} returned an unexpected shape`);
+  return out;
+}
+
+// Saves edited facts; null undoes all edits. contentHash is the file the facts were opened from
+// (409 document_changed if it was replaced since). 400 invalid_facts carries the bad `path`.
+export function saveBaseFacts(
+  kind: DocumentKind,
+  id: string,
+  contentHash: string,
+  facts: BaseCvFacts | BaseCoverLetterFacts | null,
+): Promise<BaseDocumentFacts> {
+  return postJson('/api/documents/facts', { kind, id, contentHash, facts }, parseBaseFacts);
+}
+
+// A plain link to the original file (PDF inline, Word as a download).
+export function baseFileUrl(kind: DocumentKind): string {
+  return `/api/documents/file?kind=${kind}`;
 }

@@ -11,6 +11,9 @@ import {
   restoreVersion,
   saveCompanyNotes,
   saveEdit,
+  fetchBaseFacts,
+  saveBaseFacts,
+  baseFileUrl,
   setStatus,
   uploadDocument,
 } from './client';
@@ -267,4 +270,45 @@ test('detail: a check can be marked as inside a locked edit, and manual_edit_cha
   expect((await fetchJobDetail('j1')).version!.checks).toEqual(checks);
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, version: { ...baseVersion, checks: [{ ...checks[0], locked: 'yes' }] } })));
   await expect(fetchJobDetail('j1')).rejects.toMatchObject({ status: 502 });
+});
+
+const baseFactsBody = {
+  id: 'd1',
+  kind: 'cv',
+  sourceRef: 'my-cv.pdf',
+  mediaType: 'application/pdf',
+  contentHash: 'h1',
+  facts: { name: 'Alex Example' },
+  edited: false,
+  editedAt: null,
+  warnings: [],
+  rescoreJobs: 3,
+};
+
+test('fetchBaseFacts and saveBaseFacts send the right request and header', async () => {
+  const f = vi.fn().mockImplementation(async () => ok(baseFactsBody));
+  vi.stubGlobal('fetch', f);
+  expect(await fetchBaseFacts('cv')).toEqual(baseFactsBody);
+  expect(f.mock.calls[0][0]).toBe('/api/documents/facts?kind=cv');
+  const facts = { name: 'A' } as never;
+  expect(await saveBaseFacts('cv', 'd1', 'h1', facts)).toEqual(baseFactsBody);
+  const [url, init] = f.mock.calls[1];
+  expect(url).toBe('/api/documents/facts');
+  expect(init.method).toBe('POST');
+  expect(init.headers['X-JobHunter']).toBe('1');
+  expect(JSON.parse(init.body)).toEqual({ kind: 'cv', id: 'd1', contentHash: 'h1', facts });
+  await saveBaseFacts('cover_letter', 'd2', 'h2', null);
+  expect(JSON.parse(f.mock.calls[2][1].body)).toEqual({ kind: 'cover_letter', id: 'd2', contentHash: 'h2', facts: null });
+  expect(baseFileUrl('cover_letter')).toBe('/api/documents/file?kind=cover_letter');
+});
+
+test('saveBaseFacts surfaces invalid_facts path and rejects malformed answers', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ error: 'invalid_facts', path: 'roles[0].title' }, 400)));
+  await expect(saveBaseFacts('cv', 'd1', 'h1', null)).rejects.toMatchObject({ status: 400, code: 'invalid_facts', path: 'roles[0].title' });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ error: 'document_changed' }, 409)));
+  await expect(saveBaseFacts('cv', 'd1', 'h1', null)).rejects.toMatchObject({ status: 409, code: 'document_changed' });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseFactsBody, rescoreJobs: 'x' })));
+  await expect(saveBaseFacts('cv', 'd1', 'h1', null)).rejects.toMatchObject({ status: 502 });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseFactsBody, facts: null })));
+  await expect(fetchBaseFacts('cv')).rejects.toMatchObject({ status: 502 });
 });

@@ -24,6 +24,8 @@ function doc(over: Partial<BaseDocumentSummary>): BaseDocumentSummary {
     analysisStatus: 'done',
     analysisError: null,
     warnings: [],
+    edited: false,
+    editedAt: null,
     updatedAt: '2026-11-07T00:00:00.000Z',
     ...over,
   };
@@ -98,6 +100,36 @@ describe('DocumentsPage', () => {
     await userEvent.upload(screen.getByLabelText('Choose CV file'), file);
     await waitFor(() => expect(mockUpload).toHaveBeenCalledWith('cv', file));
     expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  test('ready slot links to view and edit', async () => {
+    mockFetch.mockResolvedValue({ cv: doc({}), coverLetter: doc({ id: 'd2', kind: 'cover_letter', sourceRef: 'c.pdf' }) });
+    renderPage();
+    const links = await screen.findAllByRole('link', { name: 'View and edit' });
+    expect(links.map((l) => l.getAttribute('href'))).toEqual(['/documents/cv', '/documents/cover-letter']);
+    expect(screen.queryByText('Edited in the app', { exact: false })).not.toBeInTheDocument();
+  });
+
+  test('no view and edit link while analysing or failed', async () => {
+    mockFetch.mockResolvedValue({ cv: doc({ analysisStatus: 'in_progress' }), coverLetter: doc({ id: 'd2', kind: 'cover_letter', analysisStatus: 'failed' }) });
+    renderPage();
+    await screen.findByText('Analysing…');
+    expect(screen.queryByRole('link', { name: 'View and edit' })).not.toBeInTheDocument();
+  });
+
+  test('edited slot shows the label', async () => {
+    mockFetch.mockResolvedValue({ ...empty, cv: doc({ edited: true, editedAt: '2026-11-10T02:00:00.000Z' }) });
+    renderPage();
+    expect(await screen.findByText(/Edited in the app/)).toBeInTheDocument();
+  });
+
+  test('replace warns when edited', async () => {
+    mockFetch.mockResolvedValue({ ...empty, cv: doc({ edited: true, editedAt: '2026-11-10T02:00:00.000Z' }) });
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Replace' }));
+    expect(
+      within(screen.getByRole('dialog')).getByText('Replace my-cv.pdf? Your edits in the app will be lost; the new file is read fresh.'),
+    ).toBeInTheDocument();
   });
 
   test('cancel leaves the file alone', async () => {
