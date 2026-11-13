@@ -46,18 +46,6 @@ _Avoid_: Template letter
 A CV written for one job from the base CV.
 _Avoid_: Custom CV, generated CV, new CV
 
-**Version**:
-One saved state of a job's tailored CV and cover letter; a generate, regenerate, edit or restore always adds a new one and never changes an old one.
-_Avoid_: Draft, revision, copy
-
-**Manual edit**:
-A change Prayush makes himself to a tailored CV or cover letter; it is kept word for word on every later regenerate.
-_Avoid_: Override, correction
-
-**Instruction**:
-What Prayush asks Claude to change when he regenerates a version.
-_Avoid_: Prompt, command
-
 **Template**:
 The look of a tailored CV or cover letter (font, layout, section order, length and content rules), separate from its words.
 _Avoid_: Style, format, theme
