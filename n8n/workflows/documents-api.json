@@ -13,8 +13,8 @@
         -140
       ],
       "parameters": {
-        "content": "## Start\nTwo endpoints for the user's ONE base CV and ONE base cover letter. Every webhook allows only the web app's origins.\n- **GET /webhook/api/documents** (row 1) lists them.\n- **POST /webhook/api/documents/upload?kind=cv|cover_letter** (row 2) uploads a file; it REPLACES the current document of that kind (the same operation fills an empty slot).\n\nThere is no delete: a document can only be replaced.\n\nThe upload refuses requests without `X-JobHunter: 1` (`403`). CORS blocks reading an answer, not sending a plain cross-site POST, and an upload replaces the user's document and starts a paid analysis.\n\nOnly the worker touches the stored files (`WORKER_URL`, its own storage); this workflow never reads or writes them itself.",
-        "height": 380,
+        "content": "## Start\nTwo endpoints for the user's ONE base CV and ONE base cover letter. Every webhook allows only the web app's origins.\n- **GET /webhook/api/documents** (row 1) lists them.\n- **POST /webhook/api/documents/upload?kind=cv|cover_letter** (row 2) uploads a file; it REPLACES the current document of that kind (the same operation fills an empty slot).\n- **GET /webhook/api/documents/facts?kind=** (row 3) reads a document's effective facts.\n- **POST /webhook/api/documents/facts** (row 4) saves edited facts (or undoes them).\n- **GET /webhook/api/documents/file?kind=** (row 5) serves the original file.\n\nThere is no delete: a document can only be replaced. Editing changes the facts only, never the file. None of these call Claude.\n\nThe upload and the save refuse requests without `X-JobHunter: 1` (`403`). CORS blocks reading an answer, not sending a plain cross-site POST, and an upload replaces the user's document and starts a paid analysis, a save changes the facts every document is written from.\n\nOnly the worker touches the stored files (`WORKER_URL`, its own storage); this workflow never reads or writes them itself.",
+        "height": 480,
         "width": 560,
         "color": 7
       }
@@ -48,7 +48,7 @@
         -140
       ],
       "parameters": {
-        "content": "## 1. List documents\nOne query returns **one row**: `cv` and `coverLetter` are the ACTIVE documents (the uploaded CV and cover letter, see *Base documents sync*), or `null` when that slot is empty. Replaced documents are not listed. `BaseDocumentSummary` = id, kind, sourceRef, analysisStatus, analysisError, warnings, updatedAt. Aggregated in SQL so an empty table still answers `{ cv: null, coverLetter: null }`.",
+        "content": "## 1. List documents\nOne query returns **one row**: `cv` and `coverLetter` are the ACTIVE documents (the uploaded CV and cover letter, see *Base documents sync*), or `null` when that slot is empty. Replaced documents are not listed. `BaseDocumentSummary` = id, kind, sourceRef, analysisStatus, analysisError, warnings, edited (true while the document holds edited facts), editedAt, updatedAt. Aggregated in SQL so an empty table still answers `{ cv: null, coverLetter: null }`.",
         "height": 300,
         "width": 520,
         "color": 4
@@ -65,7 +65,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\nwith docs as (\n  select kind,\n         json_build_object(\n           'id',             id,\n           'kind',           kind,\n           'sourceRef',      source_ref,\n           'analysisStatus', analysis_status,\n           'analysisError',  analysis_error,\n           'warnings',       warnings,\n           'updatedAt',      to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')\n         ) as j\n  from base_documents\n  where owner_id = $1 and active and not source_removed\n)\nselect\n  (select j from docs where kind = 'cv' limit 1) as cv,\n  (select j from docs where kind = 'cover_letter' limit 1) as \"coverLetter\";",
+        "query": "-- Parameters: [1] owner\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\nwith docs as (\n  select kind,\n         json_build_object(\n           'id',             id,\n           'kind',           kind,\n           'sourceRef',      source_ref,\n           'analysisStatus', analysis_status,\n           'analysisError',  analysis_error,\n           'warnings',       warnings,\n           'edited',         edited_facts is not null,\n           'editedAt',       to_char(edited_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),\n           'updatedAt',      to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')\n         ) as j\n  from base_documents\n  where owner_id = $1 and active and not source_removed\n)\nselect\n  (select j from docs where kind = 'cv' limit 1) as cv,\n  (select j from docs where kind = 'cover_letter' limit 1) as \"coverLetter\";",
         "options": {
           "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001' ] }}"
         }
@@ -411,6 +411,705 @@
         "respondWith": "json",
         "responseBody": "={{ { sourceRef: $('Write file via worker').first().json.body.sourceRef } }}"
       }
+    },
+    {
+      "id": "c333154c-8805-546b-b6c1-cf20b4d79731",
+      "name": "Sticky Note 6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        960
+      ],
+      "parameters": {
+        "content": "## 5. Read facts\n**GET /webhook/api/documents/facts?kind=cv|cover_letter** -> `200 BaseDocumentFacts` = id, kind, sourceRef, mediaType, facts, edited, editedAt, warnings, rescoreJobs.\n`facts` are the EFFECTIVE facts: the edited facts when there are any, else what Claude read from the file. `rescoreJobs` = how many jobs a CV edit would re-score (extracted, still in the folder); 0 for a cover letter.\nOnly the active, analysed document has facts: none (empty slot, still being analysed, failed) is `404 no_document`. A bad `kind` is `400 bad_request`. Never calls Claude.",
+        "height": 300,
+        "width": 1240,
+        "color": 4
+      }
+    },
+    {
+      "id": "1b031f17-daa5-51e6-82a6-f83a66d65be4",
+      "name": "GET api/documents/facts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1300
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "api/documents/facts",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "b6459d1a-4c8a-534b-9a36-a431abd87ba6"
+    },
+    {
+      "id": "86d5127c-451b-50a6-89a2-6ac4f970ed98",
+      "name": "Check facts request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        1300
+      ],
+      "parameters": {
+        "jsCode": "// Validates the query before the database or the worker is touched. Anything else is a 400.\nconst q = $json.query || {};\nif (q.kind !== 'cv' && q.kind !== 'cover_letter') return { json: { ok: false, code: 400, body: { error: 'bad_request' } } };\nreturn { json: { ok: true, kind: q.kind } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b7b57f06-6b94-5636-89e2-fdbbb30de14f",
+      "name": "Facts request valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        1300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4eb498c1-9785-5df0-973d-9d8233c86646",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "37b354fd-b84b-5f07-b34b-b67cd4786d67",
+      "name": "Read facts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        660,
+        1300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] kind (already checked: cv or cover_letter)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\n-- Always one row: doc is null when there is no active, analysed document of this kind.\nselect (\n  select json_build_object(\n    'id',          d.id,\n    'kind',        d.kind,\n    'sourceRef',   d.source_ref,\n    'mediaType',   d.media_type,\n    'facts',       coalesce(d.edited_facts, d.structured),\n    'edited',      d.edited_facts is not null,\n    'editedAt',    to_char(d.edited_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),\n    'warnings',    d.warnings,\n    -- a CV edit re-scores every extracted job that is still in the folder; a letter edit none\n    'rescoreJobs', case when d.kind = 'cv'\n                     then (select count(*) from jobs j\n                           where j.owner_id = $1 and j.extraction_status = 'done' and not j.source_removed)\n                     else 0 end\n  )\n  from base_documents d\n  where d.owner_id = $1 and d.kind = $2 and d.active and not d.source_removed\n  and d.analysis_status = 'done' and d.structured is not null\n  limit 1\n) as doc;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $json.kind ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "981a22cb-7ff2-5ec5-863d-a011d57c69a8",
+      "name": "Answer facts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        1300
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (!r.doc) return { json: { code: 404, body: { error: 'no_document' } } };\nreturn { json: { code: 200, body: r.doc } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "1c85c6c8-4778-5f18-b64c-0d17bdb45eb3",
+      "name": "Respond: facts",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        1300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
+        "options": {
+          "responseCode": "={{ $json.code || 500 }}"
+        }
+      }
+    },
+    {
+      "id": "5587a451-b33c-5eca-9932-bcfc3a2b5404",
+      "name": "Sticky Note 7",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        1420
+      ],
+      "parameters": {
+        "content": "## 6. Save facts: check the request\n**POST /webhook/api/documents/facts** with `{ kind, id, facts }`; `facts: null` undoes all edits.\n**Has X-JobHunter header?** else `403 missing_jobhunter_header`, nothing runs (a cross-site form could otherwise send this POST).\n**Check save request**: a JSON object, `kind` cv or cover_letter, `id` a UUID, a `facts` member present, at most 200 KB -> else `400 bad_request` / `413 too_large`.\n**Load document for save**: the row must be the ACTIVE, analysed, not-removed document of that kind for this owner, else `409 document_changed` (replaced in another tab, or still being analysed). The facts are never logged.",
+        "height": 340,
+        "width": 1240,
+        "color": 4
+      }
+    },
+    {
+      "id": "732e794b-2fe7-5764-9536-9e0173df9d01",
+      "name": "POST api/documents/facts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1800
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/documents/facts",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "e5f722cf-b652-5ba3-b4b9-681e558e2c9b"
+    },
+    {
+      "id": "d04c66b1-47ae-55e7-b024-7caa3d3b1335",
+      "name": "Has X-JobHunter header? (facts)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        1800
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "db043169-b11c-50d4-a6a0-59d136e70329",
+              "leftValue": "={{ $json.headers['x-jobhunter'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "1"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "44eda1e3-3459-5cac-b054-6018e131d9a8",
+      "name": "Respond: missing X-JobHunter header (facts)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        2000
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 403
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"missing_jobhunter_header\" } }}"
+      }
+    },
+    {
+      "id": "425776f0-bb0c-5e0c-ac0c-ba6e8c6e5b72",
+      "name": "Check save request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        1800
+      ],
+      "parameters": {
+        "jsCode": "// Validates the save request before the database or the worker is touched. The facts themselves are\n// checked by the worker (shape, limits); here only the envelope.\nconst b = $json.body;\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst fail = (code, error) => ({ json: { ok: false, code, body: { error } } });\nconst isObj = (x) => typeof x === 'object' && x !== null && !Array.isArray(x);\nif (!isObj(b)) return fail(400, 'bad_request');\n// 200 KB of UTF-8, measured on the parsed body (the worker enforces the same limit).\nconst text = JSON.stringify(b);\nlet bytes = 0;\nfor (let i = 0; i < text.length; i++) {\n  const c = text.charCodeAt(i);\n  if (c < 0x80) bytes += 1;\n  else if (c < 0x800) bytes += 2;\n  else if (c >= 0xd800 && c <= 0xdbff) { bytes += 4; i++; }\n  else bytes += 3;\n}\nif (bytes > 200 * 1024) return fail(413, 'too_large');\nif (b.kind !== 'cv' && b.kind !== 'cover_letter') return fail(400, 'bad_request');\nif (typeof b.id !== 'string' || !UUID.test(b.id)) return fail(400, 'bad_request');\nif (!Object.prototype.hasOwnProperty.call(b, 'facts') || b.facts === undefined) return fail(400, 'bad_request');\nreturn { json: { ok: true, kind: b.kind, id: b.id.toLowerCase(), undo: b.facts === null, facts: b.facts } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "abce7d3e-3e46-5dc1-98fb-2eb29ebd5297",
+      "name": "Save request valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        1800
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d54a3f9e-9e7e-5b52-8aef-918a8322a928",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "14810ac2-4f9a-5076-96e0-7f9be2b9f88e",
+      "name": "Load document for save",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        880,
+        1800
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] kind (already checked), [3] base document id (text, already checked as a UUID)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\n-- Always one row: doc is null unless the id is the active, analysed document of that kind.\nselect (\n  select json_build_object('structured', d.structured)\n  from base_documents d\n  where d.id = $3::uuid and d.owner_id = $1 and d.kind = $2 and d.active and not d.source_removed\n  and d.analysis_status = 'done' and d.structured is not null\n) as doc;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $json.kind, $json.id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5be4bd11-cd37-58c7-a4f6-3eaab50fa3ce",
+      "name": "Build facts check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        1800
+      ],
+      "parameters": {
+        "jsCode": "// Undo checks the file's own facts, so the warnings go back to what they were for the file.\nconst r = $json;\nconst req = $('Check save request').first().json;\nconst fail = (code, error) => ({ json: { ok: false, code, body: { error } } });\nif (r.error) return fail(500, 'server_error');\nif (!r.doc) return fail(409, 'document_changed');\nreturn { json: { ok: true, body: { kind: req.kind, facts: req.undo ? r.doc.structured : req.facts } } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "219068a5-3ab7-585d-821a-d6419cd2a544",
+      "name": "Ready to check facts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        1800
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "691aa67c-9fe4-53ed-9e07-4a489eec8f50",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "67fc80ac-bbe5-5126-a1a1-46144619e127",
+      "name": "Respond: facts saved",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        2000
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
+        "options": {
+          "responseCode": "={{ $json.code || 500 }}"
+        }
+      }
+    },
+    {
+      "id": "ae4e4903-577d-55e7-9247-19943437ab6b",
+      "name": "Sticky Note 8",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        1420
+      ],
+      "parameters": {
+        "content": "## 7. Check, then save\n**Check facts via worker** (`/documents/facts/check`, 8 s) validates and normalises the facts (exact shape, no extra keys, string and list limits; trimmed) and runs the same checks as an analysis. A bad value is `400 invalid_facts { path }`, nothing saved.\n**Save facts** is ONE update, guarded again by id + owner + kind + active + analysed + not removed (so a document replaced meanwhile is `409 document_changed`, nothing saved). `edited_facts = nullif(facts, structured)`: facts identical to what Claude read from the file (or undo) store NO edit, so `facts_hash` stays the file's `content_hash` and nothing is re-scored. `edited_at` is set only while an edit remains. The warnings are the checked facts' warnings. Answers `200 BaseDocumentFacts`. Never calls Claude.",
+        "height": 340,
+        "width": 1320,
+        "color": 5
+      }
+    },
+    {
+      "id": "d98b20a1-d203-5c28-b8a3-8311a263247c",
+      "name": "Check facts via worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        1800
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WORKER_URL }}/documents/facts/check",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 8000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "142d3c25-40fe-5c3f-99db-8037fb3d25c6",
+      "name": "Read facts check result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        1800
+      ],
+      "parameters": {
+        "jsCode": "// The worker's answer. Bad facts are a 400 naming the first bad value; any other failure is a 500.\nconst res = $json;\nconst b = res.body;\nconst fail = (code, body) => ({ json: { ok: false, code, body } });\nif (res.statusCode === 400 && b && b.error === 'invalid_facts' && typeof b.path === 'string'\n    && /^facts([.[]|$)/.test(b.path) && /^[A-Za-z0-9_.\\[\\]]{1,200}$/.test(b.path)) {\n  return fail(400, { error: 'invalid_facts', path: b.path });\n}\nif (res.statusCode === 413) return fail(413, { error: 'too_large' });\nconst isObj = (x) => typeof x === 'object' && x !== null && !Array.isArray(x);\nif (res.statusCode !== 200 || !b || !isObj(b.facts) || !Array.isArray(b.warnings)) return fail(500, { error: 'server_error' });\nconst req = $('Check save request').first().json;\n// Undo stores no edit at all (null), whatever the normalised file facts look like.\nreturn { json: { ok: true, facts: req.undo ? null : JSON.stringify(b.facts), warnings: JSON.stringify(b.warnings) } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "93a4c585-bc60-588a-b93a-755b54ff4796",
+      "name": "Facts accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        1800
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0d75105f-cb35-5e36-82e6-f0681bfa7033",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "a2108aef-0248-5217-a43b-7112c28c6516",
+      "name": "Save facts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        2200,
+        1800
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Parameters: [1] owner, [2] kind (already checked), [3] base document id (text, already checked as a UUID),\n-- [4] normalised facts (JSON) or null for undo, [5] warnings of those facts (JSON)\n-- Note: never write a dollar sign followed by a digit in SQL comments. The parameters are\n-- substituted everywhere in the text, comments included, which breaks the query.\n-- Facts equal to what Claude read from the file store no edit (nullif), so the basis stays the file's.\n-- Always one row: doc is null when the row is no longer the active, analysed document (409).\nwith saved as (\n  update base_documents d\n  set edited_facts = nullif($4::jsonb, d.structured),\n      edited_at    = case when nullif($4::jsonb, d.structured) is null then null else now() end,\n      warnings     = $5::jsonb\n  where d.id = $3::uuid and d.owner_id = $1 and d.kind = $2 and d.active and not d.source_removed\n  and d.analysis_status = 'done' and d.structured is not null\n  returning d.*\n)\nselect (select json_build_object(\n    'id',          d.id,\n    'kind',        d.kind,\n    'sourceRef',   d.source_ref,\n    'mediaType',   d.media_type,\n    'facts',       coalesce(d.edited_facts, d.structured),\n    'edited',      d.edited_facts is not null,\n    'editedAt',    to_char(d.edited_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),\n    'warnings',    d.warnings,\n    -- a CV edit re-scores every extracted job that is still in the folder; a letter edit none\n    'rescoreJobs', case when d.kind = 'cv'\n                     then (select count(*) from jobs j\n                           where j.owner_id = $1 and j.extraction_status = 'done' and not j.source_removed)\n                     else 0 end\n  ) from saved d) as doc;",
+        "options": {
+          "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $('Check save request').first().json.kind, $('Check save request').first().json.id, $json.facts, $json.warnings ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "jh-postgres",
+          "name": "JobHunter Postgres"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "dc91ccd7-2614-5ee1-9896-fd9b8d643711",
+      "name": "Answer saved",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        1800
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\nif (r.error) return { json: { code: 500, body: { error: 'server_error' } } };\nif (!r.doc) return { json: { code: 409, body: { error: 'document_changed' } } };\nreturn { json: { code: 200, body: r.doc } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "7aca1767-22d9-5506-ab6c-dbbcd1d38334",
+      "name": "Sticky Note 9",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        2060
+      ],
+      "parameters": {
+        "content": "## 8. View the original file\n**GET /webhook/api/documents/file?kind=cv|cover_letter** -> the stored file's bytes, read by the worker (`/documents/<kind>/file`, 8 s). PDF: `Content-Disposition: inline` (shown in the page). Word: `attachment` (browsers cannot show it). The file name is the stored name, encoded as for the job download (plain name plus RFC 5987 `filename*`). `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`. Content-Type is one of the two allowed types, never passed through.\nEmpty slot: `404 no_document`. Bad `kind`: `400 bad_request`. Any other worker failure: `502 file_unavailable`. Read-only, so no X-JobHunter check (as the other GETs).",
+        "height": 300,
+        "width": 1720,
+        "color": 6
+      }
+    },
+    {
+      "id": "ef0c0ff7-c524-5f83-98b1-ced4bdb8e015",
+      "name": "GET api/documents/file",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        2400
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "api/documents/file",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "http://localhost:8080,http://localhost:5173"
+        }
+      },
+      "webhookId": "a573327f-21bc-5102-8ac4-3f9a433ed985"
+    },
+    {
+      "id": "4e17fce2-04e0-5175-ab3d-d497b6463e57",
+      "name": "Check file request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        2400
+      ],
+      "parameters": {
+        "jsCode": "// Validates the query before the database or the worker is touched. Anything else is a 400.\nconst q = $json.query || {};\nif (q.kind !== 'cv' && q.kind !== 'cover_letter') return { json: { ok: false, code: 400, body: { error: 'bad_request' } } };\nreturn { json: { ok: true, kind: q.kind } };"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "7ece08c3-6449-5a33-ad5c-f35fb449fc2e",
+      "name": "File request valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        2400
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "35bc09b7-41a3-5676-a2b5-6de0fd3bda21",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "2d0dc875-9c86-5b64-a5be-258f67b4746d",
+      "name": "Read file via worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        2400
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.WORKER_URL }}/documents/{{ $json.kind }}/file",
+        "options": {
+          "timeout": 8000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "4ae2189f-b667-5d6e-8922-d441628e8630",
+      "name": "Build file answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        2400
+      ],
+      "parameters": {
+        "jsCode": "// The response headers for the stored file. The bytes are passed on untouched.\nconst item = $input.first();\nconst res = item.json;\nconst fail = (code, error) => [{ json: { ok: false, code, body: { error } } }];\nif (res.statusCode === 404) return fail(404, 'no_document');\nif (res.statusCode !== 200 || !item.binary || !item.binary.data) return fail(502, 'file_unavailable');\nconst headers = res.headers || {};\nconst PDF = 'application/pdf';\nconst DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';\nconst type = String(headers['content-type'] || '').split(';')[0].trim().toLowerCase();\nif (type !== PDF && type !== DOCX) return fail(502, 'file_unavailable');\nconst ref = typeof headers['x-source-ref'] === 'string' ? headers['x-source-ref'] : '';\n// The worker stores only safe names; keep the plain name to the same characters anyway.\nlet plain = ref.replace(/[^A-Za-z0-9 ._()-]/g, '').replace(/^[ .]+/, '');\nconst ext = type === PDF ? '.pdf' : '.docx';\nif (!plain.toLowerCase().endsWith(ext)) plain = 'Document' + ext;\nconst name = ref || plain;\nconst encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());\nreturn [{\n  json: {\n    ok: true,\n    contentType: type,\n    disposition: `${type === PDF ? 'inline' : 'attachment'}; filename=\"${plain}\"; filename*=UTF-8''${encoded}`,\n  },\n  binary: item.binary,\n}];"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "cc4dafff-1a07-5d49-bae6-6bc34c45e5a6",
+      "name": "File ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        2400
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5ea59100-5065-50b2-a1a6-9f3fef8a4ff0",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "63b6c4ab-76ee-51ad-a110-9c756d62c5f6",
+      "name": "Respond: original file",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        2400
+      ],
+      "parameters": {
+        "respondWith": "binary",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "={{ $json.contentType }}"
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "={{ $json.disposition }}"
+              },
+              {
+                "name": "X-Content-Type-Options",
+                "value": "nosniff"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "2b9d4215-5e33-5f70-8721-9d603124d061",
+      "name": "Respond: file error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        2600
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body || { error: \"server_error\" } }}",
+        "options": {
+          "responseCode": "={{ $json.code || 500 }}"
+        }
+      }
     }
   ],
   "connections": {
@@ -528,6 +1227,308 @@
         [
           {
             "node": "Respond: uploaded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET api/documents/facts": {
+      "main": [
+        [
+          {
+            "node": "Check facts request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check facts request": {
+      "main": [
+        [
+          {
+            "node": "Facts request valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facts request valid?": {
+      "main": [
+        [
+          {
+            "node": "Read facts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read facts": {
+      "main": [
+        [
+          {
+            "node": "Answer facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer facts": {
+      "main": [
+        [
+          {
+            "node": "Respond: facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST api/documents/facts": {
+      "main": [
+        [
+          {
+            "node": "Has X-JobHunter header? (facts)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has X-JobHunter header? (facts)": {
+      "main": [
+        [
+          {
+            "node": "Check save request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: missing X-JobHunter header (facts)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check save request": {
+      "main": [
+        [
+          {
+            "node": "Save request valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save request valid?": {
+      "main": [
+        [
+          {
+            "node": "Load document for save",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: facts saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load document for save": {
+      "main": [
+        [
+          {
+            "node": "Build facts check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build facts check": {
+      "main": [
+        [
+          {
+            "node": "Ready to check facts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready to check facts?": {
+      "main": [
+        [
+          {
+            "node": "Check facts via worker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: facts saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check facts via worker": {
+      "main": [
+        [
+          {
+            "node": "Read facts check result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read facts check result": {
+      "main": [
+        [
+          {
+            "node": "Facts accepted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facts accepted?": {
+      "main": [
+        [
+          {
+            "node": "Save facts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: facts saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save facts": {
+      "main": [
+        [
+          {
+            "node": "Answer saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer saved": {
+      "main": [
+        [
+          {
+            "node": "Respond: facts saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET api/documents/file": {
+      "main": [
+        [
+          {
+            "node": "Check file request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check file request": {
+      "main": [
+        [
+          {
+            "node": "File request valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File request valid?": {
+      "main": [
+        [
+          {
+            "node": "Read file via worker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: file error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read file via worker": {
+      "main": [
+        [
+          {
+            "node": "Build file answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build file answer": {
+      "main": [
+        [
+          {
+            "node": "File ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File ready?": {
+      "main": [
+        [
+          {
+            "node": "Respond: original file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: file error",
             "type": "main",
             "index": 0
           }

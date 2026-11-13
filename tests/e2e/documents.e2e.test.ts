@@ -562,9 +562,18 @@ describe('shipped workflows', () => {
       expect(text, file).not.toMatch(/extra_file_ignored|CV_DIR|COVER_LETTER_DIR|PersonalDetails|\/data\/cv|cover-letter folder/);
     }
     const api = JSON.parse(readFileSync(join(dir, 'documents-api.json'), 'utf8'));
-    expect(api.nodes.filter((n: any) => n.type === 'n8n-nodes-base.webhook').map((n: any) => n.parameters.httpMethod).sort()).toEqual([
-      'GET',
-      'POST',
+    // No DELETE: a document can only be replaced (or its facts edited).
+    expect(
+      api.nodes
+        .filter((n: any) => n.type === 'n8n-nodes-base.webhook')
+        .map((n: any) => `${n.parameters.httpMethod} ${n.parameters.path}`)
+        .sort(),
+    ).toEqual([
+      'GET api/documents',
+      'GET api/documents/facts',
+      'GET api/documents/file',
+      'POST api/documents/facts',
+      'POST api/documents/upload',
     ]);
   });
 });
