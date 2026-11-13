@@ -10,8 +10,11 @@ import {
 } from '../storage/documentFolder.js';
 import { checkBaseCoverLetter, checkBaseCv, parseBannedPhrases } from './checks.js';
 import { scanDocuments } from './scan.js';
+import { MAX_FACTS_BYTES, validateFacts } from './validateFacts.js';
 import {
   DOCUMENT_KINDS,
+  DOCX_MEDIA_TYPE,
+  PDF_MEDIA_TYPE,
   type BaseCoverLetterFacts,
   type BaseCvFacts,
   type DocumentKind,
@@ -83,6 +86,44 @@ export function registerDocumentRoutes(
     } catch (err) {
       request.log.error({ kind, file: bannedPhrasesFile, err }, 'document checks failed');
       return reply.code(500).send({ error: 'document_checks_failed' });
+    }
+  });
+
+  // Validates and normalises edited facts, then runs the same checks as analysed facts. Saves nothing.
+  app.post<{ Body: { kind?: unknown; facts?: unknown } }>(
+    '/documents/facts/check',
+    { bodyLimit: MAX_FACTS_BYTES },
+    async (request, reply) => {
+      const { kind, facts } = request.body ?? {};
+      if (typeof kind !== 'string' || !isKind(kind)) return reply.code(400).send({ error: 'bad_request' });
+      const result = validateFacts(kind, facts);
+      if (!result.ok) return reply.code(400).send({ error: 'invalid_facts', path: result.path });
+      try {
+        const bannedPhrases = parseBannedPhrases(await fs.readFile(bannedPhrasesFile, 'utf8'));
+        const warnings =
+          kind === 'cv'
+            ? checkBaseCv(result.facts as BaseCvFacts, bannedPhrases)
+            : checkBaseCoverLetter(result.facts as BaseCoverLetterFacts, bannedPhrases);
+        return { facts: result.facts, warnings };
+      } catch (err) {
+        request.log.error({ kind, file: bannedPhrasesFile, err }, 'facts check failed');
+        return reply.code(500).send({ error: 'document_checks_failed' });
+      }
+    },
+  );
+
+  // The stored original file, for viewing or download.
+  app.get<{ Params: { kind: string } }>('/documents/:kind/file', async (request, reply) => {
+    const { kind } = request.params;
+    if (!isKind(kind)) return reply.code(404).send({ error: 'unknown_kind' });
+    try {
+      const doc = await store.readDocument(kind);
+      if (!doc || !doc.bytes) return reply.code(404).send({ error: 'no_document' });
+      const mediaType = /\.pdf$/i.test(doc.name) ? PDF_MEDIA_TYPE : DOCX_MEDIA_TYPE;
+      return reply.header('Content-Type', mediaType).header('X-Source-Ref', doc.name).send(doc.bytes);
+    } catch (err) {
+      request.log.error({ kind, err }, 'document file read failed');
+      return reply.code(500).send({ error: 'document_read_failed' });
     }
   });
 

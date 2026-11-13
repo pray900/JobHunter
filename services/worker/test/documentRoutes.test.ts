@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { buildServer } from '../src/server.js';
 import { createDocumentStore } from '../src/storage/documentFolder.js';
 import { makeDocx } from '../../../tests/helpers/makeDocx.js';
@@ -196,4 +196,65 @@ test('sanitises odd characters but keeps the extension', async () => {
   const { sourceRef } = res.json();
   expect(sourceRef).toBe('Prayushs CV  Sep2026.pdf');
   expect(await storedNames('cv')).toEqual([sourceRef]);
+});
+
+describe('facts and file routes', () => {
+  const facts = () => ({
+    name: 'Jordan Testcase',
+    headline: ' Backend Engineer ',
+    summary: null,
+    workRights: null,
+    education: [],
+    roles: [{ title: 'Engineer', employer: 'Acme', dates: '2022', bullets: ['Built things.', ' '] }],
+    projects: [],
+    skills: ['TypeScript'],
+    metrics: [],
+    contact: { location: null, email: null, phone: null, links: [] },
+  });
+  const post = async (payload: unknown) => {
+    const phrases = path.join(root, 'banned-phrases.txt');
+    await fs.writeFile(phrases, 'spearheaded');
+    const a = buildServer({ jobFolderDir: root, documentsDir: docs, bannedPhrasesFile: phrases });
+    const res = await a.inject({ method: 'POST', url: '/documents/facts/check', payload: payload as object });
+    await a.close();
+    return res;
+  };
+
+  test('facts/check returns normalised facts and warnings', async () => {
+    const res = await post({ kind: 'cv', facts: facts() });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.facts.headline).toBe('Backend Engineer');
+    expect(body.facts.roles[0].bullets).toEqual(['Built things.']);
+    expect(body.warnings.map((w: { code: string }) => w.code)).toContain('missing_work_rights');
+  });
+
+  test('facts/check 400 invalid_facts', async () => {
+    const res = await post({ kind: 'cv', facts: { ...facts(), extra: 1 } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'invalid_facts', path: 'facts.extra' });
+    expect((await post({ kind: 'cv' })).json()).toEqual({ error: 'invalid_facts', path: 'facts' });
+    expect((await post({ kind: 'nope', facts: facts() })).json()).toEqual({ error: 'bad_request' });
+  });
+
+  test('file route returns the stored PDF bytes and type', async () => {
+    await place('cv', 'my cv.pdf', PDF);
+    const a = app();
+    const res = await a.inject({ method: 'GET', url: '/documents/cv/file' });
+    await a.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(res.headers['x-source-ref']).toBe('my cv.pdf');
+    expect(res.rawPayload.equals(PDF)).toBe(true);
+  });
+
+  test('file route 404 when empty', async () => {
+    const a = app();
+    const res = await a.inject({ method: 'GET', url: '/documents/cv/file' });
+    const unknown = await a.inject({ method: 'GET', url: '/documents/bogus/file' });
+    await a.close();
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: 'no_document' });
+    expect(unknown.json()).toEqual({ error: 'unknown_kind' });
+  });
 });

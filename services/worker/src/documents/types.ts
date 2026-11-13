@@ -17,6 +17,7 @@ export interface ScannedDocument {
 
 // Analysis output for a base CV. Task 4's JSON schema mirrors this shape.
 export interface BaseCvFacts {
+  name: string | null;
   headline: string | null;
   summary: string | null;
   workRights: string | null;

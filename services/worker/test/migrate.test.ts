@@ -26,6 +26,7 @@ test('applies 001_init once and seeds the single user', async () => {
     '003_single_base_document.sql',
     '004_generation.sql',
     '005_versions.sql',
+    '006_base_document_edits.sql',
   ]);
   expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual([]);
   const { rows } = await pool.query('select id, name from users');
@@ -155,7 +156,7 @@ test('applies 005 after 004; origin defaults to generated', async () => {
   const insert = `insert into document_versions(owner_id, job_id, version_no, label, base_cv_hash, template_id, cv, cover_letter, reasons, keyword_coverage, review, checks)
     values ($1,$2,1,'v1','h','standard-ats','{}','{}','{}','{}','{}','{}') returning id`;
   await pool.query(insert, [USER_ID, job[0].id]);
-  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['005_versions.sql']);
+  expect(await migrateUpTo([...MIG4, '005_versions.sql'])).toEqual(['005_versions.sql']);
   const { rows } = await pool.query(`select origin, parent_version_id from document_versions`);
   expect(rows).toEqual([{ origin: 'generated', parent_version_id: null }]);
   await expect(pool.query(`update document_versions set origin = 'bogus'`)).rejects.toThrow(/check/);
@@ -163,4 +164,28 @@ test('applies 005 after 004; origin defaults to generated', async () => {
     `select count(*)::int as n from information_schema.columns where table_name='generation_runs' and column_name='from_version_id'`,
   );
   expect(c[0].n).toBe(1);
+});
+
+test('applies 006 after 005', async () => {
+  await pool.query('drop schema public cascade; create schema public;');
+  await migrateUpTo([...MIG4, '005_versions.sql']);
+  await pool.query(
+    `insert into base_documents(owner_id, kind, source_ref, content_hash, media_type) values ($1,'cv','pre.pdf','abc','application/pdf')`,
+    [USER_ID],
+  );
+  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['006_base_document_edits.sql']);
+  const { rows } = await pool.query(`select edited_facts, edited_at, facts_hash from base_documents`);
+  expect(rows).toEqual([{ edited_facts: null, edited_at: null, facts_hash: 'abc' }]);
+});
+
+test('facts_hash equals content_hash without edits and changes with them', async () => {
+  const get = async () => (await pool.query(`select facts_hash from base_documents where source_ref = 'pre.pdf'`)).rows[0].facts_hash;
+  expect(await get()).toBe('abc');
+  await pool.query(`update base_documents set edited_facts = '{"a":1}'::jsonb, edited_at = now() where source_ref = 'pre.pdf'`);
+  const first = await get();
+  expect(first).toMatch(/^abc:[0-9a-f]{32}$/);
+  await pool.query(`update base_documents set edited_facts = '{"a":2}'::jsonb where source_ref = 'pre.pdf'`);
+  expect(await get()).not.toBe(first);
+  await pool.query(`update base_documents set edited_facts = null where source_ref = 'pre.pdf'`);
+  expect(await get()).toBe('abc');
 });

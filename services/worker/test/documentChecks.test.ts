@@ -10,6 +10,7 @@ const PHRASES = ['spearheaded', 'leveraged', 'leveraging', 'proven track record'
 
 function cvFacts(overrides: Partial<BaseCvFacts> = {}): BaseCvFacts {
   return {
+    name: null,
     headline: 'Software Engineer',
     summary: 'Builds reliable backend services.',
     workRights: 'Full working rights (485 visa)',
