@@ -4,9 +4,12 @@ import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 import {
   N8N_URL,
   ROOT,
+  api,
   db,
+  getFacts,
   makePdf,
   resetState,
+  saveFacts,
   stub,
   triggerScoring,
   triggerSync,
@@ -126,6 +129,57 @@ describe('job match scoring', () => {
     for (const name of ['a.docx', 'b.docx']) {
       expect(await jobRow(name)).toMatchObject({ score_status: 'done', score_attempts: 1, match_basis_hash: newBasis, match_score: 82 });
     }
+  });
+
+  /** Saves edited facts for the active document of a kind and expects 200. */
+  const editFacts = async (kind: string, change: (facts: any) => any) => {
+    const before = (await (await getFacts(kind)).json()) as any;
+    const res = await saveFacts(kind, before.id, before.contentHash, change(before.facts));
+    expect(res.status).toBe(200);
+    return res.json() as Promise<any>;
+  };
+  const listedJob = async (sourceRef: string) =>
+    ((await (await api.get('/api/jobs')).json()) as any).jobs.find((j: any) => j.sourceRef === sourceRef);
+
+  test('editing the CV re-scores every job once', async () => {
+    const fileBasis = await readyCv('v1');
+    await addJob('a.docx', 'Job A');
+    await addJob('b.docx', 'Job B');
+    await triggerScoring();
+    expect((await listedJob('a.docx')).matchScore).toBe(82);
+
+    const saved = await editFacts('cv', (f) => ({ ...f, headline: 'edited-v1' }));
+    const [cv] = await db.query(`select content_hash, facts_hash from base_documents where kind='cv' and active`);
+    expect(cv.content_hash).toBe(fileBasis);
+    expect(cv.facts_hash).not.toBe(fileBasis);
+    // Saving the edit resets the job scores: a score from the unedited facts is no longer shown.
+    expect(await listedJob('a.docx')).toMatchObject({ matchScore: null, matchExplanation: null, scoreStatus: 'pending' });
+
+    await stub.reset();
+    expect(await triggerScoring()).toEqual({ ok: true, scored: 2, basisHash: cv.facts_hash });
+    const requests = await scoreRequests();
+    expect(requests).toHaveLength(2);
+    for (const body of requests) expect(sentCv(body)).toEqual(saved.facts);
+    for (const name of ['a.docx', 'b.docx']) {
+      expect(await jobRow(name)).toMatchObject({ score_status: 'done', score_attempts: 1, match_basis_hash: cv.facts_hash, match_score: 82 });
+    }
+    expect((await listedJob('a.docx')).matchScore).toBe(82);
+    // Once: the next run scores nothing.
+    expect(await triggerScoring()).toEqual({ ok: true, scored: 0, basisHash: cv.facts_hash });
+    expect(await scoreRequests()).toHaveLength(2);
+  });
+
+  test('cover letter edit leaves scores alone', async () => {
+    const basis = await readyCv('v1');
+    await addJob('a.docx', 'Job A');
+    await triggerScoring();
+    await putDocument('cover_letter', 'cl.pdf', makePdf('Cover letter'));
+    await editFacts('cover_letter', (f) => ({ ...f, toneNotes: 'Warmer than before.' }));
+    await stub.reset();
+    expect(await triggerScoring()).toEqual({ ok: true, scored: 0, basisHash: basis });
+    expect(await stub.requests()).toEqual([]);
+    expect(await jobRow('a.docx')).toMatchObject({ score_status: 'done', score_attempts: 1, match_basis_hash: basis, match_score: 82 });
+    expect((await listedJob('a.docx')).matchScore).toBe(82);
   });
 
   test('basis change during scoring rescores (claim from a crashed run with the old basis)', async () => {
@@ -418,7 +472,11 @@ describe('job match scoring', () => {
     test('a score is saved only with this run\'s claim and the current basis', () => {
       const save = nodeByName('Save score').parameters.query;
       expect(save).toMatch(/score_claimed_at = \$2::timestamptz/);
-      expect(save).toMatch(/d\.content_hash = \$3/);
+      expect(save).toMatch(/d\.facts_hash = \$3/);
+      expect(save).not.toMatch(/content_hash/);
+      const basis = nodeByName('Find the current basis').parameters.query;
+      expect(basis).toMatch(/d\.facts_hash as basis_hash/);
+      expect(basis).toMatch(/coalesce\(d\.edited_facts, d\.structured\) as structured/);
       expect(save).toMatch(/match_basis_hash = \$3/);
       expect(nodeByName('Mark scoring failed').parameters.query).toMatch(/score_claimed_at = \$2::timestamptz/);
       const claim = nodeByName('Claim jobs to score').parameters.query;

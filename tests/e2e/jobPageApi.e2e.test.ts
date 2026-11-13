@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 import { CV, LETTER } from '../../services/worker/test/fixtures';
-import { N8N_URL, SYNC_HEADERS, WEB_URL, compose, db, makePdf, putDocument, resetState, stub } from './lib';
+import { N8N_URL, SYNC_HEADERS, WEB_URL, compose, db, getFacts, makePdf, putDocument, resetState, saveFacts, stub } from './lib';
 
 const OWNER = '00000000-0000-0000-0000-000000000001';
 const EVIL = 'https://evil.example';
@@ -289,6 +289,39 @@ describe('job page API', () => {
     await db.query(`update jobs set match_basis_hash=$2 where id=$1`, [jobId, content_hash]);
     job = ((await (await get(`jobs/detail?id=${jobId}`)).json()) as any).job;
     expect(job).toMatchObject({ matchScore: 80, matchExplanation: 'good', matchBreakdown: { a: 1 } });
+  });
+
+  test('job page baseCv is the edited facts and isCurrentBase', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const before = (await (await getFacts('cv')).json()) as any;
+    const fileVersion = await addVersion(jobId, null, 1);
+    const editedVersion = await addVersion(jobId, null, 2);
+    const [base] = await db.query(`select id, content_hash from base_documents where kind='cv' and active`);
+    // Version 1 was written from the file's facts, before the edit.
+    await db.query(`update document_versions set base_cv_id=$2, base_cv_hash=$3 where id=$1`, [fileVersion, base.id, base.content_hash]);
+    await db.query(`update jobs set match_score=80, match_explanation='good', match_breakdown='{"a":1}', match_basis_hash=$2 where id=$1`, [jobId, base.content_hash]);
+
+    const facts = { ...before.facts, education: [{ ...before.facts.education[0], qualification: 'Master of Stubbing (Extension)' }] };
+    const res = await saveFacts('cv', before.id, before.contentHash, facts);
+    expect(res.status).toBe(200);
+    const saved = (await res.json()) as any;
+    const [{ facts_hash }] = await db.query(`select facts_hash from base_documents where id=$1`, [base.id]);
+    expect(facts_hash).not.toBe(base.content_hash);
+    await db.query(`update document_versions set base_cv_id=$2, base_cv_hash=$3 where id=$1`, [editedVersion, base.id, facts_hash]);
+
+    let body = (await (await get(`jobs/detail?id=${jobId}`)).json()) as any;
+    expect(body.baseCv).toEqual({ structured: saved.facts, sourceRef: 'cv.pdf', isCurrentBase: true });
+    expect(body.baseCv.structured.education[0].qualification).toBe('Master of Stubbing (Extension)');
+    // The score was worked out from the unedited facts: hidden now.
+    expect(body.job).toMatchObject({ matchScore: null, matchExplanation: null, matchBreakdown: null });
+    // A version written from the file's facts before the edit: its base is no longer stored.
+    body = (await (await get(`jobs/detail?id=${jobId}&versionId=${fileVersion}`)).json()) as any;
+    expect(body.baseCv).toBeNull();
+
+    await db.query(`update jobs set match_basis_hash=$2 where id=$1`, [jobId, facts_hash]);
+    body = (await (await get(`jobs/detail?id=${jobId}`)).json()) as any;
+    expect(body.job).toMatchObject({ matchScore: 80, matchExplanation: 'good' });
   });
 
   test("detail shows only the workflow's own error messages", async () => {

@@ -153,7 +153,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 1. Current basis\nScores are worked out against **the one base CV in use**: the active CV (see *Base documents sync*) whose analysis is `done` (the uploaded CV, not a replaced one). Its `content_hash` is the **basis**: every saved score records the basis it was computed from (`match_basis_hash`).\n**No such CV** (none uploaded yet, still being analysed, or its analysis failed) → nothing is changed, no Claude call is made, and the webhook answers `{ ok: true, scored: 0, basisHash: null }`.",
+        "content": "## 1. Current basis\nScores are worked out against **the one base CV in use**: the active CV (see *Base documents sync*) whose analysis is `done` (the uploaded CV, not a replaced one). Its `facts_hash` is the **basis** (the file's `content_hash` until Prayush edits the CV's facts in the app; an edit changes it, so every job is re-scored once; a cover-letter edit changes nothing here): every saved score records the basis it was computed from (`match_basis_hash`).\n**No such CV** (none uploaded yet, still being analysed, or its analysis failed) → nothing is changed, no Claude call is made, and the webhook answers `{ ok: true, scored: 0, basisHash: null }`.",
         "height": 760,
         "width": 700,
         "color": 4
@@ -170,7 +170,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner\n-- Always one row: the active, analysed base CV (at most one per owner), or nulls when there is none.\nselect d.content_hash as basis_hash, d.structured, (d.content_hash is not null) as has_basis\nfrom (select 1) as one\nleft join base_documents d\n  on d.owner_id = $1 and d.kind = 'cv' and d.active and d.analysis_status = 'done'\n     and not d.source_removed and d.structured is not null;",
+        "query": "-- Parameters: [1] owner\n-- Always one row: the active, analysed base CV (at most one per owner), or nulls when there is none.\n-- Its basis is its facts hash (the file's content hash until Prayush edits its facts in the app), and its\n-- facts are the effective ones: his edited facts when there are any, else what was read from the file.\nselect d.facts_hash as basis_hash, coalesce(d.edited_facts, d.structured) as structured, (d.facts_hash is not null) as has_basis\nfrom (select 1) as one\nleft join base_documents d\n  on d.owner_id = $1 and d.kind = 'cv' and d.active and d.analysis_status = 'done'\n     and not d.source_removed and d.structured is not null;",
         "options": {
           "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001' ] }}"
         }
@@ -260,7 +260,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner, [2] current basis (content hash of the active, analysed base CV)\nupdate jobs\nset score_status = 'pending', score_attempts = 0, score_claimed_at = null,\n    match_basis_hash = $2, match_score = null, match_explanation = null, match_breakdown = null,\n    updated_at = now()\nwhere owner_id = $1\n  and match_basis_hash is distinct from $2\n  -- a live claim is left alone: its save checks the basis and hands the job back\n  and not (score_status = 'in_progress' and score_claimed_at >= now() - interval '5 minutes');",
+        "query": "-- Parameters: [1] owner, [2] current basis (facts hash of the active, analysed base CV)\nupdate jobs\nset score_status = 'pending', score_attempts = 0, score_claimed_at = null,\n    match_basis_hash = $2, match_score = null, match_explanation = null, match_breakdown = null,\n    updated_at = now()\nwhere owner_id = $1\n  and match_basis_hash is distinct from $2\n  -- a live claim is left alone: its save checks the basis and hands the job back\n  and not (score_status = 'in_progress' and score_claimed_at >= now() - interval '5 minutes');",
         "options": {
           "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', $('Find the current basis').first().json.basis_hash ] }}"
         }
@@ -396,7 +396,7 @@
         -100
       ],
       "parameters": {
-        "content": "## 4. Ask Claude to score each job\nOne Messages API call per claimed job with **structured output** (a JSON schema: `score` 0–100, one-sentence `explanation` starting \"<score>%:\", and the `matched` / `missing` / `notes` lists). The prompt is a copy of `n8n/prompts/score-job.md` — keep them the same.\nThe job ad text goes inside `<job_ad>…</job_ad>`, the base CV facts (the `structured` JSON of the CV that is the current basis) inside `<base_cv>…</base_cv>`. Model `SCORE_MODEL`, effort `low`, `max_tokens` 4000. Opus / Sonnet also send `anthropic-beta: server-side-fallback-2026-07-01` and `\"fallbacks\": \"default\"`.\nThe request may take up to **120 s**, well inside the 5-minute claim window, so a slow call is never claimed and paid for twice. The HTTP node never fails the run: errors come out as a normal item and are handled in stage 5.",
+        "content": "## 4. Ask Claude to score each job\nOne Messages API call per claimed job with **structured output** (a JSON schema: `score` 0–100, one-sentence `explanation` starting \"<score>%:\", and the `matched` / `missing` / `notes` lists). The prompt is a copy of `n8n/prompts/score-job.md` — keep them the same.\nThe job ad text goes inside `<job_ad>…</job_ad>`, the base CV facts (the effective facts of the CV that is the current basis: `coalesce(edited_facts, structured)`) inside `<base_cv>…</base_cv>`. Model `SCORE_MODEL`, effort `low`, `max_tokens` 4000. Opus / Sonnet also send `anthropic-beta: server-side-fallback-2026-07-01` and `\"fallbacks\": \"default\"`.\nThe request may take up to **120 s**, well inside the 5-minute claim window, so a slow call is never claimed and paid for twice. The HTTP node never fails the run: errors come out as a normal item and are handled in stage 5.",
         "height": 760,
         "width": 760,
         "color": 4
@@ -633,7 +633,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] job id, [2] this run's claim token, [3] basis sent in this call, [4] score,\n-- [5] explanation, [6] breakdown (JSON)\n-- Saved only while the job still carries this run's claim AND that basis is still the current one.\n-- Basis changed during the call: the score is thrown away and the job is handed back as pending.\nwith saved as (\n  update jobs j\n  set match_score = $4, match_explanation = $5, match_breakdown = $6::jsonb, match_basis_hash = $3,\n      score_status = 'done', updated_at = now()\n  where j.id = $1 and j.score_status = 'in_progress' and j.score_claimed_at = $2::timestamptz\n    and exists (\n      select 1 from base_documents d\n      where d.owner_id = j.owner_id and d.kind = 'cv' and d.active and d.analysis_status = 'done'\n        and not d.source_removed and d.content_hash = $3\n    )\n  returning j.id\n),\nhanded_back as (\n  update jobs j\n  set score_status = 'pending', score_claimed_at = null, updated_at = now()\n  where j.id = $1 and j.score_status = 'in_progress' and j.score_claimed_at = $2::timestamptz\n    and not exists (select 1 from saved)\n  returning j.id\n)\nselect (select id from saved) as id, (select id from handed_back) as handed_back_id;",
+        "query": "-- Parameters: [1] job id, [2] this run's claim token, [3] basis sent in this call, [4] score,\n-- [5] explanation, [6] breakdown (JSON)\n-- Saved only while the job still carries this run's claim AND that basis is still the current one.\n-- Basis changed during the call: the score is thrown away and the job is handed back as pending.\nwith saved as (\n  update jobs j\n  set match_score = $4, match_explanation = $5, match_breakdown = $6::jsonb, match_basis_hash = $3,\n      score_status = 'done', updated_at = now()\n  where j.id = $1 and j.score_status = 'in_progress' and j.score_claimed_at = $2::timestamptz\n    and exists (\n      select 1 from base_documents d\n      where d.owner_id = j.owner_id and d.kind = 'cv' and d.active and d.analysis_status = 'done'\n        and not d.source_removed and d.facts_hash = $3\n    )\n  returning j.id\n),\nhanded_back as (\n  update jobs j\n  set score_status = 'pending', score_claimed_at = null, updated_at = now()\n  where j.id = $1 and j.score_status = 'in_progress' and j.score_claimed_at = $2::timestamptz\n    and not exists (select 1 from saved)\n  returning j.id\n)\nselect (select id from saved) as id, (select id from handed_back) as handed_back_id;",
         "options": {
           "queryReplacement": "={{ [ $json.job_id, $json.claimed_at, $json.basis_hash, $json.score, $json.explanation, JSON.stringify($json.breakdown) ] }}"
         }

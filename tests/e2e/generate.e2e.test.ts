@@ -5,9 +5,11 @@ import {
   N8N_URL,
   ROOT,
   db,
+  getFacts,
   makePdf,
   putDocument,
   resetState,
+  saveFacts,
   stub,
   triggerGeneration,
   triggerSync,
@@ -505,6 +507,142 @@ describe('generate documents', () => {
     });
     expect(await stub.requests()).toEqual([]);
     expect(await versions(jobId)).toEqual([]);
+  });
+
+  describe('edited base CV facts', () => {
+    const EDITED_QUALIFICATION = 'Master of Stubbing (Extension)';
+    /** Corrects the base CV's qualification in the app (as the edit form does). Returns the saved answer. */
+    const editQualification = async () => {
+      const before = (await (await getFacts('cv')).json()) as any;
+      const facts = { ...before.facts, education: [{ ...before.facts.education[0], qualification: EDITED_QUALIFICATION }] };
+      const res = await saveFacts('cv', before.id, before.contentHash, facts);
+      expect(res.status).toBe(200);
+      return res.json() as Promise<any>;
+    };
+    const cvRow = async () =>
+      (await db.query(`select id, content_hash, facts_hash, structured, edited_facts from base_documents where kind='cv' and active`))[0];
+    const qualificationCheck = (checks: any[]) =>
+      checks.find((c) => c.code === 'unknown_fact' && c.where === 'cv.education[0].qualification');
+    const withQualification = () => {
+      const base = CANNED.write_documents;
+      return { ...base, cv: { ...base.cv, education: [{ ...base.cv.education[0], qualification: EDITED_QUALIFICATION }] } };
+    };
+
+    test('generate after a CV edit sends no file and the edited facts', async () => {
+      const jobId = await readyJob();
+      const saved = await editQualification();
+      await queueRun(jobId);
+      await stub.reset();
+      // The writer copies the corrected qualification, so round 1 passes.
+      await stub.scriptPurpose('write_documents', [withQualification()]);
+      expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
+      const sent = [...(await writerRequests()), ...(await reviewRequests())];
+      expect(sent).toHaveLength(2);
+      for (const body of sent) {
+        // Only the text: no document block (and no null in its place), so Claude never sees two sets of facts.
+        expect(body.messages[0].content).toHaveLength(1);
+        expect(body.messages[0].content[0].type).toBe('text');
+        const text = sentText(body);
+        expect(text).not.toContain('Base CV of Stub Person');
+        expect(text).not.toContain('<document>');
+        const facts = JSON.parse(tag(text, 'base_cv_facts'));
+        expect(facts).toEqual(saved.facts);
+        expect(facts.education[0].qualification).toBe(EDITED_QUALIFICATION);
+      }
+      const cv = await cvRow();
+      const [v] = await versions(jobId);
+      expect(v).toMatchObject({ base_cv_id: cv.id, base_cv_hash: cv.facts_hash });
+      expect(cv.facts_hash).not.toBe(cv.content_hash);
+    });
+
+    test('generate without edits still sends the file', async () => {
+      const jobId = await readyJob();
+      await queueRun(jobId);
+      await stub.reset();
+      await triggerGeneration();
+      const sent = [...(await writerRequests()), ...(await reviewRequests())];
+      expect(sent).toHaveLength(2);
+      const cv = await cvRow();
+      for (const body of sent) {
+        expect(body.messages[0].content).toHaveLength(2);
+        expect(body.messages[0].content[0]).toEqual({
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: makePdf('Base CV of Stub Person').toString('base64') },
+        });
+        expect(JSON.parse(tag(sentText(body), 'base_cv_facts'))).toEqual(cv.structured);
+      }
+      // Unedited: the basis is the file's own hash, as before.
+      expect(cv.facts_hash).toBe(cv.content_hash);
+      expect((await versions(jobId))[0].base_cv_hash).toBe(cv.content_hash);
+    });
+
+    test('checks accept the edited qualification', async () => {
+      // Without the edit, the qualification the writer copies is not the base CV's: a hard unknown_fact.
+      let jobId = await readyJob();
+      let runId = await queueRun(jobId);
+      await stub.reset();
+      await stub.scriptPurpose('write_documents', [withQualification()]);
+      await triggerGeneration();
+      expect(qualificationCheck((await runRow(runId)).rounds[0].checks)).toBeTruthy();
+
+      await resetState();
+      jobId = await readyJob();
+      await editQualification();
+      runId = await queueRun(jobId);
+      await stub.reset();
+      await stub.scriptPurpose('write_documents', [withQualification()]);
+      await triggerGeneration();
+      const run = await runRow(runId);
+      expect(run).toMatchObject({ status: 'done', round: 1 });
+      expect(qualificationCheck(run.rounds[0].checks)).toBeUndefined();
+      expect(run.rounds[0].passed).toBe(true);
+      const [v] = await versions(jobId);
+      expect(qualificationCheck(v.checks)).toBeUndefined();
+      expect(v.cv.education[0].qualification).toBe(EDITED_QUALIFICATION);
+    });
+
+    test('edit during a run does not mix facts', async () => {
+      // A run whose round 1 was written from the unedited CV, then the CV is edited: the retry stops.
+      let jobId = await readyJob();
+      const fileHash = (await cvRow()).content_hash;
+      let runId = await queueRun(jobId);
+      const pass = await canned('review_documents');
+      await stub.reset();
+      await stub.scriptPurpose('review_documents', [{ ...pass, verdict: 'fail' }]);
+      await stub.scriptPurpose('write_documents', [await canned('write_documents'), { __stub_status: 529 }]);
+      await triggerGeneration();
+      let run = await runRow(runId);
+      expect(run).toMatchObject({ status: 'pending', attempts: 1 });
+      expect(run.rounds.map((r: any) => r.base_cv_hash)).toEqual([fileHash]);
+      await editQualification();
+      await db.query(`update generation_runs set updated_at = updated_at - interval '2 minutes' where id=$1`, [runId]);
+      await stub.reset();
+      await triggerGeneration();
+      expect(await runRow(runId)).toMatchObject({
+        status: 'failed',
+        error: 'Your base documents changed while this was being written. Choose Generate again.',
+      });
+      expect(await stub.requests()).toEqual([]);
+      expect(await versions(jobId)).toEqual([]);
+
+      // An edit saved while the writer call is out: the version records the facts it was written from.
+      await resetState();
+      jobId = await readyJob();
+      const before = await cvRow();
+      runId = await queueRun(jobId);
+      await stub.reset();
+      await stub.delayPurpose('write_documents', 5000);
+      const running = triggerGeneration();
+      await waitFor(async () => (await writerRequests()).length === 1);
+      await editQualification();
+      expect(await running).toEqual({ ok: true, claimed: 1 });
+      const [w] = await writerRequests();
+      expect(w.messages[0].content[0].type).toBe('document');
+      expect(JSON.parse(tag(sentText(w), 'base_cv_facts'))).toEqual(before.structured);
+      const [v] = await versions(jobId);
+      expect(v.base_cv_hash).toBe(before.content_hash);
+      expect(v.base_cv_hash).not.toBe((await cvRow()).facts_hash);
+    });
   });
 
   describe('review checks need a ruling', () => {
@@ -1770,18 +1908,39 @@ describe('generate documents', () => {
     });
 
     describe('preparing the inputs of a claimed run', () => {
-      const prepare = (rounds: object[], max = 3) =>
+      const LOADED = { job_id: 'j1', extraction_status: 'done', cv_id: 'c1', cv_hash: 'h1', cv_content_hash: 'h1', cv_edited: false, cv_structured: {}, cl_structured: null, raw_text: 'ad', other_jobs: [] };
+      const prepareWith = (rounds: object[], loaded: object, res: object, max = 3) =>
         new Function('$json', '$', code('Prepare inputs'))(
-          { statusCode: 200, body: { documents: [{ kind: 'cv', contentHash: 'h1', pdfBase64: 'UERG' }] } },
+          res,
           (name: string) => ({
             first: () => {
               if (name === 'Claim one run') return { json: { id: 'r1', claimed_at: 't1', rounds } };
               if (name === 'Look up model prices') return { json: { ...prices().json, max_rounds: max } };
-              return { json: { job_id: 'j1', extraction_status: 'done', cv_id: 'c1', cv_hash: 'h1', cv_structured: {}, cl_structured: null, raw_text: 'ad', other_jobs: [] } };
+              return { json: loaded };
             },
           }),
         ).json;
+      const STORED = { statusCode: 200, body: { documents: [{ kind: 'cv', contentHash: 'h1', pdfBase64: 'UERG' }] } };
+      const prepare = (rounds: object[], max = 3) => prepareWith(rounds, LOADED, STORED, max);
       const rec = (round: number, passed = false) => ({ round, passed, base_cv_hash: 'h1', base_cover_letter_hash: null });
+
+      test('an unedited CV sends the stored file, checked against the file hash', () => {
+        expect(prepare([]).inputs.cv_block).toEqual({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'UERG' } });
+        // The stored file is compared with the file's own hash: replaced since its analysis, not ready.
+        expect(prepareWith([], { ...LOADED, cv_hash: 'h2', cv_content_hash: 'h2' }, STORED)).toMatchObject({ ready: false, final: true, error: "Your base CV isn't ready." });
+        expect(prepareWith([], LOADED, { statusCode: 502, body: {} })).toMatchObject({ ready: false, final: false });
+      });
+
+      test('an edited CV sends no file and skips the stored-file checks', () => {
+        // Edited when the row says so, or when its facts hash is no longer the file's hash.
+        for (const edited of [{ ...LOADED, cv_hash: 'h1:abc', cv_edited: true }, { ...LOADED, cv_hash: 'h1:abc' }, { ...LOADED, cv_edited: true }]) {
+          for (const res of [STORED, { statusCode: 502, body: {} }, { statusCode: 200, body: { documents: [] } }, { error: 'down' }]) {
+            const out = prepareWith([], edited, res);
+            expect(out).toMatchObject({ ready: true, inputs: { cv_hash: edited.cv_hash } });
+            expect(out.inputs.cv_block).toBeNull();
+          }
+        }
+      });
 
       test('a first attempt starts at round 1', () => {
         expect(prepare([])).toMatchObject({ ready: true, round: 1, another: true, rounds: [] });
@@ -1845,6 +2004,19 @@ describe('generate documents', () => {
         ).json;
       const textOf = (out: any) => out.request.messages[0].content[1].text as string;
       const tagOf = (text: string, name: string) => new RegExp(`<${name}>\\n([\\s\\S]*?)\\n</${name}>`).exec(text)?.[1];
+
+      test('with no CV block (edited CV) the writer and the reviewer send only the text', () => {
+        const noFile = { ...INPUTS, cv_block: null, regenerate: null };
+        const w = nodeWith('Build writer request', { id: 'r1', claimed_at: 't1', round: 1, rounds: [] }, noFile);
+        expect(w.request.messages[0].content).toEqual([{ type: 'text', text: expect.stringContaining('<base_cv_facts>') }]);
+        const r = nodeWith('Build review request', { id: 'r1', claimed_at: 't1', round: 1 }, noFile, {
+          'Read check results': { run_id: 'r1', round: 1, writer: {}, checks: [] },
+        });
+        expect(r.request.messages[0].content).toEqual([{ type: 'text', text: expect.stringContaining('<base_cv_facts>') }]);
+        // With a block it still goes first.
+        const withFile = nodeWith('Build writer request', { id: 'r1', claimed_at: 't1', round: 1, rounds: [] }, { ...INPUTS, regenerate: null });
+        expect(withFile.request.messages[0].content[0]).toEqual(INPUTS.cv_block);
+      });
 
       test('the writer gets the current version in its own format, the manual edits and the instruction on round 1 only', () => {
         const first = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't1', round: 1, rounds: [] }, { ...INPUTS, regenerate: REGEN }));
@@ -1934,7 +2106,7 @@ describe('generate documents', () => {
               first: () => {
                 if (name === 'Claim one run') return { json: { id: 'r1', claimed_at: 't1', rounds: [], ...run } };
                 if (name === 'Look up model prices') return prices();
-                return { json: { job_id: 'j1', extraction_status: 'done', cv_id: 'c1', cv_hash: 'h1', cv_structured: {}, cl_structured: null, raw_text: 'ad', other_jobs: [], from_version: fromVersion } };
+                return { json: { job_id: 'j1', extraction_status: 'done', cv_id: 'c1', cv_hash: 'h1', cv_content_hash: 'h1', cv_structured: {}, cl_structured: null, raw_text: 'ad', other_jobs: [], from_version: fromVersion } };
               },
             }),
           ).json;
@@ -2067,7 +2239,7 @@ describe('generate documents', () => {
                 first: () => {
                   if (name === 'Claim one run') return { json: { id: 'r1', claimed_at: 't1', rounds } };
                   if (name === 'Look up model prices') return prices();
-                  return { json: { job_id: 'j1', extraction_status: 'done', cv_id: 'c1', cv_hash: 'h1', cv_structured: {}, cl_structured: null, raw_text: 'ad', other_jobs: [] } };
+                  return { json: { job_id: 'j1', extraction_status: 'done', cv_id: 'c1', cv_hash: 'h1', cv_content_hash: 'h1', cv_structured: {}, cl_structured: null, raw_text: 'ad', other_jobs: [] } };
                 },
               }),
             ).json;
@@ -2186,6 +2358,13 @@ describe('generate documents', () => {
         expect(load.parameters.query).toMatch(/document_versions/);
         expect(load.parameters.query).toMatch(/\.job_id = \$2/);
         expect(load.parameters.options.queryReplacement).toContain('from_version_id');
+        // The basis of each base document is its facts hash, and its facts the effective (edited) ones.
+        expect(load.parameters.query).toMatch(/cv\.facts_hash as cv_hash/);
+        expect(load.parameters.query).toMatch(/cv\.content_hash as cv_content_hash/);
+        expect(load.parameters.query).toMatch(/\(cv\.edited_facts is not null\) as cv_edited/);
+        expect(load.parameters.query).toMatch(/coalesce\(cv\.edited_facts, cv\.structured\) as cv_structured/);
+        expect(load.parameters.query).toMatch(/cl\.facts_hash as cl_hash/);
+        expect(load.parameters.query).toMatch(/coalesce\(cl\.edited_facts, cl\.structured\) as cl_structured/);
         const save = nodeByName('Save version').parameters.query;
         expect(save).toMatch(/returning id, owner_id, job_id, instruction, from_version_id/);
         expect(save).toMatch(/case when run\.from_version_id is not null then 'regenerated' else 'generated' end/);
@@ -2204,6 +2383,11 @@ describe('generate documents', () => {
       for (const t of ['<current_version>', '<manual_edits>', '<instruction>']) expect(WRITER_PROMPT, t).toContain(t);
       for (const t of ['<manual_edits>', '<instruction>']) expect(REVIEW_PROMPT, t).toContain(t);
       expect(REVIEW_PROMPT).not.toContain('<current_version>');
+      // An edited base CV goes without its file: both prompts say the facts alone are his base CV then.
+      const NO_FILE = 'His base CV file may be attached before these tags; when no file is attached, he has corrected these facts in the app and they alone are his base CV.';
+      for (const p of [WRITER_PROMPT, REVIEW_PROMPT]) {
+        expect(p.split(/\r?\n/).find((l) => l.startsWith('- <base_cv_facts>:'))).toContain(NO_FILE);
+      }
       expect(WRITER_PROMPT.split(/\r?\n/)[0]).toBe('purpose: write_documents');
       expect(REVIEW_PROMPT.split(/\r?\n/)[0]).toBe('purpose: review_documents');
     });

@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 import { CV, LETTER } from '../../services/worker/test/fixtures';
-import { N8N_URL, SYNC_HEADERS, WEB_URL, db, makePdf, putDocument, resetState, stub } from './lib';
+import { N8N_URL, SYNC_HEADERS, WEB_URL, db, getFacts, makePdf, putDocument, resetState, saveFacts, stub } from './lib';
 
 const OWNER = '00000000-0000-0000-0000-000000000001';
 const DB_URL = 'postgres://jobhunter:test@localhost:55433/jobhunter';
@@ -580,6 +580,28 @@ describe('versions API', () => {
     await db.query(`update base_documents set structured = structured || '{"note":"Led 4711 engineers"}'::jsonb where kind='cv' and active`);
     expect(await flagged()).toBe(false);
   }, 90_000);
+
+  test('saved edit uses the edited base facts for its checks', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const v1 = await seed(jobId, { versionNo: 1 });
+    const QUALIFICATION = 'Master of Stubbing (Extension)';
+    const cv = { ...CV, education: [{ qualification: QUALIFICATION, institution: 'Stub University', dates: '2020 – 2023', statusText: 'Completed' }] };
+    const qualificationFlagged = async () => {
+      const res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv, coverLetter: LETTER });
+      expect(res.status).toBe(201);
+      return (((await res.json()) as any).checks as any[]).some((c) => c.code === 'unknown_fact' && c.where === 'cv.education[0].qualification');
+    };
+    await stub.reset();
+    // The file's facts say "Stub Degree": the new qualification is flagged.
+    expect(await qualificationFlagged()).toBe(true);
+    const before = (await (await getFacts('cv')).json()) as any;
+    const facts = { ...before.facts, education: [{ ...before.facts.education[0], qualification: QUALIFICATION }] };
+    expect((await saveFacts('cv', before.id, before.contentHash, facts)).status).toBe(200);
+    // Corrected in the app: the edited facts are the base CV the checks compare with.
+    expect(await qualificationFlagged()).toBe(false);
+    await noClaude();
+  }, 60_000);
 
   test('an unpaired surrogate is bad_request; an empty or repeated versionId is not the current version', async () => {
     await withCv();
