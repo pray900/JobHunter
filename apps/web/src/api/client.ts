@@ -236,3 +236,17 @@ export function saveBaseFacts(
 export function baseFileUrl(kind: DocumentKind): string {
   return `/api/documents/file?kind=${kind}`;
 }
+
+// The original file's bytes as a PDF blob. The page shows it from a blob: URL, because the n8n
+// response carries a sandbox Content-Security-Policy that stops Chromium's PDF viewer rendering it directly.
+export async function fetchBaseFile(kind: DocumentKind): Promise<Blob> {
+  const path = baseFileUrl(kind);
+  let res: Response;
+  try {
+    res = await fetch(path, { headers: JOBHUNTER_HEADERS });
+  } catch (err) {
+    throw new ApiError(0, `GET ${path} failed: ${err instanceof Error ? err.message : 'network error'}`);
+  }
+  if (!res.ok) throw await failure(res, `GET ${path} failed with ${res.status}`);
+  return new Blob([await res.arrayBuffer()], { type: 'application/pdf' });
+}

@@ -312,3 +312,14 @@ test('saveBaseFacts surfaces invalid_facts path and rejects malformed answers', 
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseFactsBody, facts: null })));
   await expect(fetchBaseFacts('cv')).rejects.toMatchObject({ status: 502 });
 });
+
+test('fetchBaseFile returns a PDF blob and fails on errors', async () => {
+  const f = vi.fn().mockResolvedValue(new Response('%PDF-1.4', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } }));
+  vi.stubGlobal('fetch', f);
+  const blob = await client.fetchBaseFile('cv');
+  expect(f.mock.calls[0][0]).toBe('/api/documents/file?kind=cv');
+  expect(blob.type).toBe('application/pdf');
+  expect(blob.size).toBe(8);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('no', { status: 404 })));
+  await expect(client.fetchBaseFile('cv')).rejects.toMatchObject({ status: 404 });
+});

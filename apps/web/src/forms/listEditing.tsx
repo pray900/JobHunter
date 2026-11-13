@@ -4,6 +4,26 @@ import { createContext, useContext } from 'react';
 export const InvalidPathContext = createContext<string | null>(null);
 const useInvalid = (path: string) => useContext(InvalidPathContext) === path;
 
+// Visible words beside a marked field, so the amber ring is not the only signal.
+export function NotValid() {
+  return (
+    <span className="not-valid attention-text">
+      <span aria-hidden="true">⚠ </span>Not valid
+    </span>
+  );
+}
+
+// Wraps an object list (education, roles, projects) so a list-level bad path can mark and focus it.
+export function ListBox(props: { path: string; children: React.ReactNode }) {
+  const invalid = useInvalid(props.path);
+  return (
+    <div className={invalid ? 'list-box invalid' : 'list-box'} data-path={props.path} tabIndex={-1} aria-invalid={invalid ? true : undefined}>
+      {invalid && <NotValid />}
+      {props.children}
+    </div>
+  );
+}
+
 export function move<T>(list: T[], i: number, by: -1 | 1): T[] {
   const j = i + by;
   if (j < 0 || j >= list.length) return list;
@@ -45,10 +65,13 @@ export function TextField(props: { label: string; path: string; value: string | 
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(e.target.value),
   };
   return (
-    <label className="edit-field">
-      <span className="label">{label}</span>
-      {area ? <textarea {...common} rows={rows ?? 4} /> : <input type="text" {...common} />}
-    </label>
+    <div className="edit-field">
+      <label>
+        <span className="label">{label}</span>
+        {area ? <textarea {...common} rows={rows ?? 4} /> : <input type="text" {...common} />}
+      </label>
+      {invalid && <NotValid />}
+    </div>
   );
 }
 
@@ -56,8 +79,15 @@ export function TextField(props: { label: string; path: string; value: string | 
 export function StringList(props: { noun: string; path?: string; items: string[]; onChange: (items: string[]) => void; multiline?: boolean }) {
   const { noun, path, items, onChange, multiline } = props;
   const bad = useContext(InvalidPathContext);
+  const listBad = path !== undefined && bad === path;
   return (
-    <div className="edit-list">
+    <div
+      className={listBad ? 'edit-list invalid' : 'edit-list'}
+      data-path={path}
+      tabIndex={path === undefined ? undefined : -1}
+      aria-invalid={listBad ? true : undefined}
+    >
+      {listBad && <NotValid />}
       {items.map((text, i) => {
         const p = path === undefined ? null : `${path}[${i}]`;
         const common = {
@@ -75,6 +105,7 @@ export function StringList(props: { noun: string; path?: string; items: string[]
               <input type="text" {...common} onChange={(e) => onChange(replaceAt(items, i, e.target.value))} />
             )}
             <RowTools noun={noun} i={i} count={items.length} onChange={(w) => onChange(applyTool(items, i, w))} />
+            {p !== null && bad === p && <NotValid />}
           </div>
         );
       })}

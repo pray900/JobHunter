@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ApiError, baseFileUrl, fetchBaseFacts, saveBaseFacts } from '../api/client';
+import { ApiError, baseFileUrl, fetchBaseFacts, fetchBaseFile, saveBaseFacts } from '../api/client';
 import type { BaseCoverLetterFacts, BaseCvFacts, BaseDocumentFacts, DocumentKind } from '../api/types';
 import { ConfirmDialog } from '../job/ConfirmDialog';
 import { useShortcuts } from '../job/useShortcuts';
@@ -9,10 +9,13 @@ import { BaseCvForm } from './BaseCvForm';
 import { BaseLetterForm } from './BaseLetterForm';
 import { FactsView } from './FactsView';
 import { InvalidPathContext } from '../forms/listEditing';
-import { documentWarningText } from './labels';
+import { documentWarningText, invalidFieldText } from './labels';
 
 const COST_PER_JOB = 0.016;
 type Facts = BaseCvFacts | BaseCoverLetterFacts;
+
+// "25 jobs (about US$0.40)": the same wording for the save line and the undo confirm.
+const rescoreText = (n: number) => `${n} ${n === 1 ? 'job' : 'jobs'} (about US$${(n * COST_PER_JOB).toFixed(2)})`;
 
 const noun = (kind: DocumentKind) => (kind === 'cv' ? 'CV' : 'cover letter');
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -49,6 +52,33 @@ export function BaseDocumentPage({ kind }: { kind: DocumentKind }) {
     setDraft(null);
     void load();
   }, [load]);
+
+  // The original PDF, shown from a blob: URL (the n8n response's sandbox CSP blanks a direct iframe in Chromium).
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfError, setPdfError] = useState(false);
+  const isPdfDoc = doc?.mediaType === 'application/pdf';
+  const docId = doc?.id;
+  const docHash = doc?.contentHash;
+  useEffect(() => {
+    if (!isPdfDoc) return;
+    let url: string | null = null;
+    let live = true;
+    setPdfUrl(null);
+    setPdfError(false);
+    fetchBaseFile(kind)
+      .then((blob) => {
+        if (!live) return;
+        url = URL.createObjectURL(blob);
+        setPdfUrl(url);
+      })
+      .catch(() => {
+        if (live) setPdfError(true);
+      });
+    return () => {
+      live = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [kind, isPdfDoc, docId, docHash]);
 
   const editing = draft !== null;
   const dirty = editing && doc !== null && JSON.stringify(draft) !== JSON.stringify(doc.facts);
@@ -93,8 +123,14 @@ export function BaseDocumentPage({ kind }: { kind: DocumentKind }) {
       if (err instanceof ApiError && err.status === 409) {
         setChanged(true);
       } else if (err instanceof ApiError && err.code === 'invalid_facts') {
-        setBadPath(err.path ? err.path.replace(/^facts\./, '') : null);
-        setError("One field isn't valid. It is marked below. Fix it and save again.");
+        const path = err.path ? err.path.replace(/^facts\./, '') : null;
+        setBadPath(path);
+        const words = invalidFieldText(path);
+        setError(
+          words
+            ? `${words} It is marked below. Fix it and save again.`
+            : `Something in your edits isn't valid${err.path ? ` (${err.path})` : ''}. Fix it and save again.`,
+        );
       } else {
         setError("Couldn't save. Try again.");
       }
@@ -182,7 +218,16 @@ export function BaseDocumentPage({ kind }: { kind: DocumentKind }) {
         <section className="panel doc-original" aria-label="Original file">
           <h2>Original</h2>
           {isPdf ? (
-            <iframe title="Original file" src={baseFileUrl(kind)} />
+            pdfError ? (
+              <p className="error attention" role="alert">
+                <span aria-hidden="true">⚠ </span>
+                Couldn't load the original file. <a href={baseFileUrl(kind)}>Open the original</a>
+              </p>
+            ) : pdfUrl ? (
+              <iframe title="Original file" src={pdfUrl} />
+            ) : (
+              <p className="muted">Loading the original…</p>
+            )
           ) : (
             <>
               <p className="muted">Your browser can't show a Word file. Download it to compare.</p>
@@ -194,7 +239,7 @@ export function BaseDocumentPage({ kind }: { kind: DocumentKind }) {
         </section>
 
         <section className="panel doc-facts" aria-label="Facts">
-          <h2>{editing ? 'Edit the facts' : 'Facts read from the file'}</h2>
+          <h2>{editing ? 'Edit the facts' : doc.edited ? 'Your facts (edited in the app)' : 'Facts read from the file'}</h2>
           {doc.warnings.length > 0 && (
             <ul className="doc-warnings" aria-label="Needs attention">
               {doc.warnings.map((w, i) => (
@@ -223,7 +268,7 @@ export function BaseDocumentPage({ kind }: { kind: DocumentKind }) {
               </InvalidPathContext.Provider>
               {kind === 'cv' && jobs > 0 && (
                 <p className="muted">
-                  Saving re-scores your {jobs} {jobs === 1 ? 'job' : 'jobs'} (about US${(jobs * COST_PER_JOB).toFixed(2)}).
+                  Saving re-scores your {rescoreText(jobs)}.
                 </p>
               )}
               {error && (
@@ -242,7 +287,7 @@ export function BaseDocumentPage({ kind }: { kind: DocumentKind }) {
               </div>
             </form>
           ) : (
-            <FactsView kind={kind} facts={doc.facts} />
+            <FactsView kind={kind} facts={doc.facts} edited={doc.edited} />
           )}
         </section>
       </div>
@@ -258,7 +303,7 @@ export function BaseDocumentPage({ kind }: { kind: DocumentKind }) {
       )}
       {confirm === 'undo' && (
         <ConfirmDialog
-          message={`Undo all your edits? Your ${noun(kind)} goes back to what was read from the file.`}
+          message={`Undo all your edits? Your ${noun(kind)} goes back to what was read from the file.${kind === 'cv' && jobs > 0 ? ` This re-scores your ${rescoreText(jobs)}.` : ''}`}
           confirmLabel="Undo all edits"
           onConfirm={() => void onUndo()}
           onCancel={() => setConfirm(null)}

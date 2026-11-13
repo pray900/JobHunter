@@ -10,6 +10,7 @@ vi.mock('../api/client', async (orig) => ({
   ...(await orig<typeof import('../api/client')>()),
   fetchBaseFacts: vi.fn(),
   saveBaseFacts: vi.fn(),
+  fetchBaseFile: vi.fn(),
 }));
 const m = vi.mocked(client);
 
@@ -61,8 +62,14 @@ function renderPage(kind: DocumentKind = 'cv') {
   );
 }
 
+const createUrl = vi.fn();
+const revokeUrl = vi.fn();
 beforeEach(() => {
   m.fetchBaseFacts.mockResolvedValue(doc());
+  m.fetchBaseFile.mockResolvedValue(new Blob(['%PDF'], { type: 'application/pdf' }));
+  createUrl.mockReturnValue('blob:original-1');
+  URL.createObjectURL = createUrl;
+  URL.revokeObjectURL = revokeUrl;
 });
 afterEach(() => {
   cleanup();
@@ -77,11 +84,31 @@ async function openEditor(user: ReturnType<typeof userEvent.setup>) {
 describe('BaseDocumentPage', () => {
   test('shows the PDF original beside the facts', async () => {
     renderPage();
+    expect(await screen.findByText('Loading the original…')).toBeInTheDocument();
     const frame = await screen.findByTitle('Original file');
-    expect(frame).toHaveAttribute('src', '/api/documents/file?kind=cv');
+    expect(frame).toHaveAttribute('src', 'blob:original-1');
+    expect(m.fetchBaseFile).toHaveBeenCalledWith('cv');
+    expect(screen.queryByText('Loading the original…')).toBeNull();
     expect(screen.getByText('Sam Example')).toBeInTheDocument();
     expect(screen.getByText('Built the thing')).toBeInTheDocument();
     expect(screen.getByText('my-cv.pdf')).toBeInTheDocument();
+  });
+
+  test('revokes the blob URL on unmount', async () => {
+    const { unmount } = renderPage();
+    await screen.findByTitle('Original file');
+    expect(revokeUrl).not.toHaveBeenCalled();
+    unmount();
+    expect(revokeUrl).toHaveBeenCalledWith('blob:original-1');
+  });
+
+  test('a failed original shows a fallback link', async () => {
+    m.fetchBaseFile.mockRejectedValue(new client.ApiError(500, 'nope'));
+    renderPage();
+    expect(await screen.findByText(/Couldn't load the original file\./)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open the original' })).toHaveAttribute('href', '/api/documents/file?kind=cv');
+    expect(screen.queryByTitle('Original file')).toBeNull();
+    expect(createUrl).not.toHaveBeenCalled();
   });
 
   test('Word original offers download', async () => {
@@ -90,6 +117,7 @@ describe('BaseDocumentPage', () => {
     const link = await screen.findByRole('link', { name: 'Download original' });
     expect(link).toHaveAttribute('href', '/api/documents/file?kind=cv');
     expect(screen.queryByTitle('Original file')).toBeNull();
+    expect(m.fetchBaseFile).not.toHaveBeenCalled();
   });
 
   test('shows warnings with their labels', async () => {
@@ -163,6 +191,86 @@ describe('BaseDocumentPage', () => {
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Undo all edits' }));
     await waitFor(() => expect(m.saveBaseFacts).toHaveBeenCalledWith('cv', 'd1', 'hash-1', null));
     await waitFor(() => expect(screen.queryByText(/Edited in the app/)).toBeNull());
+  });
+
+  test('undo confirm says it re-scores the jobs, singular for one', async () => {
+    const user = userEvent.setup();
+    m.fetchBaseFacts.mockResolvedValue(doc({ edited: true, editedAt: '2026-11-14T01:00:00.000Z', rescoreJobs: 25 }));
+    renderPage();
+    await screen.findByText(/Edited in the app/);
+    await user.click(screen.getByRole('button', { name: 'Undo all edits' }));
+    expect(screen.getByText(/This re-scores your 25 jobs \(about US\$0\.40\)\./)).toBeInTheDocument();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    m.fetchBaseFacts.mockResolvedValue(doc({ edited: true, editedAt: '2026-11-14T01:00:00.000Z', rescoreJobs: 1 }));
+    cleanup();
+    renderPage();
+    await screen.findByText(/Edited in the app/);
+    await user.click(screen.getByRole('button', { name: 'Undo all edits' }));
+    expect(screen.getByText(/This re-scores your 1 job \(about US\$0\.02\)\./)).toBeInTheDocument();
+  });
+
+  test('edited facts use the edited wording', async () => {
+    m.fetchBaseFacts.mockResolvedValue(doc({ edited: true, editedAt: '2026-11-14T01:00:00.000Z', facts: { ...cvFacts, headline: '', skills: [] } }));
+    renderPage();
+    expect(await screen.findByRole('heading', { name: 'Your facts (edited in the app)' })).toBeInTheDocument();
+    expect(screen.queryByText('Facts read from the file')).toBeNull();
+    expect(screen.queryByText('Not found in the file')).toBeNull();
+    expect(screen.getAllByText('None').length).toBeGreaterThan(0);
+  });
+
+  test('unedited facts keep the file wording', async () => {
+    m.fetchBaseFacts.mockResolvedValue(doc({ facts: { ...cvFacts, headline: '' } }));
+    renderPage();
+    expect(await screen.findByRole('heading', { name: 'Facts read from the file' })).toBeInTheDocument();
+    expect(screen.getByText('Not found in the file')).toBeInTheDocument();
+  });
+
+  test('a list-level bad path marks the list and names it', async () => {
+    const user = userEvent.setup();
+    m.saveBaseFacts.mockRejectedValue(new client.ApiError(400, 'bad', 'invalid_facts', 'facts.skills'));
+    renderPage();
+    await openEditor(user);
+    await user.type(screen.getByLabelText('Skill 1'), '!');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Skills isn't valid: a list can have at most 100 items and each entry at most 4000 characters.");
+    const list = document.querySelector('[data-path="skills"]')!;
+    expect(list).toHaveAttribute('aria-invalid', 'true');
+    expect(within(list as HTMLElement).getByText('Not valid')).toBeInTheDocument();
+  });
+
+  test('an object-list path marks the whole list', async () => {
+    const user = userEvent.setup();
+    m.saveBaseFacts.mockRejectedValue(new client.ApiError(400, 'bad', 'invalid_facts', 'facts.roles'));
+    renderPage();
+    await openEditor(user);
+    await user.type(screen.getByLabelText('Headline'), '!');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Roles isn't valid/);
+    expect(document.querySelector('[data-path="roles"]')).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  test('a field path says Not valid next to the field and names it', async () => {
+    const user = userEvent.setup();
+    m.saveBaseFacts.mockRejectedValue(new client.ApiError(400, 'bad', 'invalid_facts', 'facts.education[0].qualification'));
+    renderPage();
+    await openEditor(user);
+    await user.type(screen.getByLabelText('Headline'), '!');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("Qualification 1 isn't valid.");
+    expect(screen.getByLabelText('Qualification 1')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText('Not valid')).toBeInTheDocument();
+  });
+
+  test('an unmatched path falls back to a generic message', async () => {
+    const user = userEvent.setup();
+    m.saveBaseFacts.mockRejectedValue(new client.ApiError(400, 'bad', 'invalid_facts', 'facts'));
+    renderPage();
+    await openEditor(user);
+    await user.type(screen.getByLabelText('Headline'), '!');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("Something in your edits isn't valid (facts).");
+    expect(screen.queryByText('Not valid')).toBeNull();
   });
 
   test('409 shows reload message', async () => {

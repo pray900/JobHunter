@@ -1,5 +1,5 @@
 import type { BaseCvFacts } from '../api/types';
-import { RowTools, StringList, TextField, applyTool, replaceAt } from '../forms/listEditing';
+import { ListBox, RowTools, StringList, TextField, applyTool, replaceAt } from '../forms/listEditing';
 
 type Education = BaseCvFacts['education'][number];
 type Role = BaseCvFacts['roles'][number];
@@ -34,6 +34,7 @@ export function BaseCvForm(props: { facts: BaseCvFacts; onChange: (facts: BaseCv
 
       <section aria-label="Education">
         <h3>Education</h3>
+        <ListBox path="education">
         {f.education.map((e, i) => {
           const set = (p: Partial<Education>) => patch({ education: replaceAt(f.education, i, { ...e, ...p }) });
           return (
@@ -51,10 +52,12 @@ export function BaseCvForm(props: { facts: BaseCvFacts; onChange: (facts: BaseCv
         <button type="button" className="btn btn-small" onClick={() => patch({ education: [...f.education, { qualification: '', institution: '', dates: '', statusText: '' }] })}>
           Add qualification
         </button>
+        </ListBox>
       </section>
 
       <section aria-label="Roles">
         <h3>Roles</h3>
+        <ListBox path="roles">
         {f.roles.map((r, i) => {
           const set = (p: Partial<Role>) => patch({ roles: replaceAt(f.roles, i, { ...r, ...p }) });
           return (
@@ -72,10 +75,12 @@ export function BaseCvForm(props: { facts: BaseCvFacts; onChange: (facts: BaseCv
         <button type="button" className="btn btn-small" onClick={() => patch({ roles: [...f.roles, { title: '', employer: '', dates: '', bullets: [] }] })}>
           Add role
         </button>
+        </ListBox>
       </section>
 
       <section aria-label="Projects">
         <h3>Projects</h3>
+        <ListBox path="projects">
         {f.projects.map((p, i) => {
           const set = (q: Partial<Project>) => patch({ projects: replaceAt(f.projects, i, { ...p, ...q }) });
           return (
@@ -89,6 +94,7 @@ export function BaseCvForm(props: { facts: BaseCvFacts; onChange: (facts: BaseCv
         <button type="button" className="btn btn-small" onClick={() => patch({ projects: [...f.projects, { name: '', bullets: [] }] })}>
           Add project
         </button>
+        </ListBox>
       </section>
 
       <section aria-label="Skills">

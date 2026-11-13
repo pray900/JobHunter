@@ -234,3 +234,6 @@ kbd { display: inline-block; min-width: 22px; padding: 0 6px; text-align: center
 .edit-field input.invalid, .edit-field textarea.invalid, .edit-row input.invalid, .edit-row textarea.invalid { border-color: var(--warn-border); box-shadow: 0 0 0 2px var(--warn-border); }
 .edit-field input:focus-visible, .edit-field textarea:focus-visible, .edit-row input:focus-visible, .edit-row textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .facts-form .edit-card .row-tools { margin-top: 8px; }
+.edit-list.invalid, .list-box.invalid { border-radius: 6px; outline: 2px solid var(--warn-border); outline-offset: 4px; }
+.not-valid { display: block; font-size: 0.85rem; margin-top: 4px; }
+.edit-field label { display: block; }
