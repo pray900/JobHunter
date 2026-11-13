@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { BaseCoverLetterFacts, BaseCvFacts } from '../src/documents/types.js';
-import { validateFacts } from '../src/documents/validateFacts.js';
+import { normaliseBaseFacts, sameAsBase, validateFacts } from '../src/documents/validateFacts.js';
 
 // Invented person.
 const cv = (): BaseCvFacts => ({
@@ -98,5 +98,42 @@ describe('validateFacts', () => {
     expect(bad('cv', null)).toBe('facts');
     expect(bad('cv', [])).toBe('facts');
     expect(bad('cv', 'x')).toBe('facts');
+  });
+});
+
+describe('sameAsBase (lenient normaliser for the file facts)', () => {
+  const edited = (kind: 'cv' | 'cover_letter', input: unknown) => {
+    const r = validateFacts(kind, input);
+    if (!r.ok) throw new Error(r.path);
+    return r.facts;
+  };
+  test('raw base with blank phone, padded strings and a blank bullet equals its cleaned form', () => {
+    const raw: any = cv();
+    raw.contact.phone = '';
+    raw.headline = '  Backend Engineer \n';
+    raw.roles[0].bullets = ['Built an invoicing service.  ', '   '];
+    raw.skills = [' TypeScript', 'SQL', ''];
+    expect(sameAsBase('cv', edited('cv', cv()), raw)).toBe(true);
+    // The form sends the cleaned facts back unchanged: still the same.
+    expect(sameAsBase('cv', edited('cv', normaliseBaseFacts('cv', raw)), raw)).toBe(true);
+  });
+  test('one changed field is not the same', () => {
+    expect(sameAsBase('cv', edited('cv', { ...cv(), headline: 'Platform Engineer' }), cv())).toBe(false);
+    const l = letter();
+    expect(sameAsBase('cover_letter', edited('cover_letter', { ...l, toneNotes: 'Warm.' }), l)).toBe(false);
+    expect(sameAsBase('cover_letter', edited('cover_letter', l), { ...l, toneNotes: ' Direct. ' })).toBe(true);
+  });
+  test('a base over the limits or oddly shaped never throws', () => {
+    const huge: any = cv();
+    huge.skills = Array.from({ length: 10_000 }, (_, i) => `skill ${i}`);
+    huge.summary = 'x'.repeat(50_000);
+    expect(() => normaliseBaseFacts('cv', huge)).not.toThrow();
+    expect(sameAsBase('cv', edited('cv', cv()), huge)).toBe(false);
+    for (const odd of [null, 'text', 42, [], { ...cv(), roles: 'none', contact: null, extra: 1 }]) {
+      expect(() => normaliseBaseFacts('cv', odd)).not.toThrow();
+      expect(sameAsBase('cv', edited('cv', cv()), odd)).toBe(false);
+    }
+    // Keys outside the schema are left out of the comparison.
+    expect(sameAsBase('cv', edited('cv', cv()), { ...cv(), confidence: 0.9 })).toBe(true);
   });
 });

@@ -265,7 +265,7 @@ describe('documents API', () => {
 });
 
 describe('base document facts API', () => {
-  const factsKeys = ['edited', 'editedAt', 'facts', 'id', 'kind', 'mediaType', 'rescoreJobs', 'sourceRef', 'warnings'];
+  const factsKeys = ['contentHash', 'edited', 'editedAt', 'facts', 'id', 'kind', 'mediaType', 'rescoreJobs', 'sourceRef', 'warnings'];
   const row = async (sourceRef: string) =>
     (
       await db.query(
@@ -279,8 +279,9 @@ describe('base document facts API', () => {
     expect(res.status).toBe(200);
     return res.json() as Promise<any>;
   };
-  const save = async (kind: string, id: string, facts: unknown) => {
-    const res = await saveFacts(kind, id, facts);
+  type DocRef = { kind: string; id: string; contentHash: string };
+  const save = async (doc: DocRef, facts: unknown) => {
+    const res = await saveFacts(doc.kind, doc.id, doc.contentHash, facts);
     return { status: res.status, body: (await res.json()) as any };
   };
   const addJob = (ref: string, status: string, removed = false) =>
@@ -312,6 +313,7 @@ describe('base document facts API', () => {
       kind: 'cv',
       sourceRef: 'cv.pdf',
       mediaType: 'application/pdf',
+      contentHash: r.content_hash,
       facts: r.structured,
       edited: false,
       editedAt: null,
@@ -352,7 +354,7 @@ describe('base document facts API', () => {
       // Text that looks like SQL parameters or injection is stored as it is.
       skills: ['TypeScript', 'Saved $1 and $2 a month', "O'Brien'); drop table jobs; --", '   '],
     };
-    const { status, body } = await save('cv', before.id, edited);
+    const { status, body } = await save(before, edited);
     expect(status).toBe(200);
     expect(Object.keys(body).sort()).toEqual(factsKeys);
     const expected = { ...edited, headline: 'Platform Engineer', skills: edited.skills.slice(0, 3) };
@@ -373,7 +375,7 @@ describe('base document facts API', () => {
   test('saving unchanged facts stores no edit', async () => {
     await putDocument('cv', 'cv.pdf', makePdf('Base CV'));
     const before = await readFacts('cv');
-    const { status, body } = await save('cv', before.id, before.facts);
+    const { status, body } = await save(before, before.facts);
     expect(status).toBe(200);
     expect(body).toMatchObject({ edited: false, editedAt: null, facts: before.facts });
     const r = await row('cv.pdf');
@@ -385,8 +387,8 @@ describe('base document facts API', () => {
   test("undo all edits goes back to the file's facts", async () => {
     await putDocument('cv', 'cv.pdf', makePdf('Base CV'));
     const before = await readFacts('cv');
-    expect((await save('cv', before.id, { ...before.facts, headline: 'Changed' })).body.edited).toBe(true);
-    const { status, body } = await save('cv', before.id, null);
+    expect((await save(before, { ...before.facts, headline: 'Changed' })).body.edited).toBe(true);
+    const { status, body } = await save(before, null);
     expect(status).toBe(200);
     expect(body).toEqual(before);
     const r = await row('cv.pdf');
@@ -407,7 +409,7 @@ describe('base document facts API', () => {
       [{ ...before.facts, headline: 42 }, 'facts.headline'],
     ];
     for (const [facts, path] of cases) {
-      const { status, body } = await save('cv', before.id, facts);
+      const { status, body } = await save(before, facts);
       expect(status).toBe(400);
       expect(body).toEqual({ error: 'invalid_facts', path });
     }
@@ -421,17 +423,22 @@ describe('base document facts API', () => {
     for (const body of [
       '[]',
       '"x"',
-      JSON.stringify({ kind: 'cv', id: before.id }),
-      JSON.stringify({ kind: 'resume', id: before.id, facts: before.facts }),
-      JSON.stringify({ kind: 'cv', id: 'not-a-uuid', facts: before.facts }),
-      JSON.stringify({ kind: 'cv', id: `${before.id}' or '1'='1`, facts: before.facts }),
+      JSON.stringify({ kind: 'cv', id: before.id, contentHash: before.contentHash }),
+      JSON.stringify({ kind: 'resume', id: before.id, contentHash: before.contentHash, facts: before.facts }),
+      JSON.stringify({ kind: 'cv', id: 'not-a-uuid', contentHash: before.contentHash, facts: before.facts }),
+      JSON.stringify({ kind: 'cv', id: `${before.id}' or '1'='1`, contentHash: before.contentHash, facts: before.facts }),
+      // The file version is required and must look like one.
+      JSON.stringify({ kind: 'cv', id: before.id, facts: before.facts }),
+      JSON.stringify({ kind: 'cv', id: before.id, contentHash: 'abc', facts: before.facts }),
+      JSON.stringify({ kind: 'cv', id: before.id, contentHash: `${before.contentHash}' or '1'='1`, facts: before.facts }),
+      JSON.stringify({ kind: 'cv', id: before.id, contentHash: 42, facts: before.facts }),
     ]) {
       const res = await raw(body);
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: 'bad_request' });
     }
     // Over 200 KB.
-    const big = await raw(JSON.stringify({ kind: 'cv', id: before.id, facts: { ...before.facts, summary: 'x'.repeat(210 * 1024) } }));
+    const big = await raw(JSON.stringify({ kind: 'cv', id: before.id, contentHash: before.contentHash, facts: { ...before.facts, summary: 'x'.repeat(210 * 1024) } }));
     expect(big.status).toBe(413);
     expect(await big.json()).toEqual({ error: 'too_large' });
     const r = await row('cv.pdf');
@@ -447,7 +454,7 @@ describe('base document facts API', () => {
         const res = await fetch(`${base}/documents/facts`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
-          body: JSON.stringify({ kind: 'cv', id: before.id, facts: { ...before.facts, headline: 'Forged' } }),
+          body: JSON.stringify({ kind: 'cv', id: before.id, contentHash: before.contentHash, facts: { ...before.facts, headline: 'Forged' } }),
         });
         expect(res.status).toBe(403);
         expect(await res.json()).toEqual({ error: 'missing_jobhunter_header' });
@@ -462,26 +469,27 @@ describe('base document facts API', () => {
     await putDocument('cv', 'new.pdf', makePdf('Base CV STUB_HEADLINE:new'));
     const fresh = await readFacts('cv');
     const edit = { ...old.facts, headline: 'Stale edit' };
-    const stale = [
-      ['cv', old.id], // replaced in another tab
-      ['cover_letter', fresh.id], // the id of another kind
-      ['cv', '00000000-0000-4000-8000-000000000000'], // no such document
+    const stale: DocRef[] = [
+      old, // replaced in another tab
+      { ...fresh, kind: 'cover_letter' }, // the id of another kind
+      { ...fresh, id: '00000000-0000-4000-8000-000000000000' }, // no such document
+      { ...fresh, contentHash: old.contentHash }, // another file's version
     ];
-    for (const [kind, id] of stale) {
-      const { status, body } = await save(kind, id, edit);
+    for (const doc of stale) {
+      const { status, body } = await save(doc, edit);
       expect(status).toBe(409);
       expect(body).toEqual({ error: 'document_changed' });
     }
     // Still being analysed: no edit either.
     await db.query(`update base_documents set analysis_status = 'pending' where id = $1`, [fresh.id]);
-    expect((await save('cv', fresh.id, edit)).status).toBe(409);
+    expect((await save(fresh, edit)).status).toBe(409);
     expect(await db.query(`select source_ref from base_documents where edited_facts is not null`)).toEqual([]);
   });
 
   test('replacing the file drops the edits', async () => {
     await putDocument('cv', 'cv.pdf', makePdf('Base CV STUB_HEADLINE:v1'));
     const v1 = await readFacts('cv');
-    expect((await save('cv', v1.id, { ...v1.facts, headline: 'Edited' })).body.edited).toBe(true);
+    expect((await save(v1, { ...v1.facts, headline: 'Edited' })).body.edited).toBe(true);
     // Same name, new content: the row is analysed fresh and holds no edits.
     await putDocument('cv', 'cv.pdf', makePdf('Base CV STUB_HEADLINE:v2'));
     const v2 = await readFacts('cv');
@@ -491,7 +499,7 @@ describe('base document facts API', () => {
     expect(r.edited_facts).toBeNull();
     expect(r.edited_at).toBeNull();
     // A different name: a new row, also without edits.
-    expect((await save('cv', v2.id, { ...v2.facts, headline: 'Edited again' })).body.edited).toBe(true);
+    expect((await save(v2, { ...v2.facts, headline: 'Edited again' })).body.edited).toBe(true);
     await putDocument('cv', 'other.pdf', makePdf('Base CV STUB_HEADLINE:v3'));
     expect(await readFacts('cv')).toMatchObject({ sourceRef: 'other.pdf', edited: false, facts: { headline: 'v3' } });
   });
@@ -500,7 +508,7 @@ describe('base document facts API', () => {
     const bytes = makePdf('Base CV STUB_HEADLINE:v1');
     await putDocument('cv', 'cv.pdf', bytes);
     const before = await readFacts('cv');
-    const saved = (await save('cv', before.id, { ...before.facts, headline: 'Edited' })).body;
+    const saved = (await save(before, { ...before.facts, headline: 'Edited' })).body;
     expect(saved.edited).toBe(true);
     await putDocument('cv', 'cv.pdf', bytes);
     expect(await readFacts('cv')).toEqual(saved);
@@ -510,21 +518,86 @@ describe('base document facts API', () => {
     await putDocument('cv', 'cv.pdf', makePdf('Base CV'));
     const before = await readFacts('cv');
     expect(codes(before.warnings)).toContain('missing_work_rights');
-    const fixed = await save('cv', before.id, { ...before.facts, workRights: 'Australian citizen' });
+    const fixed = await save(before, { ...before.facts, workRights: 'Australian citizen' });
     expect(fixed.status).toBe(200);
     expect(codes(fixed.body.warnings)).not.toContain('missing_work_rights');
     expect((await row('cv.pdf')).warnings).toEqual(fixed.body.warnings);
     expect((await listDocuments()).cv.warnings).toEqual(fixed.body.warnings);
     // Undo brings back the file's warnings.
-    expect(codes((await save('cv', before.id, null)).body.warnings)).toContain('missing_work_rights');
+    expect(codes((await save(before, null)).body.warnings)).toContain('missing_work_rights');
   });
 
   test('cover letter edits save too', async () => {
     await putDocument('cover_letter', 'cl.pdf', makePdf('Letter'));
     const before = await readFacts('cover_letter');
-    const { status, body } = await save('cover_letter', before.id, { ...before.facts, toneNotes: 'Warm and direct.' });
+    const { status, body } = await save(before, { ...before.facts, toneNotes: 'Warm and direct.' });
     expect(status).toBe(200);
     expect(body).toMatchObject({ kind: 'cover_letter', edited: true, rescoreJobs: 0, facts: { toneNotes: 'Warm and direct.' } });
+  });
+
+  test('save after a same-name replace is 409 and changes nothing', async () => {
+    await putDocument('cv', 'cv.pdf', makePdf('Base CV STUB_HEADLINE:v1'));
+    const stale = await readFacts('cv');
+    await putDocument('cv', 'cv.pdf', makePdf('Base CV STUB_HEADLINE:v2'));
+    const fresh = await readFacts('cv');
+    expect(fresh.id).toBe(stale.id); // same row, new file
+    expect(fresh.contentHash).not.toBe(stale.contentHash);
+    const before = await row('cv.pdf');
+    const { status, body } = await save(stale, { ...stale.facts, headline: 'Old tab edit' });
+    expect(status).toBe(409);
+    expect(body).toEqual({ error: 'document_changed' });
+    expect(await row('cv.pdf')).toEqual(before);
+    expect(await readFacts('cv')).toEqual(fresh);
+  });
+
+  test('a raw analysis with untrimmed and blank values: unchanged save stores no edit, undo works', async () => {
+    await putDocument('cv', 'cv.pdf', makePdf('Base CV'));
+    // What Claude returned, before any cleaning: blank phone, padded text, a blank bullet.
+    const [{ structured }] = await db.query(`select structured from base_documents where source_ref = 'cv.pdf'`);
+    const raw = {
+      ...structured,
+      headline: `  ${structured.headline}  `,
+      contact: { ...structured.contact, phone: '' },
+      roles: structured.roles.map((r: any) => ({ ...r, bullets: [...r.bullets, '  '] })),
+    };
+    await db.query(`update base_documents set structured = $1::jsonb where source_ref = 'cv.pdf'`, [JSON.stringify(raw)]);
+    const before = await readFacts('cv');
+    // The form shows the cleaned facts and sends them back unchanged.
+    const cleaned = { ...structured, contact: { ...structured.contact, phone: null } };
+    const same = await save(before, cleaned);
+    expect(same.status).toBe(200);
+    expect(same.body).toMatchObject({ edited: false, editedAt: null });
+    expect((await row('cv.pdf')).edited_facts).toBeNull();
+    // An edit, then undo: back to the raw facts, no edit stored.
+    expect((await save(before, { ...cleaned, headline: 'Changed' })).body.edited).toBe(true);
+    const undo = await save(before, null);
+    expect(undo.status).toBe(200);
+    expect(undo.body).toMatchObject({ edited: false, editedAt: null, facts: raw });
+    expect((await row('cv.pdf')).edited_facts).toBeNull();
+  });
+
+  test('undo works even when the file facts would fail the strict check', async () => {
+    await putDocument('cv', 'cv.pdf', makePdf('Base CV'));
+    const before = await readFacts('cv');
+    expect((await save(before, { ...before.facts, headline: 'Changed' })).body.edited).toBe(true);
+    // Claude returned more skills than an edit may hold (and an extra key).
+    const big = { ...before.facts, skills: Array.from({ length: 150 }, (_, i) => `skill ${i}`), confidence: 'high' };
+    await db.query(`update base_documents set structured = $1::jsonb where source_ref = 'cv.pdf'`, [JSON.stringify(big)]);
+    const undo = await save(before, null);
+    expect(undo.status).toBe(200);
+    expect(undo.body).toMatchObject({ edited: false, facts: big });
+    expect(codes(undo.body.warnings)).toContain('missing_work_rights');
+  });
+
+  test('an earlier file uploaded again does not bring its old edits back', async () => {
+    const a = makePdf('Base CV STUB_HEADLINE:a');
+    await putDocument('cv', 'a.pdf', a);
+    const first = await readFacts('cv');
+    expect((await save(first, { ...first.facts, headline: 'Edited a' })).body.edited).toBe(true);
+    await putDocument('cv', 'b.pdf', makePdf('Base CV STUB_HEADLINE:b'));
+    expect((await row('a.pdf')).edited_facts).toBeNull();
+    await putDocument('cv', 'a.pdf', a);
+    expect(await readFacts('cv')).toMatchObject({ sourceRef: 'a.pdf', edited: false, editedAt: null, facts: { headline: 'a' } });
   });
 
   test('file endpoint serves the PDF inline and Word as attachment', async () => {

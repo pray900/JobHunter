@@ -229,6 +229,24 @@ describe('facts and file routes', () => {
     expect(body.warnings.map((w: { code: string }) => w.code)).toContain('missing_work_rights');
   });
 
+  test('facts/check answers sameAsBase against the leniently cleaned base', async () => {
+    const base = { ...facts(), contact: { location: '', email: null, phone: ' ', links: [''] } };
+    expect((await post({ kind: 'cv', facts: facts(), base })).json().sameAsBase).toBe(true);
+    expect((await post({ kind: 'cv', facts: { ...facts(), headline: 'Other' }, base })).json().sameAsBase).toBe(false);
+    expect((await post({ kind: 'cv', facts: facts() })).json().sameAsBase).toBe(false);
+    // A base over the facts limits is fine (it is never validated strictly).
+    const big = { ...facts(), skills: Array.from({ length: 5000 }, (_, i) => `s${i}`) };
+    const res = await post({ kind: 'cv', facts: facts(), base: big });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sameAsBase).toBe(false);
+  });
+
+  test('facts/check 413 when the facts alone are over 200 KB', async () => {
+    const res = await post({ kind: 'cv', facts: { ...facts(), summary: 'x'.repeat(210 * 1024) } });
+    expect(res.statusCode).toBe(413);
+    expect(res.json()).toEqual({ error: 'too_large' });
+  });
+
   test('facts/check 400 invalid_facts', async () => {
     const res = await post({ kind: 'cv', facts: { ...facts(), extra: 1 } });
     expect(res.statusCode).toBe(400);

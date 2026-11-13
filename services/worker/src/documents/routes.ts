@@ -10,7 +10,7 @@ import {
 } from '../storage/documentFolder.js';
 import { checkBaseCoverLetter, checkBaseCv, parseBannedPhrases } from './checks.js';
 import { scanDocuments } from './scan.js';
-import { MAX_FACTS_BYTES, validateFacts } from './validateFacts.js';
+import { MAX_FACTS_BYTES, sameAsBase, validateFacts } from './validateFacts.js';
 import {
   DOCUMENT_KINDS,
   DOCX_MEDIA_TYPE,
@@ -90,12 +90,17 @@ export function registerDocumentRoutes(
   });
 
   // Validates and normalises edited facts, then runs the same checks as analysed facts. Saves nothing.
-  app.post<{ Body: { kind?: unknown; facts?: unknown } }>(
+  // Optional `base` (what Claude read from the file) is cleaned leniently and compared: `sameAsBase`.
+  // The body may hold facts and base, so it may be larger; the facts alone stay within MAX_FACTS_BYTES.
+  app.post<{ Body: { kind?: unknown; facts?: unknown; base?: unknown } }>(
     '/documents/facts/check',
-    { bodyLimit: MAX_FACTS_BYTES },
+    { bodyLimit: 3 * MAX_FACTS_BYTES },
     async (request, reply) => {
-      const { kind, facts } = request.body ?? {};
+      const { kind, facts, base } = request.body ?? {};
       if (typeof kind !== 'string' || !isKind(kind)) return reply.code(400).send({ error: 'bad_request' });
+      if (Buffer.byteLength(JSON.stringify(facts ?? null), 'utf8') > MAX_FACTS_BYTES) {
+        return reply.code(413).send({ error: 'too_large' });
+      }
       const result = validateFacts(kind, facts);
       if (!result.ok) return reply.code(400).send({ error: 'invalid_facts', path: result.path });
       try {
@@ -104,7 +109,7 @@ export function registerDocumentRoutes(
           kind === 'cv'
             ? checkBaseCv(result.facts as BaseCvFacts, bannedPhrases)
             : checkBaseCoverLetter(result.facts as BaseCoverLetterFacts, bannedPhrases);
-        return { facts: result.facts, warnings };
+        return { facts: result.facts, warnings, sameAsBase: base !== undefined && sameAsBase(kind, result.facts, base) };
       } catch (err) {
         request.log.error({ kind, file: bannedPhrasesFile, err }, 'facts check failed');
         return reply.code(500).send({ error: 'document_checks_failed' });

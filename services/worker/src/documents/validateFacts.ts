@@ -104,3 +104,46 @@ export function validateFacts(
     throw err;
   }
 }
+
+// Lenient normaliser for what Claude read from the file (`structured`), so it can be compared with
+// validated edits: the same trimming and blank rules, but no size limits and no errors. Values of an
+// unexpected type are kept as they are; keys outside the schema are left out of the comparison.
+function lenient(spec: Spec, v: unknown): unknown {
+  switch (spec.t) {
+    case 'string': {
+      if (typeof v !== 'string') return v;
+      const s = v.trim();
+      return spec.nullable && s === '' ? null : s;
+    }
+    case 'strings':
+      if (!Array.isArray(v)) return v;
+      return v.map((x) => (typeof x === 'string' ? x.trim() : x)).filter((x) => x !== '');
+    case 'list':
+      return Array.isArray(v) ? v.map((x) => lenient(spec.item, x)) : v;
+    case 'object': {
+      if (!isPlainObject(v)) return v;
+      const out: Record<string, unknown> = {};
+      for (const [key, sub] of Object.entries(spec.fields)) if (Object.hasOwn(v, key)) out[key] = lenient(sub, v[key]);
+      return out;
+    }
+  }
+}
+
+export function normaliseBaseFacts(kind: DocumentKind, base: unknown): unknown {
+  return lenient(kind === 'cv' ? CV_SPEC : LETTER_SPEC, base);
+}
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => deepEqual(x, b[i]));
+  }
+  if (!isPlainObject(a) || !isPlainObject(b)) return false;
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && deepEqual(a[k], b[k]));
+}
+
+// True when validated (normalised) facts say the same as the file's facts once those are cleaned the same way.
+export function sameAsBase(kind: DocumentKind, facts: unknown, base: unknown): boolean {
+  return deepEqual(facts, normaliseBaseFacts(kind, base));
+}

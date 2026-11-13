@@ -346,7 +346,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Parameters: [1] owner, [2] documents read from the storage (JSON array of kind, sourceRef, contentHash)\n-- A row that is not the stored document of its kind any more was replaced by an upload: kept, no longer used.\nupdate base_documents d\nset source_removed = true, active = false, updated_at = now()\nwhere d.owner_id = $1\n  and (not d.source_removed or d.active)\n  and not exists (\n    select 1 from jsonb_to_recordset($2::jsonb) as s(kind text, \"sourceRef\" text)\n    where s.kind = d.kind and s.\"sourceRef\" = d.source_ref\n  )\nreturning d.id;",
+        "query": "-- Parameters: [1] owner, [2] documents read from the storage (JSON array of kind, sourceRef, contentHash)\n-- A row that is not the stored document of its kind any more was replaced by an upload: kept, no longer used.\nupdate base_documents d\n-- its edits go with it: the same file uploaded again later is read fresh, without old edits\nset source_removed = true, active = false, updated_at = now(), edited_facts = null, edited_at = null\nwhere d.owner_id = $1\n  and (not d.source_removed or d.active)\n  and not exists (\n    select 1 from jsonb_to_recordset($2::jsonb) as s(kind text, \"sourceRef\" text)\n    where s.kind = d.kind and s.\"sourceRef\" = d.source_ref\n  )\nreturning d.id;",
         "options": {
           "queryReplacement": "={{ [ '00000000-0000-0000-0000-000000000001', JSON.stringify($('Collect scanned documents').first().json.scanned) ] }}"
         }

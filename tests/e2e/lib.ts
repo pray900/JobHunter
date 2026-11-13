@@ -243,17 +243,19 @@ export function getFacts(kind: string): Promise<Response> {
 
 /**
  * Saves edited facts for a base document through the web proxy (`facts: null` undoes all edits).
+ * `contentHash` is the file version the edit was made on (from the facts answer).
  * `headers` replaces the default X-JobHunter header (the content type is always sent).
  */
 export function saveFacts(
   kind: string,
   id: string,
+  contentHash: string,
   facts: unknown,
   headers: Record<string, string> = SYNC_HEADERS,
 ): Promise<Response> {
   return fetch(`${WEB_URL}/api/documents/facts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify({ kind, id, facts }),
+    body: JSON.stringify({ kind, id, contentHash, facts }),
   });
 }
