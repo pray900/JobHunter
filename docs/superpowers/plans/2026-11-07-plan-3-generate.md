@@ -219,3 +219,11 @@ Use the frontend-design skill (CLAUDE.md UI rules: dark default, neutral greys, 
 - **Invalid writer output:** a writer answer that fails document validation (e.g. an empty field) no longer fails the attempt. It becomes a hard check `invalid_document` in that round (detail names the field) and goes back to the writer in the next round, like any failed check.
 - **Failed n8n executions** stay saved (n8n default retention, local only). Decided, no change.
 - **Retries continue:** a retry after a failed attempt continues from the last finished round (rounds already in `generation_runs.rounds` are kept and count towards `GENERATION_MAX_ROUNDS`) instead of restarting from round 1.
+
+### As built (added 2026-11-13): fixes from the real runs (Task 8)
+
+- **Writer schema without nullable types.** The real API rejected the first writer schema ("compiled grammar is too large"). The writer schema now has no `null` types: `contact.location/email/phone`, `workRights` and `experience[].location` are plain strings, with `""` meaning "the base CV has none". The workflow turns `""` back into `null` before checks, review and save, and shows the writer its own `""` form in `<previous_round>`. A guard test keeps both schemas free of nullable types. (de4141d, 6ec9156)
+- **Readable API errors.** A failed Claude call stores a short safe summary of Anthropic's error (type + first 200 characters) in the run's error, and the job page shows it. (de4141d)
+- **Cost measured:** about US$0.15 per writer call and US$0.14 per reviewer call with Opus, so about US$0.30 per round, US$0.30–0.90 per Generate, worst case about US$1.50 at 3 rounds (README updated).
+- **Bracketed text in an employer** (R1) is a hard `unknown_fact`; copied fields are exempt from spelling and banned-word checks only when they match the base CV exactly. (85e02f3)
+- **Deploy note:** migration 004 re-queued the CV analysis before the bootstrap published the new prompt, so the old prompt re-analysed it once (about US$0.06 wasted); it was re-queued by hand. Later prompt changes should be published before the worker migrates, or re-queued after the bootstrap.

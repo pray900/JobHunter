@@ -252,3 +252,10 @@ Prayush decided the CV and cover letter come **only through the app's upload** �
 - [ ] **Step 1: Write failing tests** — worker: write/replace in the volume-backed storage keeps exactly one file per kind and a failed write keeps the old; scan/list reads stored documents only. e2e: upload into an empty slot → analysed; replace (same or different name) → old file gone, new active and analysed, jobs rescored if content changed; no request touches a folder outside `/data/documents`; documents API shape; no delete endpoint (404/405); X-JobHunter still required. Web: two slots, Upload/Replace with confirm, no ignored list. Remove tests for folders, ignored files and delete.
 - [ ] **Step 2–4:** run (FAIL) → implement → `npm test` + `npm run e2e` (PASS).
 - [ ] **Step 5: Commit** `refactor: documents are upload-only`
+
+---
+
+### As built (added 2026-11-13)
+
+- **Task 10 (Prayush, 2026-11-07: "yes try again if upload failed"):** uploading again a document whose analysis failed 3 times resets it and analyses it afresh, even if the bytes are identical. Only an upload does this (the upload passes a validated `retryFailedKind` to the sync); the schedule and a plain sync never reset a failed row. Commit 39ce728.
+- Real stack after Task 9: the new documents volume started empty; the CV and cover letter were re-uploaded once through the app. Identical uploads reuse the earlier analysis at no cost.

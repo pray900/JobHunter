@@ -154,3 +154,11 @@
   - If the writer changes a locked edit anyway, that is a hard check `manual_edit_changed` (sent back to the writer).
 - **Edits tracked by text:** `reasons.manualEdits` becomes `{ path, text }[]`; after a regenerate an edit counts as kept only where that text is still present (path updated if it moved); markers follow the text.
 - **Unsaved edits:** leaving the editor with unsaved changes (in-app link, reload, closing the tab) asks "You have unsaved edits — leave anyway?" first.
+
+### As built (added 2026-11-13)
+
+- **Locked edits cover only their own fields** (final re-review R1/R2): a check counts as "your edit" only when it sits on or under a locked edit, or every field under it is locked; a locked claim repeated in an unlocked field is checked normally. Known small gap: a link address Prayush types himself that is not in his base CV may cost an extra regenerate round. (b1fce02)
+- **Leave guard** also covers the browser Back button. (b1fce02)
+- **Failed n8n runs stay saved for every workflow**, as Prayush decided in Plan 3; a fix that stopped this for two workflows was reverted. (5a03861)
+- Web test timeout raised to 20 s for the typing-heavy editor tests. (5ee7f3c)
+- **Real run (Task 6, 2026-11-11):** edit saved free as version 2; regenerate from it with "Make the summary shorter, at most two sentences." passed in 2 rounds for US$0.53, kept the manual edit and followed the instruction; restore and per-version downloads worked.

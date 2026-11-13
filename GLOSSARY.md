@@ -35,16 +35,28 @@ _Avoid_: Company, poster
 ## Documents
 
 **Base CV**:
-One of Prayush's own CVs, written for a kind of role; together the base CVs are the only source of facts.
+Prayush's own CV, the one he uploads; it is the only source of facts.
 _Avoid_: Master CV, original CV, template
 
 **Base cover letter**:
-One of Prayush's own cover letters, used only as a sample of tone and reusable paragraphs.
+Prayush's own cover letter, used only as a sample of tone and reusable paragraphs.
 _Avoid_: Template letter
 
 **Tailored CV**:
-A CV written for one job from a base CV.
+A CV written for one job from the base CV.
 _Avoid_: Custom CV, generated CV, new CV
+
+**Version**:
+One saved state of a job's tailored CV and cover letter; a generate, regenerate, edit or restore always adds a new one and never changes an old one.
+_Avoid_: Draft, revision, copy
+
+**Manual edit**:
+A change Prayush makes himself to a tailored CV or cover letter; it is kept word for word on every later regenerate.
+_Avoid_: Override, correction
+
+**Instruction**:
+What Prayush asks Claude to change when he regenerates a version.
+_Avoid_: Prompt, command
 
 **Template**:
 The look of a tailored CV or cover letter (font, layout, section order, length and content rules), separate from its words.
@@ -73,7 +85,7 @@ _Avoid_: Rewrite, Generate again (which starts from the base CV)
 ## Judgement
 
 **Match score**:
-How well Prayush fits a job, judged from the base CVs against the job ad, with a stated explanation.
+How well Prayush fits a job, judged from the base CV against the job ad, with a stated explanation.
 _Avoid_: Fit score, rating
 
 **Keyword coverage**:
@@ -92,5 +104,5 @@ A problem that stops a tailored CV or cover letter from passing review, such as 
 _Avoid_: Error, warning
 
 **Stretch**:
-A claim that is supported by a base CV but framed close to the line, shown to Prayush to decide.
+A claim that is supported by the base CV but framed close to the line, shown to Prayush to decide.
 _Avoid_: Exaggeration, lie

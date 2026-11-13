@@ -1,7 +1,7 @@
 # JobHunter: Tailored CV & Cover Letter Generator — Design
 
 Date: 2026-11-06
-Status: Draft for approval
+Status: Approved; updated 2026-11-13 to match what was built in Plans 1–4 (decisions made during the build are marked with their date)
 
 ## 1. Intent
 
@@ -29,7 +29,7 @@ Prayush drops a job file in the folder, clicks Generate, and gets a CV and cover
 - Folder-based job intake, Word files.
 - Job cards ranked by match score, with status tracking.
 - Job page: full JD, CV + cover letter preview, in-app editing, reasons panel, diff vs base CV, instruction box + regenerate, version history, downloads (DOCX + PDF), open-posting button, status dropdown.
-- My documents page: multiple base CVs and base cover letters (Word or PDF), each for a kind of role.
+- My documents page: one base CV and one base cover letter (Word or PDF), uploaded in the app (changed 2026-11-07; see §7.3).
 - Writer/reviewer loop with independent reviewer and automated code checks.
 - Template system with one shipped template (Standard ATS).
 - Code shaped so the future changes in §9 are cheap.
@@ -101,10 +101,10 @@ These are hard fails. A CV/cover letter that has any of them must not be present
 - **Every decision gets a reason**, including the match score ("why 82%").
 - **Changed 2026-11-07: exactly one base CV and one base cover letter** (Word or PDF). Originally multiple base CVs with Claude picking one per job; dropped for simplicity — no per-job base-CV choice, no labels, no cross-CV conflict check.
 - Generated CV and cover letter are **editable in-app** for small changes.
-- On Regenerate, Claude **sees Prayush's manual edits and keeps them** unless the new instruction says otherwise.
+- On Regenerate, Claude **sees Prayush's manual edits and keeps them**. **Changed 2026-11-08 (Prayush): manual edits are kept always**, word for word, even if the instruction or a rule would change them (see §6.5).
 - Generation **waits for a Generate click**; nothing expensive runs on file arrival.
 - The reviewer is an **independent agent** (separate call, separate instructions, no access to the writer's private reasoning), acting as a CV / HR / ATS expert. Same-agent self-review is rejected as a conflict of interest.
-- Templates: style lives in templates, separate from content. Template is chosen per job on the job page (dropdown next to base CV), Claude suggests one with a reason. Ship **only Standard ATS** now.
+- Templates: style lives in templates, separate from content. Template is chosen per job on the job page, Claude suggests one with a reason. Ship **only Standard ATS** now (so the job page shows it with its reason rather than a choice). An Australian Government template (and possibly Key Selection Criteria answers) is a possible Plan 5, on hold since 2026-11-11.
 - Job files: **URL on the first line**, rest is the job ad copy-pasted as-is.
 - Prepare for the future changes in §9 now, without building them.
 - **CV is strictly 1 page.**
@@ -129,7 +129,9 @@ All services run under one `docker compose up`.
 - **UI** — Claude's call: **React + TypeScript** (Vite). Rationale: most common, good for an editable live preview, easy to host later, and close to the JavaScript Prayush knows from Salesforce Lightning Web Components.
 - **Database** — Claude's call: **PostgreSQL**. n8n connects natively; it is what a hosted multi-user version would use, so nothing gets swapped later.
 - **CV representation** — Claude's call: the generated CV and cover letter are stored as **structured data** (contact, summary, roles → bullets, skills, education, work rights, etc.), not as Word files. The in-app preview, in-app editing, reviewer checks, diff view and both downloads all come from this one source. A template turns the structured data into DOCX/PDF.
-- **Model choice** — Claude's call: a small model (Haiku) for cheap extraction at intake; a strong model (Sonnet or Opus, latest) for writer and reviewer. Model IDs configurable.
+- **Model choice** — Claude's call: a small model (Haiku) for cheap extraction at intake; a strong model (Sonnet or Opus, latest) for writer and reviewer. Model IDs configurable. *As built:* job extraction Haiku 5.5; match scoring Sonnet 5.5; base-document analysis, writer and reviewer Opus 5.5. Measured on the real run (2026-11-08): about US$0.15 per writer call and US$0.14 per reviewer call, so about US$0.30 per round and US$0.30–0.90 per Generate or Regenerate; editing, restoring and downloading are free.
+- **PDF rendering** — Claude's call, as built: the worker renders DOCX from the structured data and a Gotenberg (LibreOffice) container turns it into PDF, so page counts are measured on the real PDF.
+- **Privacy of n8n runs** (Prayush, 2026-11-08): successful runs are not saved; failed runs are kept by n8n (local only, default retention) for debugging.
 
 ## 6. Behaviour
 
@@ -160,6 +162,13 @@ Triggered by the Generate button on a card or job page.
 
 The reviewer also checks the honesty of each reason and the keyword-coverage claim.
 
+*Decided during the build (Prayush, 2026-11-07/08):*
+- **Pass rule:** a round passes only when the reviewer's verdict is pass, **every** checklist item passes, no hard code check remains, no fact is ruled invented, no word is ruled misspelt, and every "needs a ruling" check (an unmatched skill, a possible misspelling) has a ruling. An unruled one counts as not passed and goes back to the writer.
+- **Paid calls only after a click**; a failed attempt is retried at most twice (1 min, then 5 min later) and **a retry continues from the last finished round**, so no round is paid twice. Worst case about 10 calls (~US$1.50) per click at 3 rounds.
+- A writer answer with an empty or malformed field becomes a failed check in that round (sent back to the writer), not a failed attempt.
+- If the base CV or cover letter changes while a run is in progress, the run stops and asks for Generate again, so facts from two CVs are never mixed.
+- A job moves to **CV ready** only from **New**; a later status (e.g. Applied) is never moved back.
+
 ### 6.3 Source of truth (no master fact file)
 
 - Base CVs are the only source of facts.
@@ -168,6 +177,7 @@ The reviewer also checks the honesty of each reason and the keyword-coverage cla
 - **How strict the fact check is** *(Claude's call)*: a skill, number/metric, job title, employer or date that does not appear in any base CV is a **hard fail** the writer must fix. Rephrasing real work in the job's language (e.g. "Lightning Web Components" → "modern JavaScript component frameworks") is allowed; the code check flags it as unmatched and the **reviewer** rules whether the rephrasing is honest. Rulings show in the reasons panel.
 - Facts must be consistent across all generated versions for the same person.
 - Degree status and work-rights line must appear as in the base CVs; if a base CV lacks the work-rights line, flag it.
+- *As built:* role titles, employers, dates, education entries, contact details, links and the work-rights line are **copied exactly** from the base CV (links may gain `https://`; phone numbers compare by digits). A work-rights line in the output when the base has none, or one dropped when the base has it, is a hard fail. **Decided 2026-11-08 (Prayush):** words inside those copied fields (e.g. a past employer called "Dynamic …", a title with US spelling) are exempt from the spelling and banned-word checks while they match the base CV exactly; bracketed text added to an employer is a hard fail.
 
 ### 6.3a Cover letter sources *(Claude's call)*
 
@@ -189,6 +199,8 @@ The reviewer also checks the honesty of each reason and the keyword-coverage cla
 - Links: format-valid and reachable.
 - Template structural rules: no tables/columns, consistent fonts/spacing, no orphaned headings.
 
+*Decided during the build (Prayush, 2026-11-07):* the **cover letter** may repeat numbers and dates that appear in the job ad (e.g. "APS 6"); the CV may use only numbers and dates from the base CV. Names from **other jobs** count as leakage only with matching capitals ("Insight" but not "insight into"); the base cover letter's previous company, addressee and role are caught regardless of capitals and punctuation ("Ms Li" = "Ms. Li"). Skills not found in the base CV and possible misspellings are passed to the reviewer, which must rule on each.
+
 **By the reviewer (judgement):**
 - Relevance of every bullet/section to this job; over-tailoring; strongest match in top third.
 - Inflated scope or verbs; stretches flagged.
@@ -200,14 +212,16 @@ The reviewer also checks the honesty of each reason and the keyword-coverage cla
 ### 6.5 Regenerate with instructions
 
 - Instruction box on the job page + Regenerate button.
-- Writer receives: the JD, chosen base CV, current version **including Prayush's manual edits**, and the instruction. It keeps manual edits unless the instruction says otherwise.
-- Runs the full review loop again. Saves a new version labelled with the instruction.
+- Writer receives: the JD, the base CV, the version being viewed **including Prayush's manual edits**, the list of those edits, and the instruction (1–1000 characters).
+- **Changed 2026-11-08 (Prayush): manual edits are kept always.** Each edited field is locked and copied word for word. Problems inside a locked edit are shown to Prayush as "Your edit — kept as you asked" but never sent back to the writer and never cost an extra round; the reviewer is told which text is his; the version is marked not passed if a locked edit breaks a hard rule. The instruction cannot make the writer invent facts anywhere else. Edits are tracked by path **and** wording, so markers follow the text if bullets move.
+- Runs the full review loop again. Saves a new version labelled with the instruction (cut to 80 characters).
 
 ### 6.6 In-app editing
 
 - Prayush edits the structured CV/cover letter directly in the preview for small changes.
 - Edits are saved as a new version (or update to the current one — builder's call; must be recoverable).
 - Code checks re-run on save so Prayush sees if an edit broke a rule (e.g. now 2 pages). The reviewer is not re-run on manual edits unless Prayush asks (builder's call).
+- *As built:* versions are **append-only** — an edit, a restore and a regenerate each add a new version; nothing is overwritten or deleted. Copied-from-base fields (titles, employers, dates, education, name, work rights) are read-only in the editor. An edited version shows "Not reviewed since your edits". Leaving the editor with unsaved changes (link, Back, reload, closing the tab) asks first. Keyboard shortcuts: **E** edit, **A** mark Applied, **S** skip (Closed), **G** go to the instruction box (CLAUDE.md's Approve/Skip mapped to existing statuses).
 
 ### 6.7 What the real files showed (2026-11-06)
 
@@ -224,7 +238,7 @@ Prayush supplied 3 job files and real base documents. Use them (redacted where n
 - The three jobs vary in fit (Salesforce dev 3–5 yrs; senior Salesforce 5+ yrs; Tableau pre-sales). Good spread for testing match-score honesty.
 
 **Base CVs (`PersonalDetailsCV/`)** — two PDFs: an April 2026 "Software Engineer" (security leaning) CV and a September 2026 "LLM Observability & QA" CV.
-- They **conflict on scope**: April says "**Led** a team of 5 developers"; September says "Introduced code reviews and task prioritisation **for** a 5-developer team". April: "Identified and implemented FLS in 50+ vulnerable Apex classes"; September: "Analysed 50+ Apex classes … and implemented FLS". The conflict check (§6.3) must catch exactly this kind of thing, and the writer uses the more conservative wording until Prayush resolves it.
+- *(Superseded 2026-11-07: only one base CV is kept, so there is no cross-CV conflict check; the September CV is the one in use.)* They **conflict on scope**: April says "**Led** a team of 5 developers"; September says "Introduced code reviews and task prioritisation **for** a 5-developer team". April: "Identified and implemented FLS in 50+ vulnerable Apex classes"; September: "Analysed 50+ Apex classes … and implemented FLS". The conflict check (§6.3) must catch exactly this kind of thing, and the writer uses the more conservative wording until Prayush resolves it.
 - **Degree** reads "2025 – Present" (April) and "2025 – Nov 2026" (September). Neither reads "(conferral Nov 2026)". *(Prayush decided 2026-11-07: do NOT flag a degree with a future end date; only "Present"/open-ended dates are flagged.)* Writer uses "Master of Information Technology, UTS (conferral Nov 2026)" form only once Prayush confirms it in a base CV.
 - **Neither CV has a work-rights line.** The app must flag this on My documents; generated CVs can't include it until a base CV states it (never invented).
 - April profile contains "**Proven track record**" — a banned phrase. Banned-word checks apply to *output*; base docs get an informational warning only.
@@ -247,13 +261,14 @@ Prayush supplied 3 job files and real base documents. Use them (redacted where n
 
 ### 7.2 Job page
 - Header: title · company. Status dropdown. **Open job posting ↗**. Download CV (DOCX/PDF). Download cover letter (DOCX/PDF).
-- Base CV dropdown and Template dropdown, each with Claude's reason.
+- "Based on: {base CV file}" and the template with Claude's reason (one base CV and one template, so no dropdowns).
 - Full job description, with keywords covered by the CV highlighted.
 - Tabs: CV · Cover letter · **Diff vs base CV** (shows exactly what was changed or emphasised).
 - Editable preview that looks like the downloaded file.
 - Reasons panel: match score and its explanation; keyword coverage and what's missing and why; each major change and why; stretches flagged; reviewer verdict, rounds taken, anything unresolved; code-check results.
 - Instruction box + Regenerate.
 - Version history (label, time, instruction); switch to / restore an older version.
+- *As built:* the Diff tab shows kept, reworded, added and left-out bullets; if the version was made from a base CV that has since been replaced, it says "This version was made from an earlier base CV that's no longer stored" instead of a diff (Prayush, 2026-11-08). The reasons panel also lists the reworded skills the reviewer accepted.
 
 ### 7.3 My documents
 - **Changed 2026-11-07: one slot for the base CV and one for the base cover letter.** **Changed again 2026-11-07 (Prayush): documents come only through the app's upload — no folders.** Upload fills an empty slot; Replace swaps the file in one step (in-page confirmation). *(Claude's calls:)* files are kept in the app's own storage (a Docker volume, behind the worker's storage module); no Delete button (replace only); the old `PersonalDetailsCV/` and `PersonalDetailsCoverLetter/` folders are no longer read and are left untouched.
@@ -263,6 +278,7 @@ Prayush supplied 3 job files and real base documents. Use them (redacted where n
 
 ### 7.4 Settings (minimal)
 - Job-listing folder path. API key (stored server-side, never in the browser). Model IDs. Review round limit. Banned-word and tech-casing lists.
+- *As built:* there is no Settings page yet; these live in `.env` (folder, API key, model IDs, `GENERATION_MAX_ROUNDS`) and in `config/` (banned phrases, tech casing, AU spelling).
 
 Visual mockups from brainstorming: `.superpowers/brainstorm/*/content/job-cards-v2.html` (not committed; reference only).
 
