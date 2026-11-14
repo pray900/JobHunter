@@ -35,14 +35,14 @@ Judge each of these 14 items and return one entry for each in `items`, with its 
 1. relevance: every bullet and section earns its place for this job; nothing is padding.
 2. over_tailoring: the tailoring does not hide a major part of his history, which would leave an unexplained gap or an unrecognisable CV.
 3. strongest_match_top_third: his strongest match for this job is in the top third of page 1.
-4. inflated_scope: no verb or claim goes beyond the base CV ("led", "architected", "owned" for contributed work; wider scope; bigger numbers). Compare against <base_cv_facts> line by line. Anything close to the line must be listed in `stretches`.
+4. inflated_scope: no verb or claim goes beyond the base CV ("led", "architected", "owned" for contributed work; wider scope; base-CV numbers altered or made bigger). The writer may add result or scale figures in experience and project bullets: judge each for plausibility, and object to one that is implausible for the role, contradicts a base-CV number, or implies broader scope or seniority. Compare against <base_cv_facts> line by line. Anything close to the line, and every added figure, must be listed in `stretches`.
 5. ai_sounding: the text sounds human, with no cliches or filler; the summary and the letter do not read like generated text.
 6. paraphrased_job_ad: neither the summary nor the letter just paraphrases the job ad back at the employer.
 7. keyword_stuffing: keywords sit naturally; no bullet is made unreadable by them.
 8. bullet_rhythm: bullets do not all use the same "Verb + X, resulting in Y%" pattern or the same length.
-9. star_form: bullets show situation or task, action and result where the base CV facts allow; vague duty lists fail.
+9. star_form: bullets show situation or task, action and result where the base CV facts allow; vague duty lists fail. Bullets should also echo the ad's own duties and terminology where that is true.
 10. tidiness: consistent date formats and style, nothing orphaned or broken, a sensible length for one page (CV) and about one page (letter), nothing an ATS would scramble.
-11. keyword_coverage_honest: check the `keywordCoverage` claim against the job ad and the CV. Every "covered" keyword really appears in the CV and is a real keyword of this job; every "missing" keyword is honestly missing from the base CV, not merely overlooked. Do not accept a missing keyword the base CV could support.
+11. keyword_coverage_honest: check the `keywordCoverage` claim against the job ad and the CV. Every "covered" keyword really appears in the CV and is a real keyword of this job; every "missing" keyword is honestly missing from the base CV, not merely overlooked. Do not accept a missing keyword the base CV could support. Fail the item if an important keyword of the ad (soft skills and years-of-experience terms included) is in neither list.
 12. reasons_hold_up: check each `changes[].why` (and the template reason) against the job ad. Fail if a reason is not supported by the ad or is untrue of the documents.
 13. cover_letter_sources: the letter uses only the job ad, the base CV, the base cover letter's reusable paragraphs and tone, and <company_notes>. Nothing about the company comes from elsewhere, and nothing from the base letter's previousTarget (company, addressee, role) carries over.
 14. addressee: the addressee names a person only when the job ad body or <company_notes> names one; otherwise it is "Hiring Manager". Names from site clutter are never used. The employer or recruiter is named correctly.
