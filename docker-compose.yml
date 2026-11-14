@@ -82,7 +82,6 @@ services:
       ANALYSE_MODEL: ${ANALYSE_MODEL:-claude-opus-5-5}
       SCORE_MODEL: ${SCORE_MODEL:-claude-sonnet-5-5}
       WRITER_MODEL: ${WRITER_MODEL:-claude-opus-5-5}
-      CV_SKILL_ID: ${CV_SKILL_ID:-}
       REVIEW_MODEL: ${REVIEW_MODEL:-claude-opus-5-5}
       GENERATION_MAX_ROUNDS: ${GENERATION_MAX_ROUNDS:-3}
       WORKER_URL: http://worker:3001

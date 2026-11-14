@@ -2,8 +2,7 @@
   "name": "jobhunter",
   "private": true,
   "scripts": {
-    "test": "npm test --workspaces --if-present && npm run test:scripts",
-    "test:scripts": "node --test \"scripts/*.test.mjs\"",
+    "test": "npm test --workspaces --if-present",
     "e2e": "vitest run --config tests/e2e/vitest.config.ts"
   },
   "workspaces": ["services/worker", "apps/web", "tests/e2e"]

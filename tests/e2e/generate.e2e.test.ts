@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { runInNewContext } from 'node:vm';
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import {
   N8N_URL,
@@ -22,6 +21,14 @@ const normalise = (s: string) => s.replace(/\r\n/g, '\n').trim();
 const promptFile = (name: string) => readFileSync(join(ROOT, 'n8n', 'prompts', name), 'utf8');
 const WRITER_PROMPT = promptFile('write-documents.md');
 const REVIEW_PROMPT = promptFile('review-documents.md');
+/** skills/cv-writing/SKILL.md without its frontmatter: the CV-writing guidance sent after the writer prompt. */
+const SKILL_FILE = readFileSync(join(ROOT, 'skills', 'cv-writing', 'SKILL.md'), 'utf8').replace(/\r\n/g, '\n');
+const GUIDANCE = SKILL_FILE.replace(/^---\n[\s\S]*?\n---\n/, '').trim();
+const GUIDANCE_HEADING = '## CV-writing guidance';
+/** A sentence from the guidance body, to spot it in a request. */
+const GUIDANCE_SENTENCE = 'Write each bullet as what the person was responsible for, then what came of it';
+/** The writer's whole system prompt: the writer prompt, then the guidance under its heading. */
+const WRITER_SYSTEM = `${normalise(WRITER_PROMPT)}\n\n${GUIDANCE_HEADING}\n\n${GUIDANCE}`;
 
 const purposeOf = (body: any) => String(body.system ?? '').split(/\r?\n/)[0];
 const requestsFor = async (purpose: string) =>
@@ -39,14 +46,17 @@ const tag = (text: string, name: string) => {
   return m[1];
 };
 
-/** Content of a writer answer that used code execution to read the skill, shaped as the real API returned it. */
-const skillAnswer = (answer: unknown, before?: string) => [
+/**
+ * Content of an answer with a server tool call and its result before the final text, shaped as the real API
+ * returns them. The writer's answer is read from the last text block, so text before a tool call is ignored.
+ */
+const toolAnswer = (answer: unknown, before?: string) => [
   ...(before ? [{ type: 'text', text: before }] : []),
-  { type: 'server_tool_use', id: 'srvtoolu_stub', name: 'bash_code_execution', input: { command: 'cat /skills/cv-writing/SKILL.md' } },
+  { type: 'server_tool_use', id: 'srvtoolu_stub', name: 'bash_code_execution', input: { command: 'echo stub' } },
   {
     type: 'bash_code_execution_tool_result',
     tool_use_id: 'srvtoolu_stub',
-    content: { type: 'bash_code_execution_result', stdout: '---\nname: cv-writing\n---', stderr: '', return_code: 0, content: [] },
+    content: { type: 'bash_code_execution_result', stdout: 'stub', stderr: '', return_code: 0, content: [] },
   },
   { type: 'text', text: JSON.stringify(answer) },
 ];
@@ -179,11 +189,12 @@ describe('generate documents', () => {
 
     const w = writer[0];
     expect(w.headers['anthropic-version']).toBe('2026-10-21');
-    // The test stack sets CV_SKILL_ID=skill_test01, so the writer also carries the code-execution beta.
-    expect(w.headers['anthropic-beta']).toBe('server-side-fallback-2026-07-01,code-execution-2025-08-25');
+    expect(w.headers['anthropic-beta']).toBe('server-side-fallback-2026-07-01');
     expect(w.body).toMatchObject({ model: 'claude-opus-5-5', max_tokens: 16000, fallbacks: 'default' });
     expect(w.body.output_config).toEqual({ effort: 'medium', format: { type: 'json_schema', schema: JSON.parse(promptFile('write-documents.schema.json')) } });
-    expect(normalise(w.body.system)).toBe(normalise(WRITER_PROMPT));
+    // One system string: the writer prompt, then the CV-writing guidance under its heading.
+    expect(typeof w.body.system).toBe('string');
+    expect(w.body.system).toBe(WRITER_SYSTEM);
     const r = review[0];
     expect(r.headers['anthropic-beta']).toBe('server-side-fallback-2026-07-01');
     expect(r.body).toMatchObject({ model: 'claude-sonnet-5-5', max_tokens: 8000, fallbacks: 'default' });
@@ -224,39 +235,45 @@ describe('generate documents', () => {
     expect(v).toMatchObject({ base_cover_letter_id: cl.id, base_cover_letter_hash: cl.content_hash });
   });
 
-  test('writer request attaches the skill', async () => {
+  test('writer request carries the CV-writing guidance and no tool, container or extra beta', async () => {
     const jobId = await readyJob();
     await queueRun(jobId);
     await stub.reset();
     await triggerGeneration();
     const [w, ...more] = (await stub.requestLog()).filter((r) => purposeOf(r.body) === 'purpose: write_documents');
     expect(more).toEqual([]);
-    expect(w.body.container).toEqual({ skills: [{ type: 'custom', skill_id: 'skill_test01', version: 'latest' }] });
-    expect(w.body.tools).toEqual([{ type: 'code_execution_20260521', name: 'code_execution' }]);
-    // Two betas go in one header, comma-separated.
-    expect(w.headers['anthropic-beta'].split(',')).toEqual(['server-side-fallback-2026-07-01', 'code-execution-2025-08-25']);
-    expect(w.body).toMatchObject({ model: 'claude-opus-5-5', fallbacks: 'default' });
+    expect(w.body.system).toContain(GUIDANCE_HEADING);
+    expect(w.body.system).toContain(GUIDANCE_SENTENCE);
+    // The guidance comes after the prompt, and its frontmatter is never sent.
+    expect(w.body.system.indexOf(GUIDANCE_HEADING)).toBeGreaterThan(w.body.system.indexOf('purpose: write_documents'));
+    expect(w.body.system).not.toMatch(/^name: cv-writing$/m);
+    expect(w.body).not.toHaveProperty('container');
+    expect(w.body).not.toHaveProperty('tools');
+    expect(w.headers['anthropic-beta']).toBe('server-side-fallback-2026-07-01');
+    expect(Object.keys(w.body)).toEqual(['model', 'max_tokens', 'output_config', 'system', 'messages', 'fallbacks']);
   });
 
-  test('reviewer request has no skill', async () => {
+  test('reviewer request has no CV-writing guidance', async () => {
     const jobId = await readyJob();
     await queueRun(jobId);
     await stub.reset();
     await triggerGeneration();
     const [r, ...more] = (await stub.requestLog()).filter((x) => purposeOf(x.body) === 'purpose: review_documents');
     expect(more).toEqual([]);
+    expect(r.body.system).not.toContain(GUIDANCE_HEADING);
+    expect(r.body.system).not.toContain(GUIDANCE_SENTENCE);
     expect(r.body).not.toHaveProperty('container');
     expect(r.body).not.toHaveProperty('tools');
     expect(r.headers['anthropic-beta']).toBe('server-side-fallback-2026-07-01');
   });
 
-  test('answer after code execution is read from the last text block', async () => {
+  test('answer after a tool call is read from the last text block', async () => {
     const jobId = await readyJob();
     const runId = await queueRun(jobId);
     const writer = await canned('write_documents');
     await stub.reset();
-    // The writer says something first, reads the skill, then answers with the JSON.
-    await stub.scriptPurpose('write_documents', [{ __stub_content: skillAnswer(writer, 'Let me check.') }]);
+    // The writer says something first, makes a tool call, then answers with the JSON.
+    await stub.scriptPurpose('write_documents', [{ __stub_content: toolAnswer(writer, 'Let me check.') }]);
     expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
     expect(await runRow(runId)).toMatchObject({ status: 'done', attempts: 1, error: null });
     const [v, ...more] = await versions(jobId);
@@ -270,7 +287,7 @@ describe('generate documents', () => {
     const writer = await canned('write_documents');
     await stub.reset();
     // Claude paused mid tool use: no final text block.
-    const paused = skillAnswer(writer, 'Let me check.').slice(0, 3);
+    const paused = toolAnswer(writer, 'Let me check.').slice(0, 3);
     await stub.scriptPurpose('write_documents', [{ __stub_content: paused, __stub_stop_reason: 'pause_turn' }]);
     expect(await triggerGeneration()).toEqual({ ok: true, claimed: 1 });
     expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1, stage: 'queued', error: 'Claude stopped unexpectedly (pause_turn).' });
@@ -1086,7 +1103,7 @@ describe('generate documents', () => {
 
       const writes = await writerRequests();
       expect(writes).toHaveLength(1);
-      expect(normalise(writes[0].system)).toBe(normalise(WRITER_PROMPT));
+      expect(writes[0].system).toBe(WRITER_SYSTEM);
       // M3: the instruction is data in the user turn, never part of the system prompt.
       expect(writes[0].system).not.toContain('Make the summary shorter.');
       const text = sentText(writes[0]);
@@ -1562,9 +1579,9 @@ describe('generate documents', () => {
       test.each([
         ['refusal', (g: any) => envelope(g, { stop_reason: 'refusal', content: [] }), /declined/],
         ['max_tokens', (g: any) => envelope(g, { stop_reason: 'max_tokens' }), /cut off/],
-        ['pause_turn', (g: any) => envelope(g, { stop_reason: 'pause_turn', content: skillAnswer(g, 'Let me check.').slice(0, 3) }), /^Claude stopped unexpectedly \(pause_turn\)\.$/],
-        ['pause_turn after a text block', (g: any) => envelope(g, { stop_reason: 'pause_turn', content: skillAnswer(g) }), /^Claude stopped unexpectedly \(pause_turn\)\.$/],
-        ['no text after the tool call', (g: any) => envelope(g, { content: skillAnswer(g).slice(0, 2) }), /expected format/],
+        ['pause_turn', (g: any) => envelope(g, { stop_reason: 'pause_turn', content: toolAnswer(g, 'Let me check.').slice(0, 3) }), /^Claude stopped unexpectedly \(pause_turn\)\.$/],
+        ['pause_turn after a text block', (g: any) => envelope(g, { stop_reason: 'pause_turn', content: toolAnswer(g) }), /^Claude stopped unexpectedly \(pause_turn\)\.$/],
+        ['no text after the tool call', (g: any) => envelope(g, { content: toolAnswer(g).slice(0, 2) }), /expected format/],
         ['invalid JSON', (g: any) => envelope(g, { content: [{ type: 'text', text: '{not json' }] }), /expected format/],
         ['missing cv', (g: any) => envelope({ ...g, cv: undefined }), /expected format/],
         ['other template', (g: any) => envelope({ ...g, templateId: 'fancy' }), /expected format/],
@@ -1577,17 +1594,17 @@ describe('generate documents', () => {
         expect(out.error).toMatch(message);
       });
 
-      test('answer after code execution is read from the last text block', () => {
-        // The real API's shape with the skill: text, the tool call and its result, then the JSON.
-        const out = read(envelope(good, { content: skillAnswer(good, 'Let me check the skill.') }));
+      test('answer after a tool call is read from the last text block', () => {
+        // The real API's shape with a server tool: text, the tool call and its result, then the JSON.
+        const out = read(envelope(good, { content: toolAnswer(good, 'Let me check.') }));
         expect(out).toMatchObject({ ok: true, error: null, writer: good });
-        expect(read(envelope(good, { content: skillAnswer(good) }))).toMatchObject({ ok: true, writer: good });
+        expect(read(envelope(good, { content: toolAnswer(good) }))).toMatchObject({ ok: true, writer: good });
         // Only the last text block counts: JSON earlier and prose last is not an answer.
         const proseLast = [{ type: 'text', text: JSON.stringify(good) }, { type: 'text', text: 'Done.' }];
         expect(read(envelope(good, { content: proseLast })).error).toMatch(/expected format/);
       });
 
-      test('cost comes from the top-level usage, which already sums the code-execution iterations', () => {
+      test('cost comes from the top-level usage, which already sums the tool-use iterations', () => {
         const usage = {
           input_tokens: 9900,
           output_tokens: 700,
@@ -1597,11 +1614,11 @@ describe('generate documents', () => {
             { input_tokens: 5800, output_tokens: 500 },
           ],
         };
-        const out = read(envelope(good, { content: skillAnswer(good, 'Let me check.'), usage }));
+        const out = read(envelope(good, { content: toolAnswer(good, 'Let me check.'), usage }));
         expect(out).toMatchObject({ ok: true, has_usage: true, input_tokens: 9900, output_tokens: 700 });
         expect(out.cost_usd).toBeCloseTo((9900 * 4 + 700 * 20) / 1e6, 9);
         // A paused call is paid for too.
-        expect(read(envelope(good, { stop_reason: 'pause_turn', content: skillAnswer(good).slice(0, 2), usage }))).toMatchObject({ ok: false, has_usage: true, input_tokens: 9900 });
+        expect(read(envelope(good, { stop_reason: 'pause_turn', content: toolAnswer(good).slice(0, 2), usage }))).toMatchObject({ ok: false, has_usage: true, input_tokens: 9900 });
       });
 
       test('real-run fix: "" in the nullable fields becomes null; other fields are left alone', () => {
@@ -1919,14 +1936,15 @@ describe('generate documents', () => {
       });
     });
 
-    /** Runs "Build writer request" for one heartbeat, with these env variables (none by default). */
-    const buildWriter = (heartbeat: object, env: Record<string, unknown> = {}, lookup = prices()) =>
-      new Function('$json', '$', '$now', '$env', code('Build writer request'))(
+    /** Runs "Build writer request" for one heartbeat. */
+    const buildWriter = (heartbeat: object, lookup = prices()) =>
+      new Function('$json', '$', '$now', code('Build writer request'))(
         heartbeat,
         (name: string) => ({
           first: () => {
             if (name === 'Look up model prices') return lookup;
-            if (name === 'Writer and reviewer prompts') return { json: { writer_prompt: 'purpose: write_documents\nW', writer_schema: { type: 'object' } } };
+            if (name === 'Writer and reviewer prompts')
+              return { json: { writer_prompt: 'purpose: write_documents\nW\n', writer_guidance: '# Craft\n\nG', writer_schema: { type: 'object' } } };
             if (name === 'Prepare inputs')
               return {
                 json: {
@@ -1945,7 +1963,6 @@ describe('generate documents', () => {
           },
         }),
         { toFormat: () => '7 November 2026' },
-        env,
       ).json;
 
     test('the writer revision sends the previous round from the database row', () => {
@@ -1995,63 +2012,33 @@ describe('generate documents', () => {
       expect(p3).toEqual({ documents: { cv: {} }, failedChecks: [invalid], warnings: [], failedItems: [], rulingsAgainst: { facts: [], spelling: [] }, objections: [] });
     });
 
-    describe('the cv-writing skill on the writer request', () => {
+    describe('the CV-writing guidance on the writer request', () => {
       const HEARTBEAT = { id: 'r1', claimed_at: 't1', round: 1, rounds: [] };
-      const BAD_IDS = ['', ' ', '"skill_x"', "'skill_x'", 'https://api.anthropic.com/v1/skills/skill_x', 'skill_', 'skill_abc ', ' skill_abc', 'skill_abc\n', 'skill-abc', 'SKILL_abc', 'skill_a-b', 'skill_a.b', 'abc'];
-      /** The pure attach decision, lifted out of the node's code and run on its own. */
-      const skillParts = (): ((id: unknown) => any) => {
-        const fn = /function skillParts\(id\) \{[\s\S]*?\n\}/.exec(code('Build writer request'))?.[0];
-        if (!fn) throw new Error('no skillParts(id) in "Build writer request"');
-        return runInNewContext(`(${fn})`);
-      };
-      // What every writer request was before Plan 8 (headers and top-level keys).
+      // What every writer request was before Plan 8 (headers and top-level keys, in order).
       const TODAY_KEYS = ['model', 'max_tokens', 'output_config', 'system', 'messages', 'fallbacks'];
       const TODAY_HEADERS = { 'anthropic-version': '2026-10-21', 'content-type': 'application/json', 'anthropic-beta': 'server-side-fallback-2026-07-01' };
 
-      test('skillParts: only a well-formed skill id gives the skill parts', () => {
-        const parts = skillParts();
-        for (const id of [...BAD_IDS, undefined, null, 123, ['skill_abc'], { id: 'skill_abc' }]) expect(parts(id), JSON.stringify(id)).toBeNull();
-        expect(JSON.parse(JSON.stringify(parts('skill_abc')))).toEqual({
-          container: { skills: [{ type: 'custom', skill_id: 'skill_abc', version: 'latest' }] },
-          tool: { type: 'code_execution_20260521', name: 'code_execution' },
-          beta: 'code-execution-2025-08-25',
-        });
-        expect(parts('skill_01AbC9').container.skills[0].skill_id).toBe('skill_01AbC9');
+      test('the system prompt is one string: the writer prompt, then the guidance under its heading', () => {
+        const out = buildWriter(HEARTBEAT);
+        expect(out.request.system).toBe('purpose: write_documents\nW\n\n## CV-writing guidance\n\n# Craft\n\nG');
       });
 
-      test("no skill id sends today's request", () => {
-        const unset = buildWriter(HEARTBEAT);
-        expect(unset.headers).toEqual(TODAY_HEADERS);
-        expect(Object.keys(unset.request)).toEqual(TODAY_KEYS);
-        expect(JSON.stringify(buildWriter(HEARTBEAT, { CV_SKILL_ID: '' }))).toBe(JSON.stringify(unset));
-        expect(JSON.stringify(buildWriter(HEARTBEAT, { CV_SKILL_ID: undefined }))).toBe(JSON.stringify(unset));
-      });
-
-      test('bad skill id is ignored', () => {
-        const unset = JSON.stringify(buildWriter(HEARTBEAT));
-        for (const id of BAD_IDS) expect(JSON.stringify(buildWriter(HEARTBEAT, { CV_SKILL_ID: id })), JSON.stringify(id)).toBe(unset);
-      });
-
-      test('a good skill id adds the container, the code execution tool and its beta, and nothing else', () => {
-        const unset = buildWriter(HEARTBEAT);
-        const on = buildWriter(HEARTBEAT, { CV_SKILL_ID: 'skill_abc' });
-        expect(on.request).toEqual({
-          ...unset.request,
-          container: { skills: [{ type: 'custom', skill_id: 'skill_abc', version: 'latest' }] },
-          tools: [{ type: 'code_execution_20260521', name: 'code_execution' }],
-        });
-        expect(on.headers).toEqual({ ...TODAY_HEADERS, 'anthropic-beta': 'server-side-fallback-2026-07-01,code-execution-2025-08-25' });
-        // A writer model without server-side fallbacks: the code-execution beta alone.
+      test("the writer request is otherwise today's: same headers and keys, no container, tools or extra beta", () => {
+        const out = buildWriter(HEARTBEAT);
+        expect(out.headers).toEqual(TODAY_HEADERS);
+        expect(Object.keys(out.request)).toEqual(TODAY_KEYS);
+        expect(out.request).not.toHaveProperty('container');
+        expect(out.request).not.toHaveProperty('tools');
+        // A writer model without server-side fallbacks: no beta header at all.
         const noFallbacks = runPriceLookup({ ...ENV, WRITER_MODEL: 'claude-haiku-5-5' })[0];
         expect(noFallbacks.json.writer.fallbacks).toBe(false);
-        const plain = buildWriter(HEARTBEAT, {}, noFallbacks);
+        const plain = buildWriter(HEARTBEAT, noFallbacks);
         expect(plain.headers).toEqual({ 'anthropic-version': '2026-10-21', 'content-type': 'application/json' });
-        expect(plain.request).not.toHaveProperty('fallbacks');
-        expect(buildWriter(HEARTBEAT, { CV_SKILL_ID: 'skill_abc' }, noFallbacks).headers).toEqual({ ...plain.headers, 'anthropic-beta': 'code-execution-2025-08-25' });
+        expect(Object.keys(plain.request)).toEqual(TODAY_KEYS.filter((k) => k !== 'fallbacks'));
       });
 
-      test('the reviewer request never carries the skill', () => {
-        expect(code('Build review request')).not.toMatch(/CV_SKILL_ID|container|code_execution|skillParts/);
+      test('the reviewer request never carries the guidance', () => {
+        expect(code('Build review request')).not.toMatch(/writer_guidance|CV-writing guidance/);
       });
     });
 
@@ -2162,18 +2149,17 @@ describe('generate documents', () => {
         cl_hash: null,
       };
       const nodeWith = (node: string, json: object, inputs: object, extra: Record<string, object> = {}) =>
-        new Function('$json', '$', '$now', '$env', code(node))(
+        new Function('$json', '$', '$now', code(node))(
           json,
           (name: string) => ({
             first: () => {
               if (name === 'Look up model prices') return prices();
-              if (name === 'Writer and reviewer prompts') return { json: { writer_prompt: 'W', writer_schema: {}, review_prompt: 'R', review_schema: {} } };
+              if (name === 'Writer and reviewer prompts') return { json: { writer_prompt: 'W', writer_guidance: 'G', writer_schema: {}, review_prompt: 'R', review_schema: {} } };
               if (name === 'Prepare inputs') return { json: { inputs } };
               return { json: extra[name] ?? {} };
             },
           }),
           { toFormat: () => '8 November 2026' },
-          {},
         ).json;
       const textOf = (out: any) => out.request.messages[0].content[1].text as string;
       const tagOf = (text: string, name: string) => new RegExp(`<${name}>\\n([\\s\\S]*?)\\n</${name}>`).exec(text)?.[1];
@@ -2546,9 +2532,15 @@ describe('generate documents', () => {
       });
     });
 
-    test('prompts and schemas in the workflow match n8n/prompts', () => {
+    test('writer and reviewer prompts and guidance in the workflow match the repo files', () => {
       const v = values();
       expect(normalise(v.writer_prompt)).toBe(normalise(WRITER_PROMPT));
+      // The guidance is SKILL.md's body, frontmatter excluded.
+      expect(typeof v.writer_guidance).toBe('string');
+      expect(normalise(v.writer_guidance)).toBe(GUIDANCE);
+      expect(GUIDANCE).toContain(GUIDANCE_SENTENCE);
+      expect(SKILL_FILE.startsWith('---\nname: cv-writing\n')).toBe(true);
+      expect(v.writer_guidance).not.toMatch(/^(---|name: |description: )/m);
       expect(normalise(v.review_prompt)).toBe(normalise(REVIEW_PROMPT));
       expect(JSON.parse(v.writer_schema)).toEqual(JSON.parse(promptFile('write-documents.schema.json')));
       expect(JSON.parse(v.review_schema)).toEqual(JSON.parse(promptFile('review-documents.schema.json')));
@@ -2561,10 +2553,11 @@ describe('generate documents', () => {
       for (const p of [WRITER_PROMPT, REVIEW_PROMPT]) {
         expect(p.split(/\r?\n/).find((l) => l.startsWith('- <base_cv_facts>:'))).toContain(NO_FILE);
       }
-      // The cv-writing skill is know-how; the prompt stays the law (Plan 8). Only the writer has it.
-      const SKILL_LINE = 'If a cv-writing skill is available, read it before writing; where it differs from this prompt, this prompt wins.';
-      expect(WRITER_PROMPT.split(/\r?\n/)).toContain(SKILL_LINE);
-      expect(REVIEW_PROMPT).not.toMatch(/cv-writing skill/);
+      // The CV-writing guidance is craft advice; the prompt stays the law (Plan 8). Only the writer has it.
+      const GUIDANCE_LINE = 'The CV-writing guidance after this prompt is craft advice; where it differs from this prompt, this prompt wins.';
+      expect(WRITER_PROMPT.split(/\r?\n/)).toContain(GUIDANCE_LINE);
+      expect(WRITER_PROMPT).not.toMatch(/cv-writing skill/i);
+      expect(REVIEW_PROMPT).not.toMatch(/CV-writing guidance|cv-writing skill/i);
       expect(WRITER_PROMPT.split(/\r?\n/)[0]).toBe('purpose: write_documents');
       expect(REVIEW_PROMPT.split(/\r?\n/)[0]).toBe('purpose: review_documents');
     });
@@ -2575,8 +2568,8 @@ describe('generate documents', () => {
       for (const step of [1, 2, 3, 4, 5, 6, 7]) {
         expect(headings.some((h: string) => new RegExp(`(## |· )${step}\\. `).test(h)), `step ${step}`).toBe(true);
       }
-      // The cv-writing skill is explained next to the writer call.
-      expect(notes.some((c: string) => /CV_SKILL_ID/.test(c) && /last text block/.test(c) && /pause_turn/.test(c))).toBe(true);
+      // The CV-writing guidance is explained next to the writer call.
+      expect(notes.some((c: string) => /CV-writing guidance/.test(c) && /SKILL\.md/.test(c) && /last text block/.test(c) && /pause_turn/.test(c))).toBe(true);
       // The round loop is explained where it is built.
       expect(notes.some((c: string) => /back-edge/.test(c) && /back from that row/.test(c))).toBe(true);
     });

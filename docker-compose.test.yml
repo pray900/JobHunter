@@ -88,7 +88,6 @@ services:
       ANALYSE_MODEL: claude-opus-5-5
       SCORE_MODEL: claude-sonnet-5-5
       WRITER_MODEL: claude-opus-5-5
-      CV_SKILL_ID: skill_test01
       # Another model than the writer here, so the tests see each call priced by its own model.
       REVIEW_MODEL: claude-sonnet-5-5
       GENERATION_MAX_ROUNDS: "3"
