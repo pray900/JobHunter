@@ -3,7 +3,9 @@ import path from 'node:path';
 import nspell from 'nspell';
 import { parseBannedPhrases, phraseRegex } from '../documents/checks.js';
 import { docxToPdf, readPdf, type FetchLike } from '../render/pdf.js';
+import { fitCv, type Measure } from '../render/fit.js';
 import { renderDocx } from '../templates/index.js';
+import { LAYOUT_STEPS, type CvLayout } from '../templates/layout.js';
 import {
   collectStrings,
   cvSegments,
@@ -61,6 +63,8 @@ export interface CheckInput {
   baseCv: { structured: object };
   baseCoverLetter: { structured: object } | null;
   otherJobs: OtherJob[];
+  // Prayush's manual edits: a project holding one is never dropped to make the CV fit.
+  manualEdits?: { path: string; text: string | null }[];
 }
 
 export interface RunOptions {
@@ -668,8 +672,9 @@ async function defaultRender(
   cv: TailoredCv,
   letter: TailoredLetter,
   opts: RunOptions,
+  layout?: CvLayout,
 ): Promise<{ pages: number; text: string }> {
-  const docx = await renderDocx(templateId, doc, cv, doc === 'cover_letter' ? letter : undefined);
+  const docx = await renderDocx(templateId, doc, cv, doc === 'cover_letter' ? letter : undefined, layout);
   const pdf = await docxToPdf(docx, opts.gotenbergUrl, opts.fetch);
   return readPdf(pdf);
 }
@@ -677,28 +682,38 @@ async function defaultRender(
 // ---------- entry point ----------
 
 export async function runChecks(
-  input: CheckInput,
+  rawInput: CheckInput,
   opts: RunOptions,
-): Promise<{ checks: CheckResult[]; cvPages: number; letterPages: number }> {
+): Promise<{ checks: CheckResult[]; cvPages: number; letterPages: number; cv: TailoredCv; fit: { step: number; droppedProjects: string[] } }> {
   const config = await loadConfig(opts.configDir ?? process.env.CONFIG_DIR ?? '/app/config');
   const spell = await getSpell();
   const f = opts.fetch ?? fetch;
-  const renderDoc = async (doc: DocKind) => {
+  const measureCv: Measure = async (cv, layout) => {
     if (opts.render) {
-      const docx = await renderDocx(input.templateId, doc, input.cv, doc === 'cover_letter' ? input.coverLetter : undefined).catch(() => Buffer.alloc(0));
-      return opts.render(doc, docx, input.cv, input.coverLetter);
+      const docx = await renderDocx(rawInput.templateId, 'cv', cv, undefined, layout).catch(() => Buffer.alloc(0));
+      return opts.render('cv', docx, cv, rawInput.coverLetter);
     }
-    return defaultRender(input.templateId, doc, input.cv, input.coverLetter, opts);
+    return defaultRender(rawInput.templateId, 'cv', cv, rawInput.coverLetter, opts, layout);
   };
-  const cvRender = await renderDoc('cv');
-  const letterRender = await renderDoc('cover_letter');
+  const fit = await fitCv(rawInput.cv, rawInput.manualEdits ?? [], measureCv);
+  // Every other check runs on the fitted CV.
+  const input: CheckInput = { ...rawInput, cv: fit.cv };
+  const cvRender = { pages: fit.pages, text: fit.text };
+  const letterRender = opts.render
+    ? await opts.render(
+        'cover_letter',
+        await renderDocx(input.templateId, 'cover_letter', input.cv, input.coverLetter).catch(() => Buffer.alloc(0)),
+        input.cv,
+        input.coverLetter,
+      )
+    : await defaultRender(input.templateId, 'cover_letter', input.cv, input.coverLetter, opts);
 
   const cvSegs = cvSegments(input.cv);
   const letterSegs = letterSegments(input.coverLetter);
   const all = [...cvSegs, ...letterSegs];
 
   const checks: CheckResult[] = [];
-  if (cvRender.pages > 1) checks.push({ code: 'cv_pages', severity: 'hard', doc: 'cv', detail: `The CV is ${cvRender.pages} pages; the limit is 1.` });
+  if (cvRender.pages > 1) checks.push({ code: 'cv_pages', severity: 'hard', doc: 'cv', detail: `The CV is ${cvRender.pages} pages${fit.step === LAYOUT_STEPS.length - 1 ? ' even at the smallest layout' : ''}; the limit is 1.` });
   if (letterRender.pages > 2) {
     checks.push({ code: 'letter_pages', severity: 'hard', doc: 'cover_letter', detail: `The cover letter is ${letterRender.pages} pages; the limit is 2.` });
   }
@@ -733,5 +748,11 @@ export async function runChecks(
   }
   checks.push(...(await linkChecks(input.cv, base, f)));
 
-  return { checks, cvPages: cvRender.pages, letterPages: letterRender.pages };
+  return {
+    checks,
+    cvPages: cvRender.pages,
+    letterPages: letterRender.pages,
+    cv: input.cv,
+    fit: { step: fit.step, droppedProjects: fit.droppedProjects },
+  };
 }

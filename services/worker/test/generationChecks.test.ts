@@ -85,6 +85,43 @@ describe('runChecks', () => {
     expect(r.letterPages).toBe(1);
   });
 
+  describe('fit', () => {
+    const cv3: TailoredCv = {
+      ...goodCv,
+      projects: [
+        { name: 'Side Project', bullets: ['Small CLI tool.'] },
+        { name: 'Second Project', bullets: ['Another tool.'] },
+        { name: 'Zorbleflux Project', bullets: ['A misspellt zorbleflux tool.'] },
+      ],
+    };
+    const renderBy = (pagesFor: (cv: TailoredCv) => number): NonNullable<RunOptions['render']> =>
+      async (doc, d, cv, l) => (doc === 'cv' ? { pages: pagesFor(cv), text: (await okRender(doc, d, cv, l)).text } : okRender(doc, d, cv, l));
+
+    test('drops a project to fit; other checks run on the fitted CV', async () => {
+      const r = await runChecks(input({ cv: cv3 }), opts({ render: renderBy((cv) => (cv.projects.length > 2 ? 2 : 1)) }));
+      expect(r.cv.projects.map((p) => p.name)).toEqual(['Side Project', 'Second Project']);
+      expect(r.fit).toEqual({ step: 0, droppedProjects: ['Zorbleflux Project'] });
+      expect(find(r, 'cv_pages')).toHaveLength(0);
+      expect(r.cvPages).toBe(1);
+      expect(find(r, 'possible_misspelling').some((c) => c.detail === 'misspellt')).toBe(false);
+    });
+
+    test('unfixable overflow keeps the CV and reports cv_pages', async () => {
+      const r = await runChecks(input({ cv: cv3 }), opts({ render: renderBy(() => 2) }));
+      expect(r.cv).toEqual(cv3);
+      expect(r.fit.droppedProjects).toEqual([]);
+      expect(find(r, 'cv_pages')[0]).toMatchObject({ severity: 'hard', detail: 'The CV is 2 pages even at the smallest layout; the limit is 1.' });
+    });
+
+    test('manual edits protect a project', async () => {
+      const manualEdits = [{ path: 'cv.projects[2].bullets[0]', text: 'A misspellt zorbleflux tool.' }];
+      const r = await runChecks(input({ cv: cv3, manualEdits }), opts({ render: renderBy((cv) => (cv.projects.length > 2 ? 2 : 1)) }));
+      expect(r.cv).toEqual(cv3);
+      expect(r.fit.droppedProjects).toEqual([]);
+      expect(find(r, 'cv_pages')).toHaveLength(1);
+    });
+  });
+
   test('page limits are hard fails', async () => {
     const render: NonNullable<RunOptions['render']> = async (doc, d, cv, l) =>
       doc === 'cv' ? { pages: 2, text: (await okRender(doc, d, cv, l)).text } : { pages: 3, text: `${cv.name}` };

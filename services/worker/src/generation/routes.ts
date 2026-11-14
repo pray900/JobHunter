@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import { docxToPdf, PdfRenderError, type FetchLike } from '../render/pdf.js';
+import { docxToPdf, PdfRenderError, readPdf, type FetchLike } from '../render/pdf.js';
+import { fitLayout } from '../render/fit.js';
 import { renderDocx } from '../templates/index.js';
+import { LAYOUT_STEPS } from '../templates/layout.js';
 import {
   DOC_KINDS,
   RENDER_FORMATS,
@@ -53,7 +55,21 @@ export function registerGenerationRoutes(app: FastifyInstance, deps: GenerationD
       try {
         const validCv = validateTailoredCv(cv);
         const letter = doc === 'cover_letter' ? validateTailoredLetter(coverLetter) : undefined;
-        docx = await renderDocx(templateId, doc, validCv, letter);
+        let layout = LAYOUT_STEPS[0];
+        if (doc === 'cv') {
+          try {
+            const measure = async (c: typeof validCv, l: typeof layout) =>
+              readPdf(await docxToPdf(await renderDocx(templateId, 'cv', c, undefined, l), deps.gotenbergUrl, deps.fetch));
+            layout = (await fitLayout(validCv, measure)).layout;
+          } catch (err) {
+            // A DOCX does not need Gotenberg: fall back to the normal layout. A PDF fails below as before.
+            if (format === 'pdf') {
+              request.log.error({ reason: err instanceof PdfRenderError ? err.message : 'unexpected' }, 'pdf render failed');
+              return reply.code(502).send({ error: 'pdf_render_failed' });
+            }
+          }
+        }
+        docx = await renderDocx(templateId, doc, validCv, letter, layout);
       } catch (err) {
         if (err instanceof InvalidDocumentError) return reply.code(400).send({ error: 'invalid_document', path: err.path });
         request.log.error({ err }, 'render failed');

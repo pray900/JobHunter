@@ -1,6 +1,8 @@
 import { expect, test, vi } from 'vitest';
 import { buildServer } from '../src/server.js';
+import JSZip from 'jszip';
 import { CV, LETTER, makePdf } from './fixtures.js';
+import { LAYOUT_STEPS } from '../src/templates/layout.js';
 
 const app = (fetchImpl?: unknown) =>
   buildServer({
@@ -55,4 +57,43 @@ test('pdf route returns %PDF through gotenberg and 502 when gotenberg fails', as
   });
   expect((await render(down, { ...base, format: 'pdf' })).statusCode).toBe(502);
   await down.close();
+});
+
+// A fake Gotenberg: one page when the DOCX body size is at most maxHalfPt, otherwise two.
+const gotenbergBySize = (maxHalfPt: number) => async (_url: unknown, init?: { body?: FormData }) => {
+  const file = init?.body?.get('files') as Blob;
+  const xml = await (await JSZip.loadAsync(Buffer.from(await file.arrayBuffer()))).file('word/document.xml')!.async('string');
+  const m = [...xml.matchAll(/<w:sz w:val="(\d+)"\/>/g)].map((x) => Number(x[1]));
+  const body = Math.min(...m);
+  return new Response(new Uint8Array(makePdf(body <= maxHalfPt ? 1 : 2)));
+};
+const sizeOf = async (docx: Buffer) => {
+  const xml = await (await JSZip.loadAsync(docx)).file('word/document.xml')!.async('string');
+  return Math.min(...[...xml.matchAll(/<w:sz w:val="(\d+)"\/>/g)].map((x) => Number(x[1])));
+};
+
+test('render route fits the CV: renders at the first layout that fits, never drops projects', async () => {
+  const cv = { ...CV, projects: [CV.projects[0], { name: 'Second', bullets: ['More.'] }] };
+  const a = app(gotenbergBySize(Math.round(LAYOUT_STEPS[4].bodyPt * 2)));
+  const res = await render(a, { ...base, cv });
+  expect(res.statusCode).toBe(200);
+  expect(await sizeOf(res.rawPayload)).toBe(20);
+  await a.close();
+
+  const floor = app(gotenbergBySize(0));
+  const over = await render(floor, { ...base, cv });
+  expect(await sizeOf(over.rawPayload)).toBe(Math.round(LAYOUT_STEPS[LAYOUT_STEPS.length - 1].bodyPt * 2));
+  const xml = await (await JSZip.loadAsync(over.rawPayload)).file('word/document.xml')!.async('string');
+  expect(xml).toContain('Second');
+  await floor.close();
+});
+
+test('a docx request falls back to the default layout when Gotenberg is down', async () => {
+  const a = app(async () => {
+    throw new Error('ECONNREFUSED');
+  });
+  const res = await render(a, base);
+  expect(res.statusCode).toBe(200);
+  expect(await sizeOf(res.rawPayload)).toBe(21);
+  await a.close();
 });
