@@ -96,5 +96,5 @@ A problem that stops a tailored CV or cover letter from passing review, such as 
 _Avoid_: Error, warning
 
 **Stretch**:
-A claim that is supported by the base CV but framed close to the line, shown to Prayush to decide.
+A claim that is supported by the base CV but framed close to the line, shown to Prayush to decide. Also an estimated result or scale figure the writer added to a bullet that the base CV does not state.
 _Avoid_: Exaggeration, lie

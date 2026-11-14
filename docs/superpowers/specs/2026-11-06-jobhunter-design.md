@@ -48,7 +48,7 @@ These are hard fails. A CV/cover letter that has any of them must not be present
 
 **Gets you caught in an interview**
 - Invented skills or experience not supported by the base CVs (e.g. claiming Kubernetes or "5 years of Python").
-- Made-up metrics ("improved efficiency by 40%") not present in the base CVs.
+- Made-up metrics ("improved efficiency by 40%") not present in the base CVs. **Changed 2026-11-14 (Prayush): the writer may add realistic result-or-scale figures in experience and project bullets** (ATS research: show result or scale with numbers), with no marking in the document. Each one is an estimate and is listed as a stretch ("Stretch — you decide") so he knows what an interviewer could ask about. Numbers copied from the base CV stay exact; the headline, summary, education, dates and years of experience stay base-CV-only; the cover letter may repeat a number only from the CV's bullets, the base CV or the job ad (code check `unknown_fact` relaxed for bullets only; month-year dates stay checked everywhere). The reviewer judges new figures for plausibility.
 - Inflated titles or scope ("led", "architected" for contributed work).
 - Inconsistent facts between versions (years of experience, dates, titles shifting between generated CVs).
 
@@ -200,7 +200,7 @@ The reviewer also checks the honesty of each reason and the keyword-coverage cla
 - Links: format-valid and reachable.
 - Template structural rules: no tables/columns, consistent fonts/spacing, no orphaned headings.
 
-*Decided during the build (Prayush, 2026-11-07):* the **cover letter** may repeat numbers and dates that appear in the job ad (e.g. "APS 6"); the CV may use only numbers and dates from the base CV. Names from **other jobs** count as leakage only with matching capitals ("Insight" but not "insight into"); the base cover letter's previous company, addressee and role are caught regardless of capitals and punctuation ("Ms Li" = "Ms. Li"). Skills not found in the base CV and possible misspellings are passed to the reviewer, which must rule on each.
+*Decided during the build (Prayush, 2026-11-07):* the **cover letter** may repeat numbers and dates that appear in the job ad (e.g. "APS 6"); the CV may use only numbers and dates from the base CV (*changed 2026-11-14, see §2: experience and project bullets may also carry new result figures, and the letter may repeat those*). Names from **other jobs** count as leakage only with matching capitals ("Insight" but not "insight into"); the base cover letter's previous company, addressee and role are caught regardless of capitals and punctuation ("Ms Li" = "Ms. Li"). Skills not found in the base CV and possible misspellings are passed to the reviewer, which must rule on each.
 
 **By the reviewer (judgement):**
 - Relevance of every bullet/section to this job; over-tailoring; strongest match in top third.
