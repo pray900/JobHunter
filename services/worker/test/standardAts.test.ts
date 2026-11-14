@@ -19,7 +19,7 @@ test('docx has no tables, one font, numbered bullets', async () => {
   expect(xml).toContain('<w:numPr>');
   expect(xml).not.toContain('•');
   // Section headings: uppercase, keep with next, bottom border.
-  for (const h of ['SUMMARY', 'SKILLS', 'EXPERIENCE', 'PROJECTS', 'EDUCATION']) {
+  for (const h of ['SUMMARY', 'SKILLS', 'PROFESSIONAL EXPERIENCE', 'PROJECTS', 'EDUCATION']) {
     const para = xml.split('</w:p>').find((p) => p.includes(`>${h}<`));
     expect(para, h).toBeDefined();
     expect(para).toContain('<w:keepNext/>');
@@ -160,4 +160,25 @@ test('layout parameter changes size, margins and spacing; default is today', asy
   const bulletAfter = (xml: string) =>
     Number(xml.split('</w:p>').find((p) => p.includes('Built an invoicing service.'))!.match(/w:after="(\d+)"/)![1]);
   expect(bulletAfter(tight)).toBeLessThan(bulletAfter(dflt));
+});
+
+test('experience heading reads Professional Experience', async () => {
+  const xml = await documentXml(await renderDocx('standard-ats', 'cv', CV));
+  expect(xml).toContain('>PROFESSIONAL EXPERIENCE<');
+  expect(xml).not.toContain('>EXPERIENCE<');
+});
+
+test('only the name, titles and employers are bold', async () => {
+  const xml = await documentXml(await renderDocx('standard-ats', 'cv', CV));
+  const runs = [...xml.matchAll(/<w:r>(.*?)<\/w:r>/gs)].map((m) => m[1]!);
+  const text = (r: string) => [...r.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1]).join('');
+  const bold = runs.filter((r) => r.includes('<w:b/>')).map(text);
+  expect(bold.sort()).toEqual(['Acme Pty Ltd', 'Jordan Testcase', 'Software Engineer']);
+  // Headings, location, dates, project names and education stay plain.
+  for (const plain of ['SUMMARY', 'PROFESSIONAL EXPERIENCE', 'Side Project', 'Jan 2022 - Present', 'BSc Computer Science, Example University']) {
+    const r = runs.find((x) => text(x).includes(plain));
+    expect(r, plain).toBeDefined();
+    expect(r, plain).not.toContain('<w:b/>');
+  }
+  expect(runs.some((r) => text(r).includes('Sydney') && r.includes('<w:b/>'))).toBe(false);
 });

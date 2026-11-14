@@ -55,7 +55,7 @@ describe('writer prompt schema and the stub answer', () => {
         baseCoverLetter: null,
         otherJobs: [],
       },
-      { gotenbergUrl: 'http://unused', configDir: path.join(root, 'config'), render: async () => ({ pages: 1, text: 'Stub Person SUMMARY SKILLS EXPERIENCE PROJECTS EDUCATION' }) },
+      { gotenbergUrl: 'http://unused', configDir: path.join(root, 'config'), render: async () => ({ pages: 1, text: 'Stub Person SUMMARY SKILLS PROFESSIONAL EXPERIENCE PROJECTS EDUCATION' }) },
     );
     expect(checks.filter((c) => c.severity === 'hard')).toEqual([]);
   });

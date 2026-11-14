@@ -640,7 +640,7 @@ async function linkChecks(cv: TailoredCv, base: BaseFacts, f: FetchLike): Promis
 // ---------- rendering ----------
 
 const HEADINGS: Record<TemplateId, (cv: TailoredCv) => string[]> = {
-  'standard-ats': (cv) => [...(cv.summary.trim() !== '' ? ['SUMMARY'] : []), 'SKILLS', 'EXPERIENCE', ...(cv.projects.length > 0 ? ['PROJECTS'] : []), 'EDUCATION'],
+  'standard-ats': (cv) => [...(cv.summary.trim() !== '' ? ['SUMMARY'] : []), 'SKILLS', 'PROFESSIONAL EXPERIENCE', ...(cv.projects.length > 0 ? ['PROJECTS'] : []), 'EDUCATION'],
 };
 
 function renderTextChecks(templateId: TemplateId, cv: TailoredCv, cvText: string, letterText: string): CheckResult[] {

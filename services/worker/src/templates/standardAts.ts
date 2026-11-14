@@ -39,7 +39,7 @@ function bullet(text: string, size: number, k = 1): Paragraph {
 
 function heading(text: string, size: number, k: number): Paragraph {
   return new Paragraph({
-    children: [run(text.toUpperCase(), size, { bold: true })],
+    children: [run(text.toUpperCase(), size)],
     keepNext: true,
     spacing: { before: Math.round(200 * k), after: Math.round(80 * k) },
     border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '000000', space: 1 } },
@@ -47,8 +47,9 @@ function heading(text: string, size: number, k: number): Paragraph {
 }
 
 // Title on the left, dates pushed to the right margin by a right tab stop.
-function titleLine(left: string, dates: string, size: number, textWidth: number, k: number): Paragraph {
-  const children = [run(left, size, { bold: true })];
+// `parts` are runs in order; bold ones are titles and employers, the rest (commas, location) is plain.
+function titleLine(parts: { text: string; bold?: boolean }[], dates: string, size: number, textWidth: number, k: number): Paragraph {
+  const children: TextRun[] = parts.filter((p) => p.text !== '').map((p) => run(p.text, size, { bold: p.bold }));
   if (dates) children.push(new TextRun({ children: [new Tab()], font: FONT, size: half(size) }), run(dates, size));
   return new Paragraph({
     children,
@@ -91,9 +92,16 @@ function cvParagraphs(cv: TailoredCv, layout: CvLayout): Paragraph[] {
   out.push(heading('Skills', headSize, k));
   for (const g of cv.skills) out.push(body(`${g.group}: ${g.items.join(', ')}`, size, 40, k));
 
-  out.push(heading('Experience', headSize, k));
+  out.push(heading('Professional Experience', headSize, k));
   for (const job of cv.experience) {
-    out.push(titleLine([job.title, job.employer, job.location].filter(Boolean).join(', '), job.dates, size, textWidth, k));
+    const lead = [job.title, job.employer].filter(Boolean);
+    const parts = [
+      { text: job.title, bold: true },
+      { text: job.title && job.employer ? ', ' : '' },
+      { text: job.employer, bold: true },
+      { text: job.location ? `${lead.length > 0 ? ', ' : ''}${job.location}` : '' },
+    ];
+    out.push(titleLine(parts, job.dates, size, textWidth, k));
     for (const b of job.bullets) out.push(bullet(b, size, k));
   }
 
@@ -102,7 +110,7 @@ function cvParagraphs(cv: TailoredCv, layout: CvLayout): Paragraph[] {
     for (const p of cv.projects) {
       out.push(
         new Paragraph({
-          children: [run(p.name, size, { bold: true })],
+          children: [run(p.name, size)],
           keepNext: true,
           spacing: { before: Math.round(80 * k), after: Math.round(40 * k) },
         }),
@@ -113,7 +121,7 @@ function cvParagraphs(cv: TailoredCv, layout: CvLayout): Paragraph[] {
 
   out.push(heading('Education', headSize, k));
   for (const e of cv.education) {
-    out.push(titleLine(educationLine(e), e.dates, size, textWidth, k));
+    out.push(titleLine([{ text: educationLine(e) }], e.dates, size, textWidth, k));
     if (e.statusText) out.push(body(e.statusText, size, 40, k));
   }
   return out;

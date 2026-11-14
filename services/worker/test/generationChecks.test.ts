@@ -48,7 +48,7 @@ const okRender: NonNullable<RunOptions['render']> = async (doc, _docx, cv) => ({
   pages: 1,
   text:
     doc === 'cv'
-      ? `${cv.name}\nSUMMARY\nx\nSKILLS\nx\nEXPERIENCE\nx\nPROJECTS\nx\nEDUCATION\nx`
+      ? `${cv.name}\nSUMMARY\nx\nSKILLS\nx\nPROFESSIONAL EXPERIENCE\nx\nPROJECTS\nx\nEDUCATION\nx`
       : `${cv.name}\nDear Hiring Manager`,
 });
 
@@ -420,7 +420,7 @@ describe('runChecks', () => {
   test('render_text flags a missing heading, missing name and wrong order', async () => {
     const render: NonNullable<RunOptions['render']> = async (doc) => ({
       pages: 1,
-      text: doc === 'cv' ? 'SUMMARY\nSKILLS\nEDUCATION\nEXPERIENCE\nPROJECTS' : 'no name',
+      text: doc === 'cv' ? 'SUMMARY\nSKILLS\nEDUCATION\nPROFESSIONAL EXPERIENCE\nPROJECTS' : 'no name',
     });
     const r = await runChecks(input(), opts({ render }));
     const rt = find(r, 'render_text');
@@ -675,7 +675,7 @@ describe('runChecks', () => {
   test('M11: an empty summary needs no SUMMARY heading in the rendered CV', async () => {
     const render: NonNullable<RunOptions['render']> = async (doc, _d, cv) => ({
       pages: 1,
-      text: doc === 'cv' ? `${cv.name}\nSKILLS\nx\nEXPERIENCE\nx\nPROJECTS\nx\nEDUCATION\nx` : `${cv.name}`,
+      text: doc === 'cv' ? `${cv.name}\nSKILLS\nx\nPROFESSIONAL EXPERIENCE\nx\nPROJECTS\nx\nEDUCATION\nx` : `${cv.name}`,
     });
     const r = await runChecks(input({ cv: { ...goodCv, summary: '' } }), opts({ render }));
     expect(find(r, 'render_text')).toEqual([]);
@@ -701,5 +701,14 @@ describe('runChecks', () => {
     const honest: TailoredCv = { ...goodCv, experience: [{ ...goodCv.experience[0], employer: 'Dynamic Widgets (Optimization Division) Pty Ltd' }] };
     const ok = await runChecks(input({ cv: honest, baseCv: { structured: bracketed } }), opts());
     expect(ok.checks.filter((c) => c.severity === 'hard')).toEqual([]);
+  });
+});
+
+describe('heading order uses Professional Experience', () => {
+  test('a PDF text with EXPERIENCE but not PROFESSIONAL EXPERIENCE fails render_text', async () => {
+    const render: NonNullable<RunOptions['render']> = async (doc, d, cv, l) =>
+      doc === 'cv' ? { pages: 1, text: `${cv.name}\nSUMMARY\nx\nSKILLS\nx\nEXPERIENCE\nx\nPROJECTS\nx\nEDUCATION\nx` } : okRender(doc, d, cv, l);
+    const r = await runChecks(input(), opts({ render }));
+    expect(find(r, 'render_text').map((c) => c.detail)).toEqual([expect.stringContaining('PROFESSIONAL EXPERIENCE')]);
   });
 });
