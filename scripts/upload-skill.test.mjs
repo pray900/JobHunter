@@ -4,13 +4,22 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'upload-skill.mjs');
 const KEY = 'sk-ant-test-secret-key-12345';
+
+// Guard: the suite must never touch the repo's real .env (read only; contents are hashed, never printed).
+const REAL_ENV = join(dirname(fileURLToPath(import.meta.url)), '..', '.env');
+const snapshotRealEnv = () =>
+  existsSync(REAL_ENV)
+    ? { mtimeMs: statSync(REAL_ENV).mtimeMs, hash: createHash('sha256').update(readFileSync(REAL_ENV)).digest('hex') }
+    : null;
+const realEnvBefore = snapshotRealEnv();
 
 let server, baseUrl, requests, respond, tmp, skillDir;
 
@@ -32,6 +41,7 @@ before(async () => {
 after(() => {
   server.close();
   rmSync(tmp, { recursive: true, force: true });
+  assert.deepEqual(snapshotRealEnv(), realEnvBefore, 'the real .env was modified by the test suite');
 });
 beforeEach(() => {
   requests = [];
@@ -158,17 +168,25 @@ test('duplicate CV_SKILL_ID lines collapse to one with the new id', async () => 
 
 test('an option without a value exits 1 with usage', async () => {
   const envFile = join(tmp, '.env');
-  writeFileSync(envFile, `ANTHROPIC_API_KEY=${KEY}\n`);
-  const code = await new Promise((resolve) => {
-    const c = spawn(process.execPath, [SCRIPT, '--base-url', baseUrl, '--env'], { env: { PATH: process.env.PATH } });
-    let err = '';
-    c.stderr.on('data', (d) => (err += d));
-    c.on('close', (k) => resolve({ k, err }));
-  });
-  assert.equal(code.k, 1);
-  assert.match(code.err, /--env/);
-  assert.match(code.err, /Usage/i);
+  writeFileSync(envFile, `ANTHROPIC_API_KEY=${KEY}
+`);
+  for (const [argv, flag] of [
+    [['--env', envFile, '--base-url', baseUrl, '--dir'], '--dir'],
+    [['--env', envFile, '--dir', skillDir, '--base-url'], '--base-url'],
+  ]) {
+    const r = await new Promise((resolve) => {
+      const c = spawn(process.execPath, [SCRIPT, ...argv], { env: { PATH: process.env.PATH } });
+      let err = '';
+      c.stderr.on('data', (d) => (err += d));
+      c.on('close', (k) => resolve({ k, err }));
+    });
+    assert.equal(r.k, 1);
+    assert.ok(r.err.includes(flag + ' needs a value'), r.err);
+    assert.match(r.err, /Usage/i);
+  }
   assert.equal(requests.length, 0);
+  assert.equal(readFileSync(envFile, 'utf8'), `ANTHROPIC_API_KEY=${KEY}
+`);
 });
 
 test('if .env cannot be written, the new skill id is still shown and exit is 1', async () => {
