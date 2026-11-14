@@ -34,6 +34,7 @@ export type CheckCode =
   | 'missing_work_rights'
   | 'work_rights_dropped'
   | 'link_unreachable'
+  | 'long_paragraph'
   // Not produced by runChecks: the Generate workflow records it when the worker rejects the writer's documents.
   | 'invalid_document'
   // Not produced by runChecks: the Generate workflow records it when a regenerate's writer changed or left out
@@ -637,6 +638,30 @@ async function linkChecks(cv: TailoredCv, base: BaseFacts, f: FetchLike): Promis
   return out;
 }
 
+// ---------- paragraph length ----------
+
+const MAX_PARAGRAPH_WORDS = 40;
+
+// CV prose a reader scans: headline, summary, bullets and each skills line. Words are runs of non-space characters.
+// A field inside one of Prayush's locked edits is reported like any other; the Generate workflow marks it locked.
+export function longParagraphChecks(cv: TailoredCv): CheckResult[] {
+  const fields: { where: string; text: string }[] = [
+    { where: 'cv.headline', text: cv.headline ?? '' },
+    { where: 'cv.summary', text: cv.summary },
+    ...cv.skills.map((g, i) => ({ where: `cv.skills[${i}]`, text: `${g.group}: ${g.items.join(', ')}` })),
+    ...cv.experience.flatMap((e, i) => e.bullets.map((b, j) => ({ where: `cv.experience[${i}].bullets[${j}]`, text: b }))),
+    ...cv.projects.flatMap((p, i) => p.bullets.map((b, j) => ({ where: `cv.projects[${i}].bullets[${j}]`, text: b }))),
+  ];
+  const out: CheckResult[] = [];
+  for (const f of fields) {
+    const n = f.text.split(/\s+/).filter((w) => w !== '').length;
+    if (n > MAX_PARAGRAPH_WORDS) {
+      out.push({ code: 'long_paragraph', severity: 'hard', doc: 'cv', where: f.where, detail: `${n} words; keep it to ${MAX_PARAGRAPH_WORDS} or fewer.` });
+    }
+  }
+  return out;
+}
+
 // ---------- rendering ----------
 
 const HEADINGS: Record<TemplateId, (cv: TailoredCv) => string[]> = {
@@ -724,6 +749,7 @@ export async function runChecks(
     checks.push({ code: 'letter_pages', severity: 'hard', doc: 'cover_letter', detail: `The cover letter is ${letterRender.pages} pages; the limit is 2.` });
   }
   checks.push(...renderTextChecks(input.templateId, input.cv, cvRender.text, letterRender.text));
+  checks.push(...longParagraphChecks(input.cv));
   checks.push(...placeholderChecks(all));
   const base = baseFacts(input.baseCv.structured, config.usToAu);
   // Copied own names are exempt from the spelling and banned-phrase checks; everything else is checked.

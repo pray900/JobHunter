@@ -174,6 +174,7 @@ export type CheckCode =
   | 'missing_work_rights'
   | 'work_rights_dropped'
   | 'link_unreachable'
+  | 'long_paragraph'
   | 'invalid_document'
   | 'manual_edit_changed';
 

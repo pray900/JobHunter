@@ -18,6 +18,7 @@ const CHECK_LABELS: Record<CheckCode, string> = {
   missing_work_rights: 'Your base CV has no work-rights line',
   work_rights_dropped: 'Work-rights line left out',
   link_unreachable: "Link didn't answer",
+  long_paragraph: 'Paragraph over 40 words',
   invalid_document: 'A required part of the document was missing or empty',
   manual_edit_changed: 'Your edit was changed',
 };

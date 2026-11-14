@@ -19,7 +19,7 @@ const RUN_STAGES = ['queued', 'writing', 'checking', 'reviewing', 'saving'];
 const CHECK_CODES = [
   'cv_pages', 'letter_pages', 'placeholder', 'company_leakage', 'title_leakage', 'banned_phrase', 'us_spelling',
   'tech_casing', 'unknown_fact', 'keyword_not_found', 'link_invalid', 'render_text', 'unmatched_skill',
-  'possible_misspelling', 'missing_work_rights', 'work_rights_dropped', 'link_unreachable', 'invalid_document',
+  'possible_misspelling', 'missing_work_rights', 'work_rights_dropped', 'link_unreachable', 'long_paragraph', 'invalid_document',
   'manual_edit_changed',
 ];
 const ORIGINS = ['generated', 'regenerated', 'edited', 'restored'];

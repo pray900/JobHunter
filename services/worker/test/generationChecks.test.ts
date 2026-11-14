@@ -712,3 +712,48 @@ describe('heading order uses Professional Experience', () => {
     expect(find(r, 'render_text').map((c) => c.detail)).toEqual([expect.stringContaining('PROFESSIONAL EXPERIENCE')]);
   });
 });
+
+describe('long_paragraph', () => {
+  const w = (n: number) => Array.from({ length: n }, () => 'steady').join(' ');
+  const withExp = (bullets: string[]): TailoredCv => ({ ...goodCv, experience: [{ ...goodCv.experience[0], bullets }] });
+
+  test('41-word summary is long_paragraph', async () => {
+    const r = await runChecks(input({ cv: { ...goodCv, summary: w(41) } }), opts());
+    expect(find(r, 'long_paragraph')).toEqual([
+      { code: 'long_paragraph', severity: 'hard', doc: 'cv', where: 'cv.summary', detail: '41 words; keep it to 40 or fewer.' },
+    ]);
+  });
+
+  test('40-word bullet passes', async () => {
+    const r = await runChecks(input({ cv: withExp([w(40)]) }), opts());
+    expect(find(r, 'long_paragraph')).toEqual([]);
+  });
+
+  test('a long bullet reports its path', async () => {
+    const r = await runChecks(input({ cv: withExp(['Built it.', w(45)]) }), opts());
+    expect(find(r, 'long_paragraph').map((c) => c.where)).toEqual(['cv.experience[0].bullets[1]']);
+  });
+
+  test('long skill group line is long_paragraph at cv.skills[i]', async () => {
+    const items = Array.from({ length: 40 }, () => 'SQL');
+    const cv = { ...goodCv, skills: [goodCv.skills[0], { group: 'Tools', items }] };
+    const r = await runChecks(input({ cv }), opts());
+    const hits = find(r, 'long_paragraph');
+    expect(hits.map((c) => c.where)).toEqual(['cv.skills[1]']);
+    expect(hits[0].detail).toBe('41 words; keep it to 40 or fewer.');
+  });
+
+  test('cover letter paragraphs are not checked', async () => {
+    const r = await runChecks(input({ coverLetter: letter([w(80)]) }), opts());
+    expect(find(r, 'long_paragraph')).toEqual([]);
+  });
+
+  test('long locked bullet is kept', async () => {
+    // The worker reports it at its path; the Generate workflow marks it locked and keeps it ("Your edit — kept as you asked").
+    const long = w(50);
+    const r = await runChecks(input({ cv: withExp([long]), manualEdits: [{ path: 'cv.experience[0].bullets[0]', text: long }] }), opts());
+    const hits = find(r, 'long_paragraph');
+    expect(hits).toHaveLength(1);
+    expect(hits[0].where).toBe('cv.experience[0].bullets[0]');
+  });
+});

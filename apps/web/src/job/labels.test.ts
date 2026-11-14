@@ -39,3 +39,7 @@ test('labels the spec calls out', () => {
   expect(checkLabel('missing_work_rights')).toBe('Your base CV has no work-rights line');
   expect(checkLabel('manual_edit_changed')).toBe('Your edit was changed');
 });
+
+test('long_paragraph has a label', () => {
+  expect(checkLabel('long_paragraph')).toBe('Paragraph over 40 words');
+});
