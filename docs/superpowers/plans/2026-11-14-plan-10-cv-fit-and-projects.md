@@ -155,3 +155,14 @@
 - [ ] **Step 3:** `docker compose up -d --build` then `bash scripts/n8n-bootstrap.sh`.
 - [ ] **Step 4:** Generate on job `ebeb5db7-be68-4af5-8869-22b7f1623387` (about US$0.30–0.90). Check: one page; header is 3 logical lines with short links; projects present (all 5, or a reasons-panel note naming the ones left out); the version passes review or fails only for an ordinary review reason. Record the cost, the layout step and any dropped projects.
 - [ ] **Step 5:** Add a short "As built" to this plan and commit `docs: plan 10 as built`.
+
+### As built (added 2026-11-15)
+
+- Tasks 1–5 as planned. Extra, ruled during execution: neutral wording also covers `analyse-cv.md`, `analyse-cover-letter.md` and `score-job.md` (the user asked for their name out of everything sent to Claude); `writer.fit` is stripped from the previous round sent back to the writer.
+- Final whole-branch review (Opus): ready with fixes. Fixed:
+  - `/generation/check` drops projects only when the request says `dropProjects: true` (generate only). Saving an edit in the app only shrinks the layout and raises `cv_pages` at the floor; its check timeout is 90 s.
+  - "Left out to fit one page" is collected across all rounds up to the saved one, plus the previous version's drops on a regenerate, minus projects still in the saved CV.
+  - `keyword_not_found` ignores keywords found only in a dropped project; the reviewer prompt describes `documents.fit`; `manualEdits` is shape-checked (400).
+- Parked: reuse the fitted PDF bytes instead of rendering again on download; a cover letter can still mention a dropped project; the versions-api `dropProjects` test is a source-text check.
+- Tests: unit 403 passed; e2e 395 passed (two older tests updated: the reviewer's documents now carry `fit`).
+- **Real run** (Salesforce Developer job): v9 passed review in 3 rounds, US$0.94, 3 m 46 s. One page at layout step 1 (10.5 pt, tighter spacing), all 5 projects kept, nothing dropped. Header: name, headline, and a contact line with short links and work rights that wraps to 2 printed lines (4 in all).
