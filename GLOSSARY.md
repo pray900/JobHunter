@@ -95,6 +95,10 @@ _Avoid_: Checker, validator, critic
 A problem that stops a tailored CV or cover letter from passing review, such as an invented fact or a second page.
 _Avoid_: Error, warning
 
+**Fit**:
+Making a tailored CV fit one page: first shrink the template layout step by step, then, if it still does not fit, leave out the least relevant projects.
+_Avoid_: Trim, compress
+
 **Stretch**:
 A claim that is supported by the base CV but framed close to the line, shown to Prayush to decide. Also an estimated result or scale figure the writer added to a bullet that the base CV does not state.
 _Avoid_: Exaggeration, lie
