@@ -11,6 +11,16 @@ This is know-how for the writing itself. The facts, the exact-copy rules, the li
 
 Applicant tracking systems (ATS) read the text of a document first and often fail silently on layout. Ranking tends to compare the responsibilities in the ad with the experience text in the CV. Then a recruiter skims for a few seconds. So the CV has to parse cleanly, echo the ad's duties honestly, and show a result a skimming reader can catch.
 
+## One page comes first
+
+The CV must fit one A4 page. Everything below works inside that limit, never against it. A tight page that a recruiter can skim beats a fuller one that spills onto a second page.
+
+- Keep projects to one bullet each. Give a project a second bullet only when it is the strongest match for the job and the page has room.
+- Keep most bullets to one line and none longer than two (about 25 words).
+- Work an outcome, a duty phrase or a soft skill into a bullet you already have. Never add a bullet just to fit one in.
+- When something has to go, cut the weakest whole bullet, or a project's second bullet, before shortening the good ones. Trimming a few words from every bullet rarely saves a line.
+- If you are told the CV runs over one page, remove whole bullets until it fits, and keep the strongest ones.
+
 ## Bullets: responsibility plus outcome
 
 Write each bullet as what the person was responsible for, then what came of it, using the ad's own duty wording and terminology where it is true.
@@ -79,6 +89,6 @@ Keep each paragraph to three or four sentences. Use contractions sparingly and t
 
 ## Before you finish
 
-Read it once as a recruiter with a few seconds, and once as a text parser. Does the top third say why this person suits the role? Does every bullet say what was done and, where honest, what came of it? Do the ad's own terms appear where they are true? Does anything claim more than the facts? If so, cut it.
+Read it once as a recruiter with a few seconds, and once as a text parser. Does it fit one page with room to spare? Does the top third say why this person suits the role? Does every bullet say what was done and, where honest, what came of it? Do the ad's own terms appear where they are true? Does anything claim more than the facts? If so, cut it.
 
 The writer prompt's rules above win over anything here.
