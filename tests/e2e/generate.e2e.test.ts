@@ -1937,14 +1937,14 @@ describe('generate documents', () => {
     });
 
     /** Runs "Build writer request" for one heartbeat. */
-    const buildWriter = (heartbeat: object, lookup = prices()) =>
+    const buildWriter = (heartbeat: object, lookup = prices(), ...g: unknown[]) =>
       new Function('$json', '$', '$now', code('Build writer request'))(
         heartbeat,
         (name: string) => ({
           first: () => {
             if (name === 'Look up model prices') return lookup;
             if (name === 'Writer and reviewer prompts')
-              return { json: { writer_prompt: 'purpose: write_documents\nW\n', writer_guidance: '# Craft\n\nG', writer_schema: { type: 'object' } } };
+              return { json: { writer_prompt: 'purpose: write_documents\nW\n', writer_guidance: g.length ? g[0] : '# Craft\n\nG', writer_schema: { type: 'object' } } };
             if (name === 'Prepare inputs')
               return {
                 json: {
@@ -2035,6 +2035,11 @@ describe('generate documents', () => {
         const plain = buildWriter(HEARTBEAT, noFallbacks);
         expect(plain.headers).toEqual({ 'anthropic-version': '2026-10-21', 'content-type': 'application/json' });
         expect(Object.keys(plain.request)).toEqual(TODAY_KEYS.filter((k) => k !== 'fallbacks'));
+      });
+
+      test('missing or blank guidance stops the writer request before calling Claude', () => {
+        const msg = 'The CV-writing guidance is missing from "Writer and reviewer prompts"; stopping before calling Claude.';
+        for (const bad of [undefined, null, '', '  \n ']) expect(() => buildWriter(HEARTBEAT, prices(), bad)).toThrow(msg);
       });
 
       test('the reviewer request never carries the guidance', () => {

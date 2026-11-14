@@ -5,7 +5,7 @@ description: Craft guidance for writing a tailored one-page ATS-friendly CV and 
 
 # CV and cover letter craft
 
-This is know-how for the writing itself. The facts, the exact-copy rules, the limits and the output format come from your system prompt. Here you will find how to make good writing within those rules.
+This is know-how for the writing itself. The facts, the exact-copy rules, the limits and the output format come from the writer prompt above. Here you will find how to make good writing within those rules.
 
 ## Why the wording matters
 
@@ -45,7 +45,7 @@ Keywords come from the ad's duties, tools, qualifications, soft skills and years
 
 ## Result and scale figures
 
-A number makes a recruiter stop scanning. Where the facts state a figure, use it exactly. Where a bullet has no figure and one would help, a modest estimate is allowed for experience and project bullets, if your system prompt allows it.
+A number makes a recruiter stop scanning. Where the facts state a figure, use it exactly. Where a bullet has no figure and one would help, a modest estimate is allowed for experience and project bullets, if the writer prompt above allows it.
 
 Make an added figure:
 
@@ -81,4 +81,4 @@ Keep each paragraph to three or four sentences. Use contractions sparingly and t
 
 Read it once as a recruiter with a few seconds, and once as a text parser. Does the top third say why this person suits the role? Does every bullet say what was done and, where honest, what came of it? Do the ad's own terms appear where they are true? Does anything claim more than the facts? If so, cut it.
 
-Your system prompt's rules win over anything here.
+The writer prompt's rules above win over anything here.
