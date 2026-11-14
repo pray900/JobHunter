@@ -154,6 +154,10 @@ test('layout parameter changes size, margins and spacing; default is today', asy
   expect(dflt).toContain('w:left="1020"');
   expect(tight).toContain('<w:sz w:val="19"/>');
   expect(tight).toContain('w:left="720"');
-  const before = (xml: string) => Number(/<w:pBdr>[\s\S]*?/.test(xml) && xml.split('</w:p>').find((p) => p.includes('>SKILLS<'))!.match(/w:before="(\d+)"/)![1]);
+  const before = (xml: string) =>
+    Number(xml.split('</w:p>').find((p) => p.includes('>SKILLS<'))!.match(/w:before="(\d+)"/)![1]);
   expect(before(tight)).toBeLessThan(before(dflt));
+  const bulletAfter = (xml: string) =>
+    Number(xml.split('</w:p>').find((p) => p.includes('Built an invoicing service.'))!.match(/w:after="(\d+)"/)![1]);
+  expect(bulletAfter(tight)).toBeLessThan(bulletAfter(dflt));
 });

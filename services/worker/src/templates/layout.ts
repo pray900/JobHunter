@@ -16,4 +16,4 @@ export const LAYOUT_STEPS: readonly CvLayout[] = [
   { bodyPt: 9.5, marginTwips: 720, spacing: 0.6 },
 ];
 
-export const shortLink = (url: string): string => url.replace(/^https?:\/\//i, '').replace(/^www\./, '').replace(/\/$/, '');
+export const shortLink = (url: string): string => url.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/$/, '');

@@ -58,8 +58,8 @@ function titleLine(left: string, dates: string, size: number, textWidth: number,
   });
 }
 
-const nameLine = (cv: TailoredCv, size = 18): Paragraph =>
-  new Paragraph({ children: [run(cv.name, size, { bold: true })], spacing: { after: 40 } });
+const nameLine = (cv: TailoredCv, size = 18, k = 1): Paragraph =>
+  new Paragraph({ children: [run(cv.name, size, { bold: true })], spacing: { after: Math.round(40 * k) } });
 
 const contactLine = (cv: TailoredCv, withWorkRights: boolean): string =>
   [
@@ -81,7 +81,7 @@ function cvParagraphs(cv: TailoredCv, layout: CvLayout): Paragraph[] {
   const k = layout.spacing;
   const textWidth = PAGE.width - 2 * layout.marginTwips;
   const headSize = toHalfPt((11.5 * size) / 10.5);
-  const out: Paragraph[] = [nameLine(cv, toHalfPt((18 * size) / 10.5))];
+  const out: Paragraph[] = [nameLine(cv, toHalfPt((18 * size) / 10.5), k)];
   if (cv.headline) out.push(body(cv.headline, size, 40, k));
   const contact = contactLine(cv, true);
   if (contact) out.push(body(contact, size, 40, k));
@@ -140,7 +140,6 @@ export async function renderStandardAts(
 ): Promise<Buffer> {
   if (kind === 'cover_letter' && !letter) throw new Error('cover letter data is required');
   const isCv = kind === 'cv';
-  const bodyPt = isCv ? layout.bodyPt : 11;
   const margin = isCv ? layout.marginTwips : MARGIN;
   const doc = new Document({
     creator: 'JobHunter',
