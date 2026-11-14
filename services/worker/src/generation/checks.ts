@@ -156,11 +156,13 @@ const NUMBER = /(?<![\p{L}\d.,])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(%|[kKmM](?![\p{
 function monthYears(text: string): { key: string; shown: string }[] {
   return [...text.matchAll(MONTH_YEAR)].map((m) => ({ key: `${m[1].slice(0, 3).toLowerCase()} ${m[2]}`, shown: m[0] }));
 }
-function numbers(text: string): { key: string; shown: string }[] {
-  return [...text.matchAll(NUMBER)].map((m) => ({
-    key: `${m[1].replace(/,/g, '')}${m[2] ?? ''}${(m[3] ?? '').replace('%', 'pct').toLowerCase()}`,
-    shown: m[0],
-  }));
+// A year ("in 2019") or a years-of-experience term ("5 years", "8+ yrs") is a date-like fact, not a result or scale figure.
+const YEARS_AFTER = /^\s*\+?\s*(?:years?|yrs?)(?![\p{L}\d])/iu;
+function numbers(text: string): { key: string; shown: string; dateLike: boolean }[] {
+  return [...text.matchAll(NUMBER)].map((m) => {
+    const key = `${m[1].replace(/,/g, '')}${m[2] ?? ''}${(m[3] ?? '').replace('%', 'pct').toLowerCase()}`;
+    return { key, shown: m[0], dateLike: /^(?:19|20)\d{2}$/.test(key) || YEARS_AFTER.test(text.slice((m.index ?? 0) + m[0].length)) };
+  });
 }
 
 // Month-years, bare years and "present", in order: two date strings that say the same thing give the same tokens.
@@ -395,14 +397,15 @@ const unknown = (doc: DocKind, where: string, detail: string): CheckResult => ({
 const PROSE_URL = /https?:\/\/[^\s)>\]"']+/gi;
 
 // Numbers and dates a text may use: the base CV's; the letter may also use the job ad's own.
-// Experience and project bullets may carry new result or scale figures (the writer lists them as stretches), so only their dates are checked.
+// Experience and project bullets may carry new result or scale figures (the writer lists them as stretches); their years, years-of-experience terms and month-year dates are still checked.
 const BULLET_WHERE = /^cv\.(?:experience|projects)\[\d+\]\.bullets\[\d+\]$/;
 const isBullet = (seg: Segment): boolean => seg.doc === 'cv' && BULLET_WHERE.test(seg.where);
 
 function numberAndDateFacts(seg: Segment, text: string, base: BaseFacts, extra?: { numbers: Set<string>; dates: Set<string> }): CheckResult[] {
   const out: CheckResult[] = [];
   const seenNum = new Set<string>();
-  for (const n of isBullet(seg) ? [] : numbers(text)) {
+  for (const n of numbers(text)) {
+    if (isBullet(seg) && !n.dateLike) continue;
     if (base.numberKeys.has(n.key) || extra?.numbers.has(n.key) || seenNum.has(n.key)) continue;
     seenNum.add(n.key);
     out.push(unknown(seg.doc, seg.where, `The number "${n.shown}" is not in the base CV.`));
@@ -485,7 +488,7 @@ function factChecks(input: CheckInput, cvSegs: Segment[], letterSegs: Segment[],
   const jobAllowed = { numbers: new Set(numbers(stripLinks(jobText)).map((n) => n.key)), dates: new Set(monthYears(jobText).map((m) => m.key)) };
   // The letter may also repeat a number from the tailored CV's bullets.
   const letterAllowed = {
-    numbers: new Set([...jobAllowed.numbers, ...cvSegs.filter(isBullet).flatMap((b) => numbers(stripLinks(b.text)).map((n) => n.key))]),
+    numbers: new Set([...jobAllowed.numbers, ...cvSegs.filter(isBullet).flatMap((b) => numbers(stripLinks(b.text)).filter((n) => !n.dateLike).map((n) => n.key))]),
     dates: jobAllowed.dates,
   };
   const jobLinkKeys = new Set(linkKeysIn(jobText));

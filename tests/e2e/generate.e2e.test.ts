@@ -1119,16 +1119,16 @@ describe('generate documents', () => {
       const base = await canned('write_documents');
       // The writer does what the dishonest instruction asks, every round (and keeps the locked edit).
       // A new number in a bullet is allowed now, so the invented fact is a month-year date the base CV lacks.
-      const invented = { ...base, cv: { ...base.cv, summary: EDIT, experience: [{ ...base.cv.experience[0], bullets: ['Led the team at Initech in March 2019'] }] } };
+      const invented = { ...base, cv: { ...base.cv, summary: EDIT, experience: [{ ...base.cv.experience[0], bullets: ['Started there in March 2019'] }] } };
       await stub.scriptPurpose('write_documents', [invented, invented, invented]);
-      const runId = await regenerate(jobId, 'Say I led a team of 10.', from.id);
+      const runId = await regenerate(jobId, 'Say I started there in March 2019.', from.id);
       await triggerGeneration();
       expect(await writerRequests()).toHaveLength(3);
       const run = await runRow(runId);
       expect(run).toMatchObject({ status: 'done', round: 3 });
       expect(run.rounds.map((r: any) => r.passed)).toEqual([false, false, false]);
       const v = (await versions(jobId))[2];
-      expect(v).toMatchObject({ origin: 'regenerated', label: 'Say I led a team of 10.' });
+      expect(v).toMatchObject({ origin: 'regenerated', label: 'Say I started there in March 2019.' });
       expect(v.review.passed).toBe(false);
       expect(v.review.unresolved).toEqual(
         expect.arrayContaining([expect.objectContaining({ source: 'check', code: 'unknown_fact', severity: 'hard', detail: expect.stringContaining('March 2019') })]),

@@ -233,8 +233,8 @@ describe('runChecks', () => {
     test('a new month-year date in a bullet is still a hard fail', async () => {
       const r = await runChecks(input({ cv: withBullets(['Built an invoicing service in Jun 2023.']) }), opts());
       const hits = find(r, 'unknown_fact');
-      expect(hits.map((c) => [c.where, c.severity])).toEqual([['cv.experience[0].bullets[0]', 'hard']]);
-      expect(hits[0].detail).toMatch(/Jun 2023/);
+      expect(hits.every((c) => c.where === 'cv.experience[0].bullets[0]' && c.severity === 'hard')).toBe(true);
+      expect(hits.some((c) => /date "Jun 2023"/.test(c.detail))).toBe(true);
     });
 
     test('a letter may repeat a number from a CV bullet, but not one found nowhere', async () => {
@@ -246,6 +246,40 @@ describe('runChecks', () => {
       expect(hits.map((c) => c.doc)).toEqual(['cover_letter']);
       expect(hits[0].detail).toMatch(/55/);
       expect(hits[0].detail).not.toMatch(/"12"/);
+    });
+
+    test('years of experience and bare years in a bullet are still hard fails; other figures pass', async () => {
+      const years = await runChecks(input({ cv: withBullets(['Spent 5 years building APIs.']) }), opts());
+      expect(find(years, 'unknown_fact').map((c) => [c.where, c.severity])).toEqual([['cv.experience[0].bullets[0]', 'hard']]);
+      const plus = await runChecks(input({ cv: withBullets(['Built APIs with 8+ years of Python.']) }), opts());
+      expect(find(plus, 'unknown_fact').length).toBe(1);
+      const bare = await runChecks(input({ cv: withBullets(['Shipped the billing rewrite in 2019.']) }), opts());
+      expect(find(bare, 'unknown_fact').map((c) => c.detail).join(' ')).toMatch(/2019/);
+      const ok = await runChecks(input({ cv: withBullets(['Reduced load time by 40% for a team of 6.']) }), opts());
+      expect(find(ok, 'unknown_fact')).toEqual([]);
+    });
+
+    test('a letter cannot repeat a years term from a bullet, but may repeat a plain figure', async () => {
+      const cv = withBullets(['Spent 8 years building APIs and cut load time by 35%.']);
+      const r = await runChecks(input({ cv, coverLetter: letter(['I have 8 years building APIs and cut load time by 35%.']) }), opts());
+      const hits = find(r, 'unknown_fact');
+      expect(hits.map((c) => c.doc).sort()).toEqual(['cover_letter', 'cv']);
+      expect(hits.find((c) => c.doc === 'cover_letter')!.detail).toMatch(/"8"/);
+      expect(hits.find((c) => c.doc === 'cover_letter')!.detail).not.toMatch(/35/);
+    });
+
+    test('a new number outside experience and project bullets still fails', async () => {
+      const cases: [string, TailoredCv][] = [
+        ['cv.skills[0].items[1]', { ...goodCv, skills: [{ group: 'Languages', items: ['TypeScript', 'SQL 77'] }] }],
+        ['cv.education[0].statusText', { ...goodCv, education: [{ ...goodCv.education[0], statusText: 'Completed 77' }] }],
+        ['cv.experience[0].location', { ...goodCv, experience: [{ ...goodCv.experience[0], location: 'Sydney 77' }] }],
+        ['cv.projects[0].name', { ...goodCv, projects: [{ name: 'Side Project 77', bullets: ['Small CLI tool.'] } as TailoredCv['projects'][number]] }],
+      ];
+      for (const [where, cv] of cases) {
+        const r = await runChecks(input({ cv }), opts());
+        const hit = find(r, 'unknown_fact').find((c) => c.where === where && /number "77"/.test(c.detail));
+        expect(hit, where).toMatchObject({ severity: 'hard' });
+      }
     });
   });
 
