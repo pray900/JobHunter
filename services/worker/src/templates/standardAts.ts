@@ -144,7 +144,7 @@ export async function renderStandardAts(
   const doc = new Document({
     creator: 'JobHunter',
     title: kind === 'cv' ? 'CV' : 'Cover letter',
-    styles: { default: { document: { run: { font: FONT, size: half(10.5) } } } },
+    styles: { default: { document: { run: { font: FONT, size: half(isCv ? layout.bodyPt : 11) } } } },
     numbering: {
       config: [
         {
