@@ -3,6 +3,7 @@ import { expect, test } from 'vitest';
 import { InvalidDocumentError, validateTailoredCv } from '../src/generation/validate.js';
 import { readPdf } from '../src/render/pdf.js';
 import { renderDocx } from '../src/templates/index.js';
+import { LAYOUT_STEPS, shortLink } from '../src/templates/layout.js';
 import { CV, LETTER, makePdf } from './fixtures.js';
 
 const documentXml = async (docx: Buffer) => (await JSZip.loadAsync(docx)).file('word/document.xml')!.async('string');
@@ -89,4 +90,70 @@ test('M11: an empty summary has no SUMMARY heading', async () => {
   const xml = await documentXml(await renderDocx('standard-ats', 'cv', { ...CV, summary: '  ' }));
   expect(xml).not.toContain('SUMMARY');
   expect(xml).toContain('SKILLS');
+});
+
+const paraTexts = (xml: string) =>
+  xml
+    .split('</w:p>')
+    .map((p) => [...p.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1]).join(''))
+    .filter((t) => t !== '');
+
+const FULL = {
+  ...CV,
+  headline: 'Engineer',
+  contact: {
+    location: 'Sydney, NSW',
+    email: 'a@b.com',
+    phone: '0400 000 000',
+    links: [
+      { label: 'LinkedIn', url: 'https://www.linkedin.com/in/x/' },
+      { label: 'GitHub', url: 'http://github.com/y' },
+    ],
+  },
+  workRights: 'Full work rights in Australia',
+};
+
+test('shortLink strips scheme, www and one trailing slash', () => {
+  expect(shortLink('https://www.linkedin.com/in/x/')).toBe('linkedin.com/in/x');
+  expect(shortLink('HTTP://github.com/pray900')).toBe('github.com/pray900');
+  expect(shortLink('pray900.github.io/P')).toBe('pray900.github.io/P');
+});
+
+test('CV header is name, headline, one compact contact line', async () => {
+  const xml = await documentXml(await renderDocx('standard-ats', 'cv', FULL));
+  const texts = paraTexts(xml);
+  expect(texts.slice(0, 3)).toEqual([
+    'Jordan Testcase',
+    'Engineer',
+    'Sydney, NSW | a@b.com | 0400 000 000 | linkedin.com/in/x | github.com/y | Full work rights in Australia',
+  ]);
+  expect(texts[3]).toBe('SUMMARY');
+  expect(xml).not.toContain('LinkedIn:');
+  expect(xml).not.toContain('https://');
+});
+
+test('contact line drops empties', async () => {
+  const bare = { ...FULL, contact: { location: 'Sydney', email: '', phone: '', links: [] }, workRights: null };
+  const texts = paraTexts(await documentXml(await renderDocx('standard-ats', 'cv', bare)));
+  expect(texts.slice(0, 3)).toEqual(['Jordan Testcase', 'Engineer', 'Sydney']);
+  const none = { ...bare, contact: { location: '', email: '', phone: '', links: [] } };
+  const texts2 = paraTexts(await documentXml(await renderDocx('standard-ats', 'cv', none)));
+  expect(texts2.slice(0, 3)).toEqual(['Jordan Testcase', 'Engineer', 'SUMMARY']);
+});
+
+test('letter contact uses short links and no work rights', async () => {
+  const texts = paraTexts(await documentXml(await renderDocx('standard-ats', 'cover_letter', FULL, LETTER)));
+  expect(texts[1]).toBe('Sydney, NSW | a@b.com | 0400 000 000 | linkedin.com/in/x | github.com/y');
+  expect(texts.join('\n')).not.toContain('work rights');
+});
+
+test('layout parameter changes size, margins and spacing; default is today', async () => {
+  const dflt = await documentXml(await renderDocx('standard-ats', 'cv', FULL));
+  const tight = await documentXml(await renderDocx('standard-ats', 'cv', FULL, undefined, LAYOUT_STEPS[5]));
+  expect(dflt).toContain('<w:sz w:val="21"/>');
+  expect(dflt).toContain('w:left="1020"');
+  expect(tight).toContain('<w:sz w:val="19"/>');
+  expect(tight).toContain('w:left="720"');
+  const before = (xml: string) => Number(/<w:pBdr>[\s\S]*?/.test(xml) && xml.split('</w:p>').find((p) => p.includes('>SKILLS<'))!.match(/w:before="(\d+)"/)![1]);
+  expect(before(tight)).toBeLessThan(before(dflt));
 });
