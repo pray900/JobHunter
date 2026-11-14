@@ -122,6 +122,21 @@ const systemText = (body) =>
   typeof body?.system === 'string' ? body.system : (body?.system ?? []).map((b) => b.text ?? '').join('\n');
 const purposeOf = (body) => /^purpose: *([a-z_]+)/.exec(systemText(body))?.[1] ?? 'extract_job';
 
+// A request with container.skills (the cv-writing skill) needs the code-execution beta, as the real API does.
+// Its answer reads the skill with code execution first, as measured on the real API (2026-11-14):
+// server_tool_use > bash_code_execution_tool_result > text (the JSON).
+const CODE_EXECUTION_BETA = 'code-execution-2025-08-25';
+const hasSkills = (body) => Array.isArray(body?.container?.skills) && body.container.skills.length > 0;
+const betasOf = (req) => String(req.headers['anthropic-beta'] ?? '').split(',').map((b) => b.trim());
+const SKILL_READ = [
+  { type: 'server_tool_use', id: 'srvtoolu_stub', name: 'bash_code_execution', input: { command: 'cat /skills/cv-writing/SKILL.md' } },
+  {
+    type: 'bash_code_execution_tool_result',
+    tool_use_id: 'srvtoolu_stub',
+    content: { type: 'bash_code_execution_result', stdout: '---\nname: cv-writing\n---', stderr: '', return_code: 0, content: [] },
+  },
+];
+
 createServer((req, res) => {
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
@@ -187,6 +202,8 @@ createServer((req, res) => {
         return err(res, 400, 'invalid JSON');
       }
       requests.push({ headers: req.headers, body });
+      if (hasSkills(body) && !betasOf(req).includes(CODE_EXECUTION_BETA))
+        return err(res, 400, `container.skills requires the ${CODE_EXECUTION_BETA} beta`);
       const purpose = purposeOf(body);
       const text = userText(body);
       if (text.includes('STUB_FAIL') || failPurposes.has(purpose))
@@ -203,11 +220,21 @@ createServer((req, res) => {
       // "STUB_HEADLINE:<text>" in a CV makes its recorded headline <text> (so tests can tell CVs apart).
       const headline = /STUB_HEADLINE:(\S+)/.exec(text)?.[1];
       if (purpose === 'analyse_cv' && headline) answer = { ...answer, headline };
+      // A scripted { __stub_content: [blocks], __stub_stop_reason? } answers with exactly that content and stop
+      // reason (default end_turn), e.g. text before a tool call, or a pause_turn. Any other answer is its JSON
+      // as the last text block, after the skill read when the request carries container.skills.
+      const scripted = answer && Array.isArray(answer.__stub_content);
+      const content = scripted
+        ? answer.__stub_content
+        : [...(hasSkills(body) ? SKILL_READ : []), { type: 'text', text: JSON.stringify(answer) }];
+      const stop_reason = scripted && typeof answer.__stub_stop_reason === 'string' ? answer.__stub_stop_reason : 'end_turn';
       const reply = () =>
         send(res, 200, {
           ...base,
-          content: [{ type: 'text', text: JSON.stringify(answer) }],
-          stop_reason: 'end_turn',
+          content,
+          stop_reason,
+          // The real API also returns the container it ran code in.
+          ...(hasSkills(body) ? { container: { id: 'container_stub', expires_at: '2026-11-14T01:00:00Z' } } : {}),
           usage: { input_tokens: 1000, output_tokens: 100 },
         });
       const delay = delays.get(purpose);
