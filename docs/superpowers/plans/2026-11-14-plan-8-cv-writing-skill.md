@@ -134,3 +134,13 @@
 - Kept: reading the writer's answer from the last text block, the `pause_turn` test, and the stub's content/stop-reason scripting. All are harmless and stricter.
 - Cost: about 1.6k extra input tokens per writer call, always read. That is cheaper than the skill route's ~6k.
 - The skill already uploaded to Prayush's Anthropic account is left there, unused, until he asks for it to be deleted.
+
+### As built (added 2026-11-14)
+
+The API-skill route in Tasks 1–4 is **superseded by the Amendment above**; the skill steps (upload script, `CV_SKILL_ID`, container and tool) were removed. What shipped:
+
+- `skills/cv-writing/SKILL.md` body is inlined after the writer prompt under "CV-writing guidance"; the workflow copy is checked against the file by e2e tests. A missing or blank guidance stops the writer request before calling Claude.
+- **Real run 1 (guidance as first written):** v7 failed review after 3 rounds, US$0.92. The CV ran to 2 pages in every round. Compared with v6 (prompts only, passed), projects went from 1 to 2 bullets each (+37% text) and the summary grew 19%.
+- **Fix:** a "One page comes first" section in `SKILL.md` (one bullet per project unless there is room, bullets about 25 words or fewer, never add a bullet just to fit a keyword, cut whole bullets when over a page) and a one-page question in the final checklist.
+- **Real run 2:** v8 passed in 2 rounds, one page, US$0.63, 2 m 46 s; CV 3,495 characters (shorter than v6). 4 mild wording stretches, no invented figures.
+- Full unit tests and e2e passed before merge.
