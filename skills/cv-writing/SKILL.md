@@ -15,7 +15,7 @@ Applicant tracking systems (ATS) read the text of a document first and often fai
 
 The CV must fit one A4 page. Everything below works inside that limit, never against it. A tight page that a recruiter can skim beats a fuller one that spills onto a second page.
 
-- Keep projects to one bullet each. Give a project a second bullet only when it is the strongest match for the job and the page has room.
+- Every project goes in, most relevant first, one bullet each. The code leaves out the last projects if the page overflows, so put the strongest first.
 - Keep most bullets to one line and none longer than two (about 25 words).
 - Work an outcome, a duty phrase or a soft skill into a bullet you already have. Never add a bullet just to fit one in.
 - When something has to go, cut the weakest whole bullet, or a project's second bullet, before shortening the good ones. Trimming a few words from every bullet rarely saves a line.

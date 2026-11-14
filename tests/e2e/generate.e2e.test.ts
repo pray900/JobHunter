@@ -2254,6 +2254,11 @@ describe('generate documents', () => {
         expect(tagOf(first, 'instruction')).toBe('"Make it shorter."');
         // The stored version itself is not changed by the "" mapping.
         expect(REGEN.current_version.cv.workRights).toBeNull();
+        // The previous round's `fit` (the code's own record) is not part of the documents sent back to the writer.
+        const withFit = { round: 1, writer: { cv: { name: 'N' }, coverLetter: { name: 'N' }, fit: { step: 'as-written', droppedProjects: ['P'] } }, checks: [], review: { verdict: 'fail', items: [], objections: [], factRulings: [], spellingRulings: [] }, passed: false };
+        const fitText = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't2', round: 2, rounds: [withFit] }, { ...INPUTS, regenerate: null }));
+        expect(JSON.parse(tagOf(fitText, 'previous_round')!).documents).toEqual({ cv: { name: 'N' }, coverLetter: { name: 'N' } });
+        expect(fitText).not.toMatch(/"fit"|droppedProjects/);
         const prev = { round: 1, writer: { cv: {} }, checks: [], review: { verdict: 'fail', items: [], objections: [], factRulings: [], spellingRulings: [] }, passed: false };
         const second = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't2', round: 2, rounds: [prev] }, { ...INPUTS, regenerate: REGEN }));
         expect(tagOf(second, 'previous_round')).toBeTruthy();
@@ -2400,11 +2405,20 @@ describe('generate documents', () => {
             ['manual_edit_changed', 'coverLetter.paragraphs[1]', false],
           ]);
           expect(out.checks[5]).toMatchObject({ severity: 'hard', doc: 'cover_letter', detail: expect.stringContaining('Gone paragraph.') });
+          expect(out.checks[5].detail).toBe(`The candidate's own edit at "coverLetter.paragraphs[1]" was changed or left out. Put it back exactly: "Gone paragraph."`);
           expect(out.locked_edits).toEqual([
             { path: 'cv.summary', text: MINE },
             { path: 'cv.experience[0].bullets[1]', text: 'My bullet.' },
             { path: 'cv.contact.links[0].url', text: 'https://a.io' },
           ]);
+          // An emptied field: told in plain words, without the user's name.
+          const emptied = nodeWith(
+            'Read check results',
+            { statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: {}, fit: { step: 'as-written', droppedProjects: [] } } },
+            { ...INPUTS, regenerate: { ...REGEN, manual_edits: [{ path: 'cv.summary', text: '' }] } },
+            { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer, body: {} } },
+          );
+          expect(emptied.checks.map((x: any) => x.detail)).toEqual(['The candidate emptied "cv.summary" by hand. Leave it empty.']);
           // A plain Generate has no locked edits: the checks are passed on unchanged.
           const plain = nodeWith(
             'Read check results',
@@ -2598,6 +2612,27 @@ describe('generate documents', () => {
       });
     });
 
+    test('nothing sent to Claude names the user', () => {
+      // Scanned: the prompts, the guidance, and every Code node's source with comments stripped (comments never
+      // reach Claude, and may keep the name). Strings and template literals stay, so Claude-bound text is covered.
+      const stripComments = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      const codeNodes = wf.nodes.filter((n: any) => typeof n.parameters?.jsCode === 'string');
+      const scanned = codeNodes.map((n: any) => n.name);
+      for (const name of ['Prepare inputs', 'Build writer request', 'Read check results', 'Build review request']) expect(scanned).toContain(name);
+      const NAMING = /(prayush|he|his|him)/i;
+      const v = values();
+      const texts: [string, string][] = [
+        ['writer_prompt', v.writer_prompt],
+        ['review_prompt', v.review_prompt],
+        ['writer_guidance', v.writer_guidance],
+        ...codeNodes.map((n: any): [string, string] => [n.name, stripComments(n.parameters.jsCode)]),
+      ];
+      for (const [label, text] of texts) expect(text.match(NAMING)?.[0] ?? null, label).toBeNull();
+      expect(WRITER_PROMPT).not.toMatch(NAMING);
+      expect(REVIEW_PROMPT).not.toMatch(NAMING);
+      expect(GUIDANCE).not.toMatch(NAMING);
+    });
+
     test('writer and reviewer prompts and guidance in the workflow match the repo files', () => {
       const v = values();
       expect(normalise(v.writer_prompt)).toBe(normalise(WRITER_PROMPT));
@@ -2615,7 +2650,7 @@ describe('generate documents', () => {
       for (const t of ['<manual_edits>', '<instruction>']) expect(REVIEW_PROMPT, t).toContain(t);
       expect(REVIEW_PROMPT).not.toContain('<current_version>');
       // An edited base CV goes without its file: both prompts say the facts alone are his base CV then.
-      const NO_FILE = 'His base CV file may be attached before these tags; when no file is attached, he has corrected these facts in the app and they alone are his base CV.';
+      const NO_FILE = 'Their base CV file may be attached before these tags; when no file is attached, they have corrected these facts in the app and they alone are their base CV.';
       for (const p of [WRITER_PROMPT, REVIEW_PROMPT]) {
         expect(p.split(/\r?\n/).find((l) => l.startsWith('- <base_cv_facts>:'))).toContain(NO_FILE);
       }
