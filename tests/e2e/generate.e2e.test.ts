@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import {
@@ -2619,7 +2619,7 @@ describe('generate documents', () => {
       const codeNodes = wf.nodes.filter((n: any) => typeof n.parameters?.jsCode === 'string');
       const scanned = codeNodes.map((n: any) => n.name);
       for (const name of ['Prepare inputs', 'Build writer request', 'Read check results', 'Build review request']) expect(scanned).toContain(name);
-      const NAMING = /(prayush|he|his|him)/i;
+      const NAMING = /\b(prayush|he|his|him)\b/i;
       const v = values();
       const texts: [string, string][] = [
         ['writer_prompt', v.writer_prompt],
@@ -2628,6 +2628,17 @@ describe('generate documents', () => {
         ...codeNodes.map((n: any): [string, string] => [n.name, stripComments(n.parameters.jsCode)]),
       ];
       for (const [label, text] of texts) expect(text.match(NAMING)?.[0] ?? null, label).toBeNull();
+      // Every prompt file, and the Code nodes of every workflow that calls Claude (same comment stripping).
+      const promptsDir = join(ROOT, 'n8n', 'prompts');
+      for (const f of readdirSync(promptsDir).filter((x) => x.endsWith('.md'))) {
+        expect(readFileSync(join(promptsDir, f), 'utf8').match(NAMING)?.[0] ?? null, f).toBeNull();
+      }
+      for (const name of ['base-documents-sync', 'generate-documents', 'job-intake-sync', 'job-match-scoring']) {
+        const other = JSON.parse(readFileSync(join(ROOT, 'n8n', 'workflows', name + '.json'), 'utf8'));
+        for (const n of other.nodes.filter((x: any) => typeof x.parameters?.jsCode === 'string')) {
+          expect(stripComments(n.parameters.jsCode).match(NAMING)?.[0] ?? null, name + ' / ' + n.name).toBeNull();
+        }
+      }
       expect(WRITER_PROMPT).not.toMatch(NAMING);
       expect(REVIEW_PROMPT).not.toMatch(NAMING);
       expect(GUIDANCE).not.toMatch(NAMING);
