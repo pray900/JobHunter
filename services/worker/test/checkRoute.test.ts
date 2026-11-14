@@ -77,15 +77,25 @@ test('check route returns the fitted cv and fit, and honours manualEdits', async
     return new Response(new Uint8Array(makePdf(xml.includes('Extra Project') ? 2 : 1)));
   };
   const a = app(gotenberg);
-  const res = await a.inject({ method: 'POST', url: '/generation/check', payload: { ...body, cv } });
+  const res = await a.inject({ method: 'POST', url: '/generation/check', payload: { ...body, cv, dropProjects: true } });
   const json = res.json();
   expect(json.fit).toEqual({ step: 0, droppedProjects: ['Extra Project'] });
   expect(json.cv.projects).toHaveLength(1);
   expect(json.checks.some((c: { code: string }) => c.code === 'cv_pages')).toBe(false);
 
-  const locked = await a.inject({ method: 'POST', url: '/generation/check', payload: { ...body, cv, manualEdits: [{ path: 'cv.projects[1].name', text: 'Extra Project' }] } });
+  const locked = await a.inject({ method: 'POST', url: '/generation/check', payload: { ...body, cv, dropProjects: true, manualEdits: [{ path: 'cv.projects[1].name', text: 'Extra Project' }] } });
   expect(locked.json().fit.droppedProjects).toEqual([]);
   expect(locked.json().cv.projects).toHaveLength(2);
   expect(locked.json().checks.some((c: { code: string }) => c.code === 'cv_pages')).toBe(true);
+  await a.close();
+});
+
+test('check route rejects a malformed manualEdits like any bad path', async () => {
+  const a = app();
+  for (const manualEdits of ['x', [1], [{ path: 1, text: 'a' }], [{ path: 'a' }], [{ path: 'a', text: 5 }]]) {
+    const res = await a.inject({ method: 'POST', url: '/generation/check', payload: { ...body, manualEdits } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'invalid_document', path: 'manualEdits' });
+  }
   await a.close();
 });

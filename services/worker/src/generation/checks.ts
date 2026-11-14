@@ -3,7 +3,7 @@ import path from 'node:path';
 import nspell from 'nspell';
 import { parseBannedPhrases, phraseRegex } from '../documents/checks.js';
 import { docxToPdf, readPdf, type FetchLike } from '../render/pdf.js';
-import { fitCv, type Measure } from '../render/fit.js';
+import { fitCv, fitLayout, type Measure } from '../render/fit.js';
 import { renderDocx } from '../templates/index.js';
 import { LAYOUT_STEPS, type CvLayout } from '../templates/layout.js';
 import {
@@ -65,6 +65,8 @@ export interface CheckInput {
   otherJobs: OtherJob[];
   // Prayush's manual edits: a project holding one is never dropped to make the CV fit.
   manualEdits?: { path: string; text: string | null }[];
+  // Only generation drops projects to fit one page. Anything else (a saved edit) is only shrunk, never cut. Default false.
+  dropProjects?: boolean;
 }
 
 export interface RunOptions {
@@ -530,10 +532,12 @@ function techNotInBaseChecks(cvSegs: Segment[], tech: string[], spell: Spell, ba
   return out;
 }
 
-function keywordChecks(input: CheckInput, usToAu: Map<string, string>): CheckResult[] {
+// `dropped` are the projects the fit left out: a keyword only they carried is not reported (the drop is shown to the reviewer).
+function keywordChecks(input: CheckInput, usToAu: Map<string, string>, dropped: TailoredCv['projects'] = []): CheckResult[] {
   const cvText = toAu(norm(textOfSegments(cvSegments(input.cv))), usToAu);
+  const droppedText = dropped.length > 0 ? toAu(norm(textOfSegments(cvSegments({ ...input.cv, projects: dropped }))), usToAu) : '';
   return input.keywordsCovered
-    .filter((k) => k.trim() !== '' && !has(cvText, toAu(norm(k), usToAu)))
+    .filter((k) => k.trim() !== '' && !has(cvText, toAu(norm(k), usToAu)) && !(droppedText !== '' && has(droppedText, toAu(norm(k), usToAu))))
     .map((k) => ({ code: 'keyword_not_found' as const, severity: 'hard' as const, doc: 'cv' as const, detail: `The keyword "${k}" is listed as covered but is not in the CV.` }));
 }
 
@@ -695,7 +699,9 @@ export async function runChecks(
     }
     return defaultRender(rawInput.templateId, 'cv', cv, rawInput.coverLetter, opts, layout);
   };
-  const fit = await fitCv(rawInput.cv, rawInput.manualEdits ?? [], measureCv);
+  const fit = rawInput.dropProjects === true
+    ? await fitCv(rawInput.cv, rawInput.manualEdits ?? [], measureCv)
+    : { ...(await fitLayout(rawInput.cv, measureCv)), cv: rawInput.cv, droppedProjects: [] as string[] };
   // Every other check runs on the fitted CV.
   const input: CheckInput = { ...rawInput, cv: fit.cv };
   const cvRender = { pages: fit.pages, text: fit.text };
@@ -735,7 +741,8 @@ export async function runChecks(
   checks.push(...techCasingChecks(all, config.tech, spell));
   checks.push(...factChecks(input, cvSegs, letterSegs, base));
   checks.push(...techNotInBaseChecks(cvSegs, config.tech, spell, base, config.usToAu));
-  checks.push(...keywordChecks(input, config.usToAu));
+  const droppedObjs = rawInput.cv.projects.filter((p) => fit.droppedProjects.includes(p.name) && !input.cv.projects.includes(p));
+  checks.push(...keywordChecks(input, config.usToAu, droppedObjs));
   checks.push(...skillChecks(input.cv, base, config.usToAu));
 
   const allowed = new Set<string>(base.words);

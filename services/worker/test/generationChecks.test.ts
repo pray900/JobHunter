@@ -98,7 +98,7 @@ describe('runChecks', () => {
       async (doc, d, cv, l) => (doc === 'cv' ? { pages: pagesFor(cv), text: (await okRender(doc, d, cv, l)).text } : okRender(doc, d, cv, l));
 
     test('drops a project to fit; other checks run on the fitted CV', async () => {
-      const r = await runChecks(input({ cv: cv3 }), opts({ render: renderBy((cv) => (cv.projects.length > 2 ? 2 : 1)) }));
+      const r = await runChecks(input({ cv: cv3, dropProjects: true }), opts({ render: renderBy((cv) => (cv.projects.length > 2 ? 2 : 1)) }));
       expect(r.cv.projects.map((p) => p.name)).toEqual(['Side Project', 'Second Project']);
       expect(r.fit).toEqual({ step: 0, droppedProjects: ['Zorbleflux Project'] });
       expect(find(r, 'cv_pages')).toHaveLength(0);
@@ -107,15 +107,34 @@ describe('runChecks', () => {
     });
 
     test('unfixable overflow keeps the CV and reports cv_pages', async () => {
-      const r = await runChecks(input({ cv: cv3 }), opts({ render: renderBy(() => 2) }));
+      const r = await runChecks(input({ cv: cv3, dropProjects: true }), opts({ render: renderBy(() => 2) }));
       expect(r.cv).toEqual(cv3);
       expect(r.fit.droppedProjects).toEqual([]);
       expect(find(r, 'cv_pages')[0]).toMatchObject({ severity: 'hard', detail: 'The CV is 2 pages even at the smallest layout; the limit is 1.' });
     });
 
+    test('without dropProjects the CV is never cut: cv_pages at the floor, full CV checked', async () => {
+      for (const over of [{}, { dropProjects: false }]) {
+        const r = await runChecks(input({ cv: cv3, ...over }), opts({ render: renderBy((cv) => (cv.projects.length > 2 ? 2 : 1)) }));
+        expect(r.cv).toEqual(cv3);
+        expect(r.fit.droppedProjects).toEqual([]);
+        expect(r.cvPages).toBe(2);
+        expect(find(r, 'cv_pages')[0]).toMatchObject({ severity: 'hard', detail: 'The CV is 2 pages even at the smallest layout; the limit is 1.' });
+        expect(find(r, 'possible_misspelling').some((c) => c.detail === 'misspellt')).toBe(true);
+      }
+    });
+
+    test('keyword_not_found ignores a keyword that only a dropped project carried', async () => {
+      const render = renderBy((cv) => (cv.projects.length > 2 ? 2 : 1));
+      const dropped = await runChecks(input({ cv: cv3, dropProjects: true, keywordsCovered: ['zorbleflux', 'nowhereword'] }), opts({ render }));
+      expect(find(dropped, 'keyword_not_found').map((c) => c.detail)).toEqual(['The keyword "nowhereword" is listed as covered but is not in the CV.']);
+      const kept = await runChecks(input({ cv: cv3, keywordsCovered: ['zorbleflux'] }), opts({ render: renderBy(() => 1) }));
+      expect(find(kept, 'keyword_not_found')).toEqual([]);
+    });
+
     test('manual edits protect a project', async () => {
       const manualEdits = [{ path: 'cv.projects[2].bullets[0]', text: 'A misspellt zorbleflux tool.' }];
-      const r = await runChecks(input({ cv: cv3, manualEdits }), opts({ render: renderBy((cv) => (cv.projects.length > 2 ? 2 : 1)) }));
+      const r = await runChecks(input({ cv: cv3, manualEdits, dropProjects: true }), opts({ render: renderBy((cv) => (cv.projects.length > 2 ? 2 : 1)) }));
       expect(r.cv).toEqual(cv3);
       expect(r.fit.droppedProjects).toEqual([]);
       expect(find(r, 'cv_pages')).toHaveLength(1);

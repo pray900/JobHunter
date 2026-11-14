@@ -36,6 +36,8 @@ function badCheckPath(b: Record<string, unknown>): string | null {
   if (!isObj(b.baseCv) || !isObj(b.baseCv.structured)) return 'baseCv';
   if (b.baseCoverLetter !== null && b.baseCoverLetter !== undefined && (!isObj(b.baseCoverLetter) || !isObj(b.baseCoverLetter.structured))) return 'baseCoverLetter';
   if (!Array.isArray(b.otherJobs) || !b.otherJobs.every((j) => isObj(j) && strOrNull(j.title) && strOrNull(j.employer) && strOrNull(j.advertiser))) return 'otherJobs';
+  if (b.manualEdits !== undefined && (!Array.isArray(b.manualEdits) || !b.manualEdits.every((e) => isObj(e) && typeof e.path === 'string' && strOrNull(e.text) && e.text !== undefined))) return 'manualEdits';
+  if (b.dropProjects !== undefined && typeof b.dropProjects !== 'boolean') return 'dropProjects';
   return null;
 }
 
