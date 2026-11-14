@@ -126,7 +126,8 @@ function isReasons(r: unknown): boolean {
     arrOf(
       r.factRulings,
       (f): f is Obj => isObj(f) && isStr(f.text) && oneOf(['honest_rephrase', 'invented'])(f.ruling) && isStr(f.why),
-    )
+    ) &&
+    (r.fit === undefined || (isObj(r.fit) && isStrArr(r.fit.droppedProjects)))
   );
 }
 

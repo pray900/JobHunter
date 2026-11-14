@@ -109,6 +109,19 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
         )}
       </section>
 
+      {reasons.fit && reasons.fit.droppedProjects.length > 0 && (
+        <section className="panel" aria-label="Fit to one page">
+          <h3>Fit to one page</h3>
+          <ul className="plain">
+            {reasons.fit.droppedProjects.map((p) => (
+              <li key={p} className="muted">
+                <span aria-hidden="true">ⓘ</span> Left out to fit one page: {p}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {reasons.stretches.length > 0 && (
         <section className="panel" aria-label="Stretches">
           <h3>Stretches</h3>

@@ -214,6 +214,7 @@ export interface VersionReasons {
   changes: { target: string; what: string; why: string }[];
   stretches: Stretch[];
   factRulings: { text: string; ruling: 'honest_rephrase' | 'invented'; why: string }[];
+  fit?: { droppedProjects: string[] };
 }
 
 export interface KeywordCoverage {

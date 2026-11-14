@@ -1487,7 +1487,7 @@ describe('generate documents', () => {
       for (const name of ['Ask Claude to write', 'Ask Claude to review']) {
         expect(nodeByName(name).parameters.options.timeout).toBe(280_000);
       }
-      expect(nodeByName('Run code checks').parameters.options.timeout).toBeLessThanOrEqual(60_000);
+      expect(nodeByName('Run code checks').parameters.options.timeout).toBe(180_000);
     });
 
     test('cost rows carry the run id and are not guarded (the spend is real)', () => {
@@ -2047,14 +2047,75 @@ describe('generate documents', () => {
       });
     });
 
+    describe('building the check request', () => {
+      const WRITTEN = {
+        run_id: 'r1',
+        round: 1,
+        writer: { templateId: 't', cv: { c: 1 }, coverLetter: { l: 1 }, keywordCoverage: { covered: ['k'] } },
+      };
+      const build = (regenerate: unknown) =>
+        new Function('$json', '$', code('Build check request'))({ id: 'r1', claimed_at: 'c', round: 1 }, (name: string) => ({
+          first: () => ({
+            json:
+              name === 'Prepare inputs'
+                ? { inputs: { job_id: 'j1', job_facts: { title: 'T', employer: 'E', advertiser: null }, job_ad: 'Ad', base_cv_facts: {}, base_cover_letter: null, other_jobs: [], regenerate } }
+                : WRITTEN,
+          }),
+        })).json.body;
+
+      test('a regenerate sends its manual edits; a plain Generate sends none; old path strings are left out', () => {
+        const edits = [{ path: 'cv.summary', text: 'S' }, { path: 'cv.x', text: null }];
+        expect(build({ instruction: 'i', manual_edits: [...edits, 'cv.old.path'] }).manualEdits).toEqual(edits);
+        expect(build(null).manualEdits).toEqual([]);
+      });
+    });
+
     describe('reading the check results', () => {
       const STATE_C = { run_id: 'r1', claimed_at: 't3', round: 2, job_id: 'j1', writer: { w: 1 }, body: {} };
       const readChecks = (res: object) =>
         new Function('$json', '$', code('Read check results'))(res, () => ({ first: () => ({ json: STATE_C }) })).json;
 
       test('checks that ran are passed on for review', () => {
-        const out = readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1 } });
+        const out = readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: { fitted: true }, fit: { step: 'as-written', droppedProjects: [] } } });
         expect(out).toMatchObject({ ok: true, valid: true, checks: [], cvPages: 1, letterPages: 1, run_id: 'r1', claimed_at: 't3', round: 2 });
+      });
+
+      test('a valid check replaces the round writer CV with the fitted CV and carries the fit', () => {
+        const fit = { step: 'drop-projects', droppedProjects: ['P5'] };
+        const out = readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: { fitted: true }, fit } });
+        expect(out.writer).toEqual({ w: 1, cv: { fitted: true }, fit });
+      });
+
+      test('a check answer without a usable fitted CV or drop list is not valid', () => {
+        const ok = { checks: [], cvPages: 1, letterPages: 1 };
+        const fit = { step: 'as-written', droppedProjects: [] };
+        for (const body of [ok, { ...ok, cv: { a: 1 } }, { ...ok, cv: 'x', fit }, { ...ok, cv: { a: 1 }, fit: { step: 's', droppedProjects: 'P5' } }, { ...ok, cv: { a: 1 }, fit: { step: 's', droppedProjects: [1] } }]) {
+          expect(readChecks({ statusCode: 200, body })).toMatchObject({ ok: false, valid: false });
+        }
+      });
+
+      test('the saved version has the fitted CV; only a drop adds reasons.fit', () => {
+        const fitted = { headline: 'fitted' };
+        const checked = readChecks({
+          statusCode: 200,
+          body: { checks: [], cvPages: 1, letterPages: 1, cv: fitted, fit: { step: 'drop-projects', droppedProjects: ['P5'] } },
+        });
+        const asRound = (c: any) => ({
+          round: 1,
+          writer: c.writer,
+          checks: [],
+          passed: true,
+          review: { verdict: 'pass', items: [], objections: [], factRulings: [], spellingRulings: [], stretches: [] },
+        });
+        const choose = (c: any) =>
+          new Function('$json', '$', code('Choose the version to save'))({ run_id: 'r1', claimed_at: 't9', rounds: [asRound(c)] }, (name: string) => ({
+            first: () => ({ json: name === 'Prepare inputs' ? { inputs: { cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null } } : {} }),
+          })).json;
+        const out = choose(checked);
+        expect(out.cv).toEqual(fitted);
+        expect(out.reasons.fit).toEqual({ droppedProjects: ['P5'] });
+        const none = choose(readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: fitted, fit: { step: 'as-written', droppedProjects: [] } } }));
+        expect(none.reasons).not.toHaveProperty('fit');
       });
 
       test('a writer document the worker rejects becomes a hard invalid_document round', () => {
@@ -2324,7 +2385,7 @@ describe('generate documents', () => {
           ];
           const out = nodeWith(
             'Read check results',
-            { statusCode: 200, body: { checks, cvPages: 1, letterPages: 1 } },
+            { statusCode: 200, body: { checks, cvPages: 1, letterPages: 1, cv: {}, fit: { step: "as-written", droppedProjects: [] } } },
             { ...INPUTS, regenerate: { ...REGEN, manual_edits: EDITS } },
             { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer, body: {} } },
           );
@@ -2347,7 +2408,7 @@ describe('generate documents', () => {
           // A plain Generate has no locked edits: the checks are passed on unchanged.
           const plain = nodeWith(
             'Read check results',
-            { statusCode: 200, body: { checks, cvPages: 1, letterPages: 1 } },
+            { statusCode: 200, body: { checks, cvPages: 1, letterPages: 1, cv: {}, fit: { step: "as-written", droppedProjects: [] } } },
             { ...INPUTS, regenerate: null },
             { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer, body: {} } },
           );
@@ -2436,7 +2497,7 @@ describe('generate documents', () => {
           const run = (edits: object[], linkWriter: object) =>
             nodeWith(
               'Read check results',
-              { statusCode: 200, body: { checks: [c('unknown_fact', 'hard', 'cv.contact.links[0]', 'The link "https://evil.example/x" is not in the base CV.')], cvPages: 1, letterPages: 1 } },
+              { statusCode: 200, body: { checks: [c('unknown_fact', 'hard', 'cv.contact.links[0]', 'The link "https://evil.example/x" is not in the base CV.')], cvPages: 1, letterPages: 1, cv: {}, fit: { step: "as-written", droppedProjects: [] } } },
               { ...INPUTS, regenerate: { ...REGEN, manual_edits: edits } },
               { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer: linkWriter, body: {} } },
             ).checks[0];

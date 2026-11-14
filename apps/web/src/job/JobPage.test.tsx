@@ -341,3 +341,27 @@ describe('JobPage', () => {
     expect(within(panel).getByRole('heading', { name: 'Skills' })).toBeInTheDocument();
   });
 });
+
+describe('JobPage: projects left out to fit one page', () => {
+  test('lists each project left out, with an info label', async () => {
+    m.fetchJobDetail.mockResolvedValue({
+      ...baseDetail,
+      version: { ...baseVersion, reasons: { ...baseVersion.reasons, fit: { droppedProjects: ['Handwritten Math Symbol Classification'] } } },
+    });
+    m.fetchVersions.mockResolvedValue([summary(1)]);
+    renderPage();
+    const region = await screen.findByRole('region', { name: 'Fit to one page' });
+    const items = within(region).getAllByRole('listitem');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toHaveTextContent('Left out to fit one page: Handwritten Math Symbol Classification');
+    expect(within(items[0]).getByText('ⓘ')).toBeInTheDocument();
+    expect(items[0]).toHaveClass('muted');
+  });
+
+  test('a version without fit shows no such line', async () => {
+    renderPage();
+    await screen.findByText('Strong Apex fit.');
+    expect(screen.queryByText(/Left out to fit one page/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Fit to one page' })).not.toBeInTheDocument();
+  });
+});
