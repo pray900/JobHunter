@@ -4,7 +4,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,9 +46,11 @@ beforeEach(() => {
   writeFileSync(join(skillDir, 'refs', 'extra.md'), 'extra\n');
 });
 
-function run(envContent, extraArgs = []) {
+function run(envContent, extraArgs = [], { readOnlyEnv = false } = {}) {
   const envFile = join(tmp, '.env');
+  if (existsSync(envFile)) chmodSync(envFile, 0o666);
   writeFileSync(envFile, envContent);
+  if (readOnlyEnv) chmodSync(envFile, 0o444);
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [SCRIPT, '--env', envFile, '--dir', skillDir, '--base-url', baseUrl, ...extraArgs], {
       env: { PATH: process.env.PATH },
@@ -134,4 +136,44 @@ test('stops when ANTHROPIC_API_KEY is empty', async () => {
   assert.equal(r.code, 1);
   assert.match(r.err, /ANTHROPIC_API_KEY/);
   assert.equal(requests.length, 0);
+});
+
+test('a CRLF .env keeps CRLF after an upload (appended line)', async () => {
+  const r = await run(`ANTHROPIC_API_KEY=${KEY}\r\nOTHER=1\r\n`);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.env, `ANTHROPIC_API_KEY=${KEY}\r\nOTHER=1\r\nCV_SKILL_ID=skill_01Abc\r\n`);
+});
+
+test('a CRLF .env keeps CRLF after an upload (replaced line)', async () => {
+  const r = await run(`ANTHROPIC_API_KEY=${KEY}\r\nCV_SKILL_ID=\r\nOTHER=1\r\n`);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.env, `ANTHROPIC_API_KEY=${KEY}\r\nCV_SKILL_ID=skill_01Abc\r\nOTHER=1\r\n`);
+});
+
+test('duplicate CV_SKILL_ID lines collapse to one with the new id', async () => {
+  const r = await run(`A=1\nCV_SKILL_ID=junk\nB=2\nCV_SKILL_ID=\nANTHROPIC_API_KEY=${KEY}\n`);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.env, `A=1\nB=2\nCV_SKILL_ID=skill_01Abc\nANTHROPIC_API_KEY=${KEY}\n`);
+});
+
+test('an option without a value exits 1 with usage', async () => {
+  const envFile = join(tmp, '.env');
+  writeFileSync(envFile, `ANTHROPIC_API_KEY=${KEY}\n`);
+  const code = await new Promise((resolve) => {
+    const c = spawn(process.execPath, [SCRIPT, '--base-url', baseUrl, '--env'], { env: { PATH: process.env.PATH } });
+    let err = '';
+    c.stderr.on('data', (d) => (err += d));
+    c.on('close', (k) => resolve({ k, err }));
+  });
+  assert.equal(code.k, 1);
+  assert.match(code.err, /--env/);
+  assert.match(code.err, /Usage/i);
+  assert.equal(requests.length, 0);
+});
+
+test('if .env cannot be written, the new skill id is still shown and exit is 1', async () => {
+  const r = await run(`ANTHROPIC_API_KEY=${KEY}\n`, [], { readOnlyEnv: true });
+  assert.equal(r.code, 1);
+  assert.match(r.out + r.err, /skill_01Abc/);
+  assert.ok(!(r.out + r.err).includes(KEY));
 });

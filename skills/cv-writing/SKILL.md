@@ -40,7 +40,7 @@ Keywords come from the ad's duties, tools, qualifications, soft skills and years
 - Place a keyword where it belongs in a true sentence: the headline, the summary, the skills group, or a bullet that actually did that work. One honest use in context counts for more than five in a list.
 - Soft skills are keywords too ("stakeholder management", "mentoring", "communication"). Show them through a bullet ("Mentored two new starters through their first quarter") instead of writing the label alone. Use the label where it fits naturally.
 - Years terms ("3+ years") only appear when the facts support them, in the same words the facts use.
-- Spell a term the way the ad does. If the ad writes the full name and the acronym ("Customer Relationship Management (CRM)"), write the full name and acronym once, then use either. If the ad uses only the acronym, use the acronym.
+- Spell a term the way the ad does (in Australian spelling). If the ad writes the full name and the acronym ("Customer Relationship Management (CRM)"), write the full name and acronym once, then use either. If the ad uses only the acronym, use the acronym.
 - Never stuff. No keyword lists in prose, no repeating a term to raise a count, no hidden or white text. A keyword that the facts cannot support stays out of the CV.
 
 ## Result and scale figures
@@ -70,7 +70,7 @@ A bullet with a good scale but no outcome can still be strong: "Triaged 25 to 30
 
 The letter is short, specific and human. It is not the CV in paragraphs.
 
-1. Open on the employer's need. Say what the role needs, from the ad, and why that fits the person. For example: "Your team is looking for someone to keep the month-end close on time while the entity count grows. That is the work I have been doing for the last two years." Do not open with "I am writing to apply" or a line about being excited.
+1. Open on the employer's need. Say what the role needs, from the ad, and why that fits the person. For example: "Your team is looking for someone to keep the month-end close on time while the entity count grows. That is the work I do every month at my current employer." Do not open with "I am writing to apply" or a line about being excited.
 2. One proof paragraph. Pick the one or two facts that matter most for this job and tell them as a small story: the situation, what the person did, what came of it. Use a figure only from the facts, the ad or the CV just written.
 3. If the facts and the ad support it, a short paragraph on fit with the employer. Only say what the ad or notes say about the company. Do not guess at its products, values or news.
 4. A plain close. Say the person would welcome a conversation, and thank the reader for their time. No pressure, no flattery, no summary of what was just said.

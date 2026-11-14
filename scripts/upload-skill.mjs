@@ -9,9 +9,15 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const args = process.argv.slice(2);
+const usage = "Usage: node scripts/upload-skill.mjs [--env .env] [--dir skills/cv-writing] [--base-url https://api.anthropic.com]";
 const opt = (name, fallback) => {
   const i = args.indexOf(name);
-  return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+  if (i < 0) return fallback;
+  if (!args[i + 1] || args[i + 1].startsWith("--")) {
+    console.error(`${name} needs a value.\n${usage}`);
+    process.exit(1);
+  }
+  return args[i + 1];
 };
 const envFile = resolve(opt('--env', join(root, '.env')));
 const dir = resolve(opt('--dir', join(root, 'skills', 'cv-writing')));
@@ -31,10 +37,16 @@ function envValue(text, key) {
   return v;
 }
 
+// Keeps the file's line endings. Replaces the last KEY= line and drops any earlier duplicates.
 function setEnvValue(text, key, value) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(/\r?\n/);
-  if (lines.some((l) => l.startsWith(key + '='))) return lines.map((l) => (l.startsWith(key + '=') ? `${key}=${value}` : l)).join('\n');
-  return text + (text === '' || text.endsWith('\n') ? '' : '\n') + `${key}=${value}\n`;
+  let last = -1;
+  lines.forEach((l, i) => { if (l.startsWith(key + '=')) last = i; });
+  if (last >= 0) {
+    return lines.flatMap((l, i) => (i === last ? [key + '=' + value] : l.startsWith(key + '=') ? [] : [l])).join(eol);
+  }
+  return text + (text === '' || text.endsWith('\n') ? '' : eol) + key + '=' + value + eol;
 }
 
 function listFiles(base) {
@@ -86,7 +98,13 @@ if (!res.ok) {
 if (update) {
   console.log(`Skill ${existing}: new version ${body.id}`);
 } else {
-  if (!SKILL_ID.test(String(body.id))) fail('The API answer had no usable skill id.');
-  writeFileSync(envFile, setEnvValue(envText, 'CV_SKILL_ID', body.id));
-  console.log(`Skill ${body.id} created (version ${body.latest_version_id}). CV_SKILL_ID saved in ${basename(envFile)}.`);
+  if (!SKILL_ID.test(String(body.id))) fail("The API answer had no usable skill id.");
+  // Print the id first, so a created skill is never lost if the env file cannot be written.
+  console.log(`Skill ${body.id} created (version ${body.latest_version_id}).`);
+  try {
+    writeFileSync(envFile, setEnvValue(envText, "CV_SKILL_ID", body.id));
+    console.log(`CV_SKILL_ID saved in ${basename(envFile)}.`);
+  } catch (e) {
+    fail(`Could not write CV_SKILL_ID to ${basename(envFile)} (${e.code || e.name}). Add this line yourself: CV_SKILL_ID=${body.id}`);
+  }
 }
