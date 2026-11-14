@@ -118,3 +118,19 @@
   - n8n's failed executions list shows nothing new.
   Record the cost.
 - [ ] **Step 4:** Add a short "As built" to this plan and commit `docs: plan 8 as built`.
+
+### Amendment (Prayush, 2026-11-14, after the real run failed)
+
+**What happened:** the first real Generate with the skill on failed all 3 attempts with HTTP 400: "The compiled grammar is too large… Simplify your tool schemas or reduce the number of strict tools." No cost; skill switched off at once by blanking `CV_SKILL_ID`.
+
+**Cause, confirmed with free rejected probes:** the code-execution tool, which Agent Skills require, plus the writer's full answer schema is over the API's grammar limit, even with no skill attached. The earlier probes passed only because they used a tiny schema. Only removing a whole section (`stretches`, `changes`, `keywordCoverage`, `coverLetter` or `projects`) fits. Reshaping a section does not, and even a removal only just fits.
+
+**Decision (Prayush): inline the guidance instead of using an API skill.**
+- `skills/cv-writing/SKILL.md` stays in the repo as the single source.
+- Its body (without the frontmatter) is sent with every writer call, after the writer prompt, under a heading "CV-writing guidance". Its workflow copy is kept identical to the file, with a test enforcing that, exactly like the prompt copies.
+- No tool, no container, no beta header, no `CV_SKILL_ID`. The writer's answer schema is unchanged.
+- The prompt line becomes: "The CV-writing guidance after this prompt is craft advice; where it differs from this prompt, this prompt wins."
+- Removed: `skillParts` and the skill request parts, `CV_SKILL_ID` (compose, test compose, `.env.example`), `scripts/upload-skill.mjs` and its tests and `npm` script, the stub's skill branch, and the README's upload instructions.
+- Kept: reading the writer's answer from the last text block, the `pause_turn` test, and the stub's content/stop-reason scripting. All are harmless and stricter.
+- Cost: about 1.6k extra input tokens per writer call, always read. That is cheaper than the skill route's ~6k.
+- The skill already uploaded to Prayush's Anthropic account is left there, unused, until he asks for it to be deleted.
