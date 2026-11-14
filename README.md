@@ -155,11 +155,21 @@ Reading the job folder every 30 seconds costs nothing, and the documents sync on
 
 The worker renders tailored CVs and cover letters with the Standard ATS template (A4, one column, Arial, no tables or text boxes) to Word through the `docx` library. PDFs are made by converting that Word file with Gotenberg (`gotenberg/gotenberg:8.21.1`), a fifth container with no host port and `restart: unless-stopped`. The worker finds it through `GOTENBERG_URL` (default `http://gotenberg:3000`). If Gotenberg is down, the PDF request answers `502 pdf_render_failed` and Word output still works.
 
+## CV-writing skill (optional)
+
+`skills/cv-writing/` is an Anthropic Agent Skill with craft notes for the writer (bullets as responsibility plus outcome, keyword placement, ATS-safe wording, result figures, cover letter structure). The writer prompt still holds every must-follow rule; the skill only adds know-how and says the prompt wins. It is off until you upload it.
+
+- **Upload or update:** put `ANTHROPIC_API_KEY` in `.env`, then run `node scripts/upload-skill.mjs`. The first run creates the skill and saves `CV_SKILL_ID=skill_...` in `.env`. Every later run uploads a new version of the same skill (the writer uses `latest`, so the next Generate picks it up). Then run `docker compose up -d` so n8n sees the new `CV_SKILL_ID`. The script prints only the skill id and version, never the key. Options: `--env`, `--dir`, `--base-url`.
+- **Turn it off:** blank out `CV_SKILL_ID` in `.env` (`CV_SKILL_ID=`), then run `docker compose up -d`. A blank or malformed id means no skill.
+- **Cost:** when the writer reads the skill, its input roughly doubles (about 4k to 10k tokens per call in a measured probe). Code execution also bills container time by the hour beyond Anthropic's free allowance. That container time is not in `cost_log`, so check it in the Anthropic console.
+- **Retention:** skill files are kept under Anthropic's standard retention, not zero data retention. The skill holds only general writing advice, with no personal data.
+
 ## Tests
 
 Run the commands from the project folder.
 
 - Unit tests: start the test database with `docker compose -f docker-compose.test.yml up -d postgres`, run `npm install`, then `npm test`. It runs the worker and web tests; the worker tests need that test database (`TEST_DATABASE_URL`, default `postgres://jobhunter:test@localhost:55433/jobhunter`), the web tests alone (`npm test -w apps/web`) need nothing. Stop the database with `docker compose -f docker-compose.test.yml down`.
+- Script tests: `npm run test:scripts` (upload script, against a local fake server; also part of `npm test`).
 - End-to-end: `npm run e2e` (needs Docker running; it starts and removes its own separate stack).
 
 The test stack (`docker-compose.test.yml`, project `jobhunter-test`) uses host ports 55433 (postgres), 55678 (n8n), 58080 (web) and 58081 (fake Anthropic), all bound to 127.0.0.1, and `./.tmp/e2e-joblisting` as the job folder; its uploaded documents go to its own volume (`documents_test_data`). It never touches your real data or key.
