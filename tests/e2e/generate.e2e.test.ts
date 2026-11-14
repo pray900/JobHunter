@@ -225,9 +225,9 @@ describe('generate documents', () => {
       expect(tag(text, 'company_notes')).toBe('Notes about the company.');
     }
     expect(sentText(w.body)).not.toContain('<previous_round>');
-    // The reviewer gets the writer's output and the code checks.
+    // The reviewer gets the writer's output (with the CV as fitted by the checks) and the code checks.
     const docs = JSON.parse(tag(sentText(r.body), 'documents'));
-    expect(docs).toEqual(await canned('write_documents'));
+    expect(docs).toEqual({ ...(await canned('write_documents')), fit: { step: 0, droppedProjects: [] } });
     const checks = JSON.parse(tag(sentText(r.body), 'code_checks'));
     expect(checks).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'missing_work_rights' })]));
     const [v] = await versions(jobId);
@@ -1152,7 +1152,7 @@ describe('generate documents', () => {
       expect(instructionOf(text)).toBe('Make the summary shorter.');
       expect(JSON.parse(tag(text, 'manual_edits'))).toEqual(LOCKED);
       const w = await canned('write_documents');
-      expect(JSON.parse(tag(text, 'documents'))).toEqual({ ...w, cv: { ...w.cv, summary: EDIT } });
+      expect(JSON.parse(tag(text, 'documents'))).toEqual({ ...w, cv: { ...w.cv, summary: EDIT }, fit: { step: 0, droppedProjects: [] } });
       expect(text).not.toContain('<current_version>');
       const writerLine = WRITER_PROMPT.split(/\r?\n/).find((l) => l.startsWith('You write a tailored CV'))!;
       const regenLine = WRITER_PROMPT.split(/\r?\n/).find((l) => l.includes('<current_version>'))!;
