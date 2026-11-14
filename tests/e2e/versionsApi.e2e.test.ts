@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import pg from 'pg';
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 import { CV, LETTER } from '../../services/worker/test/fixtures';
-import { N8N_URL, SYNC_HEADERS, WEB_URL, db, getFacts, makePdf, putDocument, resetState, saveFacts, stub } from './lib';
+import { N8N_URL, ROOT, SYNC_HEADERS, WEB_URL, db, getFacts, makePdf, putDocument, resetState, saveFacts, stub } from './lib';
 
 const OWNER = '00000000-0000-0000-0000-000000000001';
 const DB_URL = 'postgres://jobhunter:test@localhost:55433/jobhunter';
@@ -61,6 +63,20 @@ async function seed(jobId: string, o: SeedOpts): Promise<string> {
 const rows = (jobId: string) =>
   db.query(`select * from document_versions where job_id=$1 order by version_no`, [jobId]);
 const noClaude = async () => expect(await stub.requests()).toEqual([]);
+
+describe('versions API workflow definition', () => {
+  const wf = JSON.parse(readFileSync(join(ROOT, 'n8n', 'workflows', 'versions-api.json'), 'utf8'));
+  const node = (name: string) => wf.nodes.find((n: { name: string }) => n.name === name);
+
+  test('a saved edit is only shrunk to fit, never cut: it does not ask the worker to drop projects', () => {
+    const code = node('Build edit check request').parameters.jsCode as string;
+    expect(code).not.toMatch(/dropProjects\s*:\s*true/);
+  });
+
+  test('the edit check allows for the fit measuring (90 s)', () => {
+    expect(node('Run code checks (edit)').parameters.options.timeout).toBe(90_000);
+  });
+});
 
 describe('versions API', () => {
   beforeEach(async () => {

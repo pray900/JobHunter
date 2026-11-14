@@ -2063,6 +2063,10 @@ describe('generate documents', () => {
           }),
         })).json.body;
 
+      test('generation asks the worker to drop projects to fit', () => {
+        expect(build(null).dropProjects).toBe(true);
+      });
+
       test('a regenerate sends its manual edits; a plain Generate sends none; old path strings are left out', () => {
         const edits = [{ path: 'cv.summary', text: 'S' }, { path: 'cv.x', text: null }];
         expect(build({ instruction: 'i', manual_edits: [...edits, 'cv.old.path'] }).manualEdits).toEqual(edits);
@@ -2076,20 +2080,20 @@ describe('generate documents', () => {
         new Function('$json', '$', code('Read check results'))(res, () => ({ first: () => ({ json: STATE_C }) })).json;
 
       test('checks that ran are passed on for review', () => {
-        const out = readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: { fitted: true }, fit: { step: 'as-written', droppedProjects: [] } } });
+        const out = readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: { fitted: true }, fit: { step: 0, droppedProjects: [] } } });
         expect(out).toMatchObject({ ok: true, valid: true, checks: [], cvPages: 1, letterPages: 1, run_id: 'r1', claimed_at: 't3', round: 2 });
       });
 
       test('a valid check replaces the round writer CV with the fitted CV and carries the fit', () => {
-        const fit = { step: 'drop-projects', droppedProjects: ['P5'] };
+        const fit = { step: 1, droppedProjects: ['P5'] };
         const out = readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: { fitted: true }, fit } });
         expect(out.writer).toEqual({ w: 1, cv: { fitted: true }, fit });
       });
 
       test('a check answer without a usable fitted CV or drop list is not valid', () => {
         const ok = { checks: [], cvPages: 1, letterPages: 1 };
-        const fit = { step: 'as-written', droppedProjects: [] };
-        for (const body of [ok, { ...ok, cv: { a: 1 } }, { ...ok, cv: 'x', fit }, { ...ok, cv: { a: 1 }, fit: { step: 's', droppedProjects: 'P5' } }, { ...ok, cv: { a: 1 }, fit: { step: 's', droppedProjects: [1] } }]) {
+        const fit = { step: 0, droppedProjects: [] };
+        for (const body of [ok, { ...ok, cv: { a: 1 } }, { ...ok, cv: 'x', fit }, { ...ok, cv: { a: 1 }, fit: { step: 0, droppedProjects: 'P5' } }, { ...ok, cv: { a: 1 }, fit: { step: 0, droppedProjects: [1] } }]) {
           expect(readChecks({ statusCode: 200, body })).toMatchObject({ ok: false, valid: false });
         }
       });
@@ -2098,7 +2102,7 @@ describe('generate documents', () => {
         const fitted = { headline: 'fitted' };
         const checked = readChecks({
           statusCode: 200,
-          body: { checks: [], cvPages: 1, letterPages: 1, cv: fitted, fit: { step: 'drop-projects', droppedProjects: ['P5'] } },
+          body: { checks: [], cvPages: 1, letterPages: 1, cv: fitted, fit: { step: 1, droppedProjects: ['P5'] } },
         });
         const asRound = (c: any) => ({
           round: 1,
@@ -2114,8 +2118,48 @@ describe('generate documents', () => {
         const out = choose(checked);
         expect(out.cv).toEqual(fitted);
         expect(out.reasons.fit).toEqual({ droppedProjects: ['P5'] });
-        const none = choose(readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: fitted, fit: { step: 'as-written', droppedProjects: [] } } }));
+        const none = choose(readChecks({ statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: fitted, fit: { step: 0, droppedProjects: [] } } }));
         expect(none.reasons).not.toHaveProperty('fit');
+      });
+
+      describe('the drop note survives to the saved version', () => {
+        const review = { verdict: 'pass', items: [], objections: [], factRulings: [], spellingRulings: [], stretches: [] };
+        const cvOf = (...names: string[]) => ({ projects: names.map((name) => ({ name, bullets: ['b'] })) });
+        const round = (n: number, cv: object, dropped: string[], passed: boolean) => ({
+          round: n,
+          writer: { cv, fit: { step: 0, droppedProjects: dropped } },
+          checks: [],
+          passed,
+          review: passed ? review : { ...review, verdict: 'fail', items: [{ id: 'x', pass: false, note: 'n' }] },
+        });
+        const choose = (rounds: object[], regenerate: object | null = null) =>
+          new Function('$json', '$', code('Choose the version to save'))({ run_id: 'r1', claimed_at: 't9', rounds }, (name: string) => ({
+            first: () => ({ json: name === 'Prepare inputs' ? { inputs: { cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null, regenerate } } : {} }),
+          })).json;
+
+        test('a drop in an earlier round is kept when the saved round fits without dropping', () => {
+          const out = choose([round(1, cvOf('P1', 'P2'), ['P5'], false), round(2, cvOf('P1', 'P2'), [], true)]);
+          expect(out.cv.projects.map((p: { name: string }) => p.name)).toEqual(['P1', 'P2']);
+          expect(out.reasons.fit).toEqual({ droppedProjects: ['P5'] });
+        });
+
+        test('a name that is back in the saved CV is not listed; names are de-duplicated in first-seen order', () => {
+          const out = choose([round(1, cvOf('P1'), ['P5', 'P4'], false), round(2, cvOf('P1', 'P5'), ['P4', 'P3'], true)]);
+          expect(out.reasons.fit).toEqual({ droppedProjects: ['P4', 'P3'] });
+          const none = choose([round(1, cvOf('P1', 'P5'), ['P5'], false), round(2, cvOf('P1', 'P5'), [], true)]);
+          expect(none.reasons).not.toHaveProperty('fit');
+        });
+
+        test('rounds after the saved one do not add to the note', () => {
+          const out = choose([round(1, cvOf('P1'), [], true), round(2, cvOf('P1'), ['P9'], false)]);
+          expect(out.reasons).not.toHaveProperty('fit');
+        });
+
+        test('a regenerate keeps what the version it started from had dropped, unless it is back', () => {
+          const regenerate = { instruction: 'i', manual_edits: [], previous_dropped: ['P6', 'P1'] };
+          const out = choose([round(1, cvOf('P1', 'P2'), [], true)], regenerate);
+          expect(out.reasons.fit).toEqual({ droppedProjects: ['P6'] });
+        });
       });
 
       test('a writer document the worker rejects becomes a hard invalid_document round', () => {
@@ -2255,7 +2299,7 @@ describe('generate documents', () => {
         // The stored version itself is not changed by the "" mapping.
         expect(REGEN.current_version.cv.workRights).toBeNull();
         // The previous round's `fit` (the code's own record) is not part of the documents sent back to the writer.
-        const withFit = { round: 1, writer: { cv: { name: 'N' }, coverLetter: { name: 'N' }, fit: { step: 'as-written', droppedProjects: ['P'] } }, checks: [], review: { verdict: 'fail', items: [], objections: [], factRulings: [], spellingRulings: [] }, passed: false };
+        const withFit = { round: 1, writer: { cv: { name: 'N' }, coverLetter: { name: 'N' }, fit: { step: 0, droppedProjects: ['P'] } }, checks: [], review: { verdict: 'fail', items: [], objections: [], factRulings: [], spellingRulings: [] }, passed: false };
         const fitText = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't2', round: 2, rounds: [withFit] }, { ...INPUTS, regenerate: null }));
         expect(JSON.parse(tagOf(fitText, 'previous_round')!).documents).toEqual({ cv: { name: 'N' }, coverLetter: { name: 'N' } });
         expect(fitText).not.toMatch(/"fit"|droppedProjects/);
@@ -2350,7 +2394,9 @@ describe('generate documents', () => {
           // An old path-only entry is read as the text there now; an edit follows its text within its list; an
           // edit whose text is not in the version, or anything that is not { path, text }, is dropped.
           manual_edits: [{ path: 'cv.summary', text: '' }, { path: 'cv.experience[0].bullets[0]', text: 'b' }],
+          previous_dropped: [],
         });
+        expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, { ...fv, reasons: { fit: { droppedProjects: ['P5', 7] } } }).inputs.regenerate.previous_dropped).toEqual(['P5']);
         expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, { ...fv, reasons: {} }).inputs.regenerate.manual_edits).toEqual([]);
         const unusable = { ready: false, final: true, error: 'The version to regenerate from could not be used.' };
         expect(prepare({ instruction: 'Shorter.', from_version_id: null }, null)).toMatchObject(unusable);
@@ -2390,7 +2436,7 @@ describe('generate documents', () => {
           ];
           const out = nodeWith(
             'Read check results',
-            { statusCode: 200, body: { checks, cvPages: 1, letterPages: 1, cv: {}, fit: { step: "as-written", droppedProjects: [] } } },
+            { statusCode: 200, body: { checks, cvPages: 1, letterPages: 1, cv: {}, fit: { step: 0, droppedProjects: [] } } },
             { ...INPUTS, regenerate: { ...REGEN, manual_edits: EDITS } },
             { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer, body: {} } },
           );
@@ -2414,7 +2460,7 @@ describe('generate documents', () => {
           // An emptied field: told in plain words, without the user's name.
           const emptied = nodeWith(
             'Read check results',
-            { statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: {}, fit: { step: 'as-written', droppedProjects: [] } } },
+            { statusCode: 200, body: { checks: [], cvPages: 1, letterPages: 1, cv: {}, fit: { step: 0, droppedProjects: [] } } },
             { ...INPUTS, regenerate: { ...REGEN, manual_edits: [{ path: 'cv.summary', text: '' }] } },
             { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer, body: {} } },
           );
@@ -2422,7 +2468,7 @@ describe('generate documents', () => {
           // A plain Generate has no locked edits: the checks are passed on unchanged.
           const plain = nodeWith(
             'Read check results',
-            { statusCode: 200, body: { checks, cvPages: 1, letterPages: 1, cv: {}, fit: { step: "as-written", droppedProjects: [] } } },
+            { statusCode: 200, body: { checks, cvPages: 1, letterPages: 1, cv: {}, fit: { step: 0, droppedProjects: [] } } },
             { ...INPUTS, regenerate: null },
             { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer, body: {} } },
           );
@@ -2511,7 +2557,7 @@ describe('generate documents', () => {
           const run = (edits: object[], linkWriter: object) =>
             nodeWith(
               'Read check results',
-              { statusCode: 200, body: { checks: [c('unknown_fact', 'hard', 'cv.contact.links[0]', 'The link "https://evil.example/x" is not in the base CV.')], cvPages: 1, letterPages: 1, cv: {}, fit: { step: "as-written", droppedProjects: [] } } },
+              { statusCode: 200, body: { checks: [c('unknown_fact', 'hard', 'cv.contact.links[0]', 'The link "https://evil.example/x" is not in the base CV.')], cvPages: 1, letterPages: 1, cv: {}, fit: { step: 0, droppedProjects: [] } } },
               { ...INPUTS, regenerate: { ...REGEN, manual_edits: edits } },
               { 'Build check request': { run_id: 'r1', claimed_at: 't1', round: 1, job_id: 'j1', writer: linkWriter, body: {} } },
             ).checks[0];
