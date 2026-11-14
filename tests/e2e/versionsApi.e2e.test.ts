@@ -240,11 +240,11 @@ describe('versions API', () => {
     await withCv();
     const jobId = await addJob();
     const v1 = await seed(jobId, { versionNo: 1 });
-    const cv = { ...CV, experience: [{ ...CV.experience[0], bullets: [...CV.experience[0].bullets, 'Led 4711 engineers across five continents.'] }] };
+    const cv = { ...CV, experience: [{ ...CV.experience[0], bullets: [...CV.experience[0].bullets, 'Led engineers across five continents in March 2031.'] }] };
     const res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv, coverLetter: LETTER });
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
-    const hit = body.checks.find((c: any) => c.code === 'unknown_fact' && c.severity === 'hard' && String(c.detail).includes('4711'));
+    const hit = body.checks.find((c: any) => c.code === 'unknown_fact' && c.severity === 'hard' && String(c.detail).includes('March 2031'));
     expect(hit).toBeTruthy();
     expect((await rows(jobId))[1].checks).toEqual(body.checks);
     // The version can still be downloaded.
@@ -571,13 +571,13 @@ describe('versions API', () => {
     expect(leaks.some((d) => d.includes('Globexia Holdings') && d.includes('another job employer'))).toBe(true);
     expect(leaks.some((d) => d.includes('Initech Pty') && d.includes('previousTarget.company'))).toBe(true);
     // A fact only the CURRENT base CV has is not flagged.
-    const cv = { ...CV, experience: [{ ...CV.experience[0], bullets: ['Led 4711 engineers across five continents.'] }] };
+    const cv = { ...CV, experience: [{ ...CV.experience[0], bullets: ['Led engineers across five continents in March 2031.'] }] };
     const flagged = async () =>
       (((await (await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv, coverLetter: LETTER })).json()) as any).checks as any[]).some(
-        (c) => c.code === 'unknown_fact' && String(c.detail).includes('4711'),
+        (c) => c.code === 'unknown_fact' && String(c.detail).includes('March 2031'),
       );
     expect(await flagged()).toBe(true);
-    await db.query(`update base_documents set structured = structured || '{"note":"Led 4711 engineers"}'::jsonb where kind='cv' and active`);
+    await db.query(`update base_documents set structured = structured || '{"note":"Led engineers in March 2031"}'::jsonb where kind='cv' and active`);
     expect(await flagged()).toBe(false);
   }, 90_000);
 

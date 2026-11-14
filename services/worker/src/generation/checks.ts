@@ -395,10 +395,14 @@ const unknown = (doc: DocKind, where: string, detail: string): CheckResult => ({
 const PROSE_URL = /https?:\/\/[^\s)>\]"']+/gi;
 
 // Numbers and dates a text may use: the base CV's; the letter may also use the job ad's own.
+// Experience and project bullets may carry new result or scale figures (the writer lists them as stretches), so only their dates are checked.
+const BULLET_WHERE = /^cv\.(?:experience|projects)\[\d+\]\.bullets\[\d+\]$/;
+const isBullet = (seg: Segment): boolean => seg.doc === 'cv' && BULLET_WHERE.test(seg.where);
+
 function numberAndDateFacts(seg: Segment, text: string, base: BaseFacts, extra?: { numbers: Set<string>; dates: Set<string> }): CheckResult[] {
   const out: CheckResult[] = [];
   const seenNum = new Set<string>();
-  for (const n of numbers(text)) {
+  for (const n of isBullet(seg) ? [] : numbers(text)) {
     if (base.numberKeys.has(n.key) || extra?.numbers.has(n.key) || seenNum.has(n.key)) continue;
     seenNum.add(n.key);
     out.push(unknown(seg.doc, seg.where, `The number "${n.shown}" is not in the base CV.`));
@@ -479,12 +483,17 @@ function factChecks(input: CheckInput, cvSegs: Segment[], letterSegs: Segment[],
   }
   const jobText = [input.job.title, input.job.employer, input.job.advertiser, input.job.rawText].filter((t): t is string => !!t).join('\n');
   const jobAllowed = { numbers: new Set(numbers(stripLinks(jobText)).map((n) => n.key)), dates: new Set(monthYears(jobText).map((m) => m.key)) };
+  // The letter may also repeat a number from the tailored CV's bullets.
+  const letterAllowed = {
+    numbers: new Set([...jobAllowed.numbers, ...cvSegs.filter(isBullet).flatMap((b) => numbers(stripLinks(b.text)).map((n) => n.key))]),
+    dates: jobAllowed.dates,
+  };
   const jobLinkKeys = new Set(linkKeysIn(jobText));
   for (const seg of [...cvSegs, ...letterSegs]) {
     if (seg.kind !== 'body') continue;
     // Role and education dates are compared with their own base entry in roleFacts.
     const text = stripLinks(seg.text);
-    if (!seg.field) out.push(...numberAndDateFacts(seg, text, base, seg.doc === 'cover_letter' ? jobAllowed : undefined));
+    if (!seg.field) out.push(...numberAndDateFacts(seg, text, base, seg.doc === 'cover_letter' ? letterAllowed : undefined));
     for (const url of seg.text.match(PROSE_URL) ?? []) {
       const clean = url.replace(/[.,;:]+$/, '');
       const key = linkKey(clean);

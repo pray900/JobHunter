@@ -208,6 +208,47 @@ describe('runChecks', () => {
     expect(find(ok, 'unknown_fact')).toEqual([]);
   });
 
+  describe('numbers and dates (Plan 7)', () => {
+    const withBullets = (bullets: string[], projectBullets = ['Small CLI tool.']): TailoredCv => ({
+      ...goodCv,
+      experience: [{ ...goodCv.experience[0], bullets }],
+      projects: [{ name: 'Side Project', bullets: projectBullets } as TailoredCv['projects'][number]],
+    });
+
+    test('a new number in an experience bullet or a project bullet passes', async () => {
+      const r = await runChecks(
+        input({ cv: withBullets(['Built an invoicing service used by 12 teams.'], ['Small CLI tool saving 30 minutes a week.']) }),
+        opts(),
+      );
+      expect(find(r, 'unknown_fact')).toEqual([]);
+    });
+
+    test('the same new number in the summary or headline is still a hard fail', async () => {
+      const summary = await runChecks(input({ cv: { ...goodCv, summary: 'Engineer who led 12 teams.' } }), opts());
+      expect(find(summary, 'unknown_fact').map((c) => [c.where, c.severity])).toEqual([['cv.summary', 'hard']]);
+      const headline = await runChecks(input({ cv: { ...goodCv, headline: 'Backend Engineer, 12 years' } }), opts());
+      expect(find(headline, 'unknown_fact').map((c) => [c.where, c.severity])).toEqual([['cv.headline', 'hard']]);
+    });
+
+    test('a new month-year date in a bullet is still a hard fail', async () => {
+      const r = await runChecks(input({ cv: withBullets(['Built an invoicing service in Jun 2023.']) }), opts());
+      const hits = find(r, 'unknown_fact');
+      expect(hits.map((c) => [c.where, c.severity])).toEqual([['cv.experience[0].bullets[0]', 'hard']]);
+      expect(hits[0].detail).toMatch(/Jun 2023/);
+    });
+
+    test('a letter may repeat a number from a CV bullet, but not one found nowhere', async () => {
+      const cv = withBullets(['Built an invoicing service used by 12 teams.']);
+      const ok = await runChecks(input({ cv, coverLetter: letter(['I built an invoicing service used by 12 teams.']) }), opts());
+      expect(find(ok, 'unknown_fact')).toEqual([]);
+      const bad = await runChecks(input({ cv, coverLetter: letter(['I built a service used by 12 teams and cut costs by 55%.']) }), opts());
+      const hits = find(bad, 'unknown_fact');
+      expect(hits.map((c) => c.doc)).toEqual(['cover_letter']);
+      expect(hits[0].detail).toMatch(/55/);
+      expect(hits[0].detail).not.toMatch(/"12"/);
+    });
+  });
+
   test('numbers in urls, e-mails and phone are not facts', async () => {
     const cv = {
       ...goodCv,

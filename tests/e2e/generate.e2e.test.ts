@@ -1118,7 +1118,8 @@ describe('generate documents', () => {
       const from = await editedVersion(jobId);
       const base = await canned('write_documents');
       // The writer does what the dishonest instruction asks, every round (and keeps the locked edit).
-      const invented = { ...base, cv: { ...base.cv, summary: EDIT, experience: [{ ...base.cv.experience[0], bullets: ['Led a team of 10'] }] } };
+      // A new number in a bullet is allowed now, so the invented fact is a month-year date the base CV lacks.
+      const invented = { ...base, cv: { ...base.cv, summary: EDIT, experience: [{ ...base.cv.experience[0], bullets: ['Led the team at Initech in March 2019'] }] } };
       await stub.scriptPurpose('write_documents', [invented, invented, invented]);
       const runId = await regenerate(jobId, 'Say I led a team of 10.', from.id);
       await triggerGeneration();
@@ -1130,7 +1131,7 @@ describe('generate documents', () => {
       expect(v).toMatchObject({ origin: 'regenerated', label: 'Say I led a team of 10.' });
       expect(v.review.passed).toBe(false);
       expect(v.review.unresolved).toEqual(
-        expect.arrayContaining([expect.objectContaining({ source: 'check', code: 'unknown_fact', severity: 'hard', detail: expect.stringContaining('"10"') })]),
+        expect.arrayContaining([expect.objectContaining({ source: 'check', code: 'unknown_fact', severity: 'hard', detail: expect.stringContaining('March 2019') })]),
       );
       // The writer is told the rules outrank the instruction.
       expect(WRITER_PROMPT).toMatch(/outrank the instruction/);
