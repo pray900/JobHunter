@@ -44,7 +44,8 @@
               "keyword_coverage_honest",
               "reasons_hold_up",
               "cover_letter_sources",
-              "addressee"
+              "addressee",
+              "selection_criteria"
             ]
           },
           "pass": {

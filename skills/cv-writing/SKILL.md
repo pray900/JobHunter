@@ -1,6 +1,6 @@
 ---
 name: cv-writing
-description: Craft guidance for writing a tailored one-page ATS-friendly CV and a short cover letter for a single job ad. Covers writing bullets as responsibility plus outcome in the ad's own wording, placing keywords naturally, showing realistic result or scale figures, ATS-safe wording, and cover letter structure. Use when writing or revising a CV or cover letter for a job.
+description: Craft guidance for writing a tailored one-page ATS-friendly CV (or a two-page Australian Government CV) and a short cover letter for a single job ad. Covers writing bullets as responsibility plus outcome in the ad's own wording, placing keywords naturally, showing realistic result or scale figures, ATS-safe wording, and cover letter structure. Use when writing or revising a CV or cover letter for a job.
 ---
 
 # CV and cover letter craft
@@ -13,7 +13,7 @@ Applicant tracking systems (ATS) read the text of a document first and often fai
 
 ## One page comes first
 
-The CV must fit one A4 page. Everything below works inside that limit, never against it. A tight page that a recruiter can skim beats a fuller one that spills onto a second page.
+The CV must fit one A4 page (an Australian Government CV may run to two; the same habits apply within that limit). Everything below works inside that limit, never against it. A tight page that a recruiter can skim beats a fuller one that spills onto a second page.
 
 - Every project goes in, most relevant first, one bullet each. The code leaves out the last projects if the page overflows, so put the strongest first.
 - Keep most bullets to one line and none longer than two (about 25 words).
@@ -98,6 +98,17 @@ The letter is short, specific and human. It is not the CV in paragraphs.
 4. A plain close. Say the person would welcome a conversation, and thank the reader for their time. No pressure, no flattery, no summary of what was just said.
 
 Keep each paragraph to three or four sentences. Use contractions sparingly and the person's own tone from the sample letter. Address a named contact only if the ad or notes name one.
+
+## Government applications
+
+Australian government panels score each applicant against the capabilities or selection criteria the ad names, often one criterion at a time. A panel member looks for evidence under each name, so make that evidence easy to find. These habits apply when the template is Australian Government.
+
+- Name each capability exactly as the ad words it. If the ad says "Communicates with influence", write that, not "Strong communicator". The panel is matching names.
+- Tell each example as STAR, and keep the action the person's own. "Rebuilt the intake form, cutting incomplete applications from about one in five to one in twenty" shows what they did. "The team improved the intake process" hides it. In the letter, write "I": "When the roster system failed during the Christmas peak, I rebuilt the shift template overnight, and every shift was covered."
+- Keep Responsibilities short: the duty in a few words, in the ad's terms where true. "Processed council rates enquiries by phone and email" is enough.
+- Write Key Achievements outcome-first where the result is strong: "Cut the monthly reconciliation from three days to one by scripting the bank-statement import." One achievement, one result.
+- A competency statement is the capability, then one line of proof: "Delivers results: Moved 1,200 client records to the new system two weeks ahead of the deadline, with no data loss." The proof is a single real example, not a list of adjectives.
+- An honest "not answered" is better than a stretched answer. Panels notice a claim that does not hold up at interview.
 
 ## Before you finish
 

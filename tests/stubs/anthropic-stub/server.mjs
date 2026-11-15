@@ -81,6 +81,7 @@ const CANNED = {
       'reasons_hold_up',
       'cover_letter_sources',
       'addressee',
+      'selection_criteria',
     ].map((id) => ({ id, pass: true, note: 'Fine.' })),
     objections: [],
     factRulings: [],

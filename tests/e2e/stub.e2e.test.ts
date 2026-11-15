@@ -45,7 +45,7 @@ describe('anthropic stub', () => {
 
   test('canned reviewer passes every checklist item', async () => {
     const r = await ask('review_documents');
-    expect(r.items).toHaveLength(14);
+    expect(r.items).toHaveLength(15);
     expect(r.items.every((i: any) => i.pass === true)).toBe(true);
   });
 });

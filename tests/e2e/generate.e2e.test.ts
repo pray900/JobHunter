@@ -1375,6 +1375,192 @@ describe('generate documents', () => {
     });
   });
 
+  describe('the CV template', () => {
+    const GOV_REASON = 'A state government department is hiring.';
+    /**
+     * A government writer answer built from the canned Standard ATS one: no name, contact or work rights (the
+     * government schema has none; the workflow fills them from the base CV), "" for "none", competencies,
+     * achievements and the selection-criteria coverage.
+     */
+    const govAnswer = async (extra: { bullets?: string[] } = {}) => {
+      const w = await canned('write_documents');
+      const { name: _n, contact: _c, workRights: _w, ...cv } = w.cv;
+      return {
+        ...w,
+        templateId: 'au-government',
+        templateReason: 'The employer is a state government department.',
+        cv: {
+          ...cv,
+          competencies: ['Delivers results: Led a team of 5 to build a stub in TypeScript.'],
+          experience: cv.experience.map((e: any) => ({
+            ...e,
+            location: '',
+            bullets: extra.bullets ?? e.bullets,
+            achievements: ['Built a stub in TypeScript for the team.'],
+          })),
+        },
+        criteriaCoverage: [
+          { criterion: 'Delivers results', answeredIn: 'cv.competencies[0]', why: '' },
+          { criterion: 'Communicates clearly', answeredIn: 'coverLetter', why: '' },
+          { criterion: 'Holds a security clearance', answeredIn: '', why: 'The base CV states no clearance.' },
+        ],
+      };
+    };
+    const govJob = async () => {
+      const jobId = await readyJob();
+      await db.query(`update jobs set suggested_template='au-government', template_reason=$2 where id=$1`, [jobId, GOV_REASON]);
+      return jobId;
+    };
+    const templateSent = async () => tag(sentText((await writerRequests())[0]), 'template');
+
+    test('the template reaches the writer: the suggestion, the choice over it, else Standard ATS', async () => {
+      const jobId = await govJob();
+      await queueRun(jobId);
+      await stub.reset();
+      await stub.scriptPurpose('write_documents', [await govAnswer()]);
+      await triggerGeneration();
+      const text = sentText((await writerRequests())[0]);
+      expect(text).toContain('<template>\nau-government\n</template>');
+      // Right after <job_facts>.
+      expect(text.indexOf('<template>')).toBe(text.indexOf('</job_facts>') + '</job_facts>\n\n'.length);
+      // The government schema goes with it.
+      expect((await writerRequests())[0].output_config.format.schema).toEqual(JSON.parse(promptFile('write-documents.au-government.schema.json')));
+      // The reviewer is told the template too.
+      expect(tag(sentText((await reviewRequests())[0]), 'template')).toBe('au-government');
+
+      await db.query(`update jobs set template_choice='standard-ats' where id=$1`, [jobId]);
+      await queueRun(jobId);
+      await stub.reset();
+      await triggerGeneration();
+      expect(await templateSent()).toBe('standard-ats');
+      expect((await writerRequests())[0].output_config.format.schema).toEqual(JSON.parse(promptFile('write-documents.schema.json')));
+      expect(tag(sentText((await reviewRequests())[0]), 'template')).toBe('standard-ats');
+
+      await db.query(`update jobs set template_choice=null, suggested_template=null, template_reason=null where id=$1`, [jobId]);
+      await queueRun(jobId);
+      await stub.reset();
+      await triggerGeneration();
+      expect(await templateSent()).toBe('standard-ats');
+      expect((await versions(jobId)).map((v) => v.template_id)).toEqual(['au-government', 'standard-ats', 'standard-ats']);
+    });
+
+    test('a government version is saved: name and contact from the base CV, coverage checked and kept, up to 2 pages', async () => {
+      const jobId = await govJob();
+      const runId = await queueRun(jobId);
+      await stub.reset();
+      // Enough bullets for a second page: over the Standard ATS limit, inside the government one.
+      const bullets = Array.from({ length: 55 }, () => 'Led a team of 5 and built a stub in TypeScript for the team.');
+      const gov = await govAnswer({ bullets });
+      // Round 1 points a criterion at a project: the check sends it back. Round 2 is the good answer.
+      const bad = { ...gov, criteriaCoverage: [{ criterion: 'Delivers results', answeredIn: 'cv.projects[0].bullets[0]', why: '' }] };
+      await stub.scriptPurpose('write_documents', [bad, gov]);
+      await triggerGeneration();
+
+      const run = await runRow(runId);
+      expect(run).toMatchObject({ status: 'done', round: 2 });
+      // The worker got the coverage in the check request: its check failed round 1 only.
+      expect(run.rounds[0].checks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'criteria_coverage', severity: 'hard', where: 'criteriaCoverage[0]' })]),
+      );
+      expect(run.rounds[1].checks.filter((c: any) => c.code === 'criteria_coverage')).toEqual([]);
+      expect(run.rounds[1].cvPages).toBe(2);
+      expect(run.rounds[1].checks.filter((c: any) => c.code === 'cv_pages')).toEqual([]);
+      // The round 1 failure went back to the writer.
+      const second = JSON.parse(tag(sentText((await writerRequests())[1]), 'previous_round'));
+      expect(second.failedChecks.map((c: any) => c.code)).toContain('criteria_coverage');
+
+      const [v] = await versions(jobId);
+      const std = await canned('write_documents');
+      expect(v.template_id).toBe('au-government');
+      expect(v.review).toMatchObject({ passed: true, rounds: 2 });
+      // Filled from the base CV facts, in the shape the Standard ATS writer writes.
+      expect(v.cv).toMatchObject({ name: 'Stub Person', contact: { location: 'Sydney', email: null, phone: null, links: [] }, workRights: null });
+      expect(v.cv).toEqual({ ...std.cv, competencies: gov.cv.competencies, experience: gov.cv.experience.map((e: any) => ({ ...e, location: null })) });
+      expect(v.reasons.criteriaCoverage).toEqual(gov.criteriaCoverage);
+      expect(v.reasons.templateReason).toBe(gov.templateReason);
+      // The reviewer saw the coverage with the documents (round 1 was reviewed too: the last review is round 2's).
+      expect(JSON.parse(tag(sentText((await reviewRequests()).at(-1)), 'documents')).criteriaCoverage).toEqual(gov.criteriaCoverage);
+    });
+
+    test('Standard ATS is unchanged: no coverage in the reasons, no competencies or achievements in the CV', async () => {
+      const jobId = await readyJob();
+      await queueRun(jobId);
+      await stub.reset();
+      await triggerGeneration();
+      const [v] = await versions(jobId);
+      expect(v.template_id).toBe('standard-ats');
+      expect(v.reasons).not.toHaveProperty('criteriaCoverage');
+      expect(v.cv).not.toHaveProperty('competencies');
+      for (const e of v.cv.experience) expect(e).not.toHaveProperty('achievements');
+      expect(v.cv).toEqual((await canned('write_documents')).cv);
+    });
+
+    test.each([
+      ['a templateId other than the one given', async () => ({ ...(await govAnswer()), templateId: 'standard-ats' })],
+      ['a government answer without criteriaCoverage', async () => ({ ...(await govAnswer()), criteriaCoverage: undefined })],
+      ['a government answer without competencies', async () => {
+        const g = await govAnswer();
+        return { ...g, cv: { ...g.cv, competencies: undefined } };
+      }],
+    ])('%s is not in the expected format', async (_n, make) => {
+      const jobId = await govJob();
+      const runId = await queueRun(jobId);
+      await stub.reset();
+      await stub.scriptPurpose('write_documents', [await make()]);
+      await triggerGeneration();
+      expect(await runRow(runId)).toMatchObject({ status: 'pending', attempts: 1, error: "The writer's answer was not in the expected format." });
+      expect(await reviewRequests()).toEqual([]);
+      expect(await versions(jobId)).toEqual([]);
+    });
+
+    test('Regenerate keeps the version template, even after the job choice changed', async () => {
+      const jobId = await govJob();
+      await queueRun(jobId);
+      await stub.reset();
+      const gov = await govAnswer();
+      await stub.scriptPurpose('write_documents', [gov]);
+      await triggerGeneration();
+      const [v1] = await versions(jobId);
+      expect(v1.template_id).toBe('au-government');
+      await db.query(`update jobs set template_choice='standard-ats' where id=$1`, [jobId]);
+      await stub.reset();
+      await stub.scriptPurpose('write_documents', [gov]);
+      const res = await fetch(`${N8N_URL}/webhook/api/jobs/generate?id=${jobId}`, {
+        method: 'POST',
+        headers: { 'X-JobHunter': '1', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction: 'Make the summary shorter.', fromVersionId: v1.id }),
+      });
+      expect(res.status).toBe(202);
+      await triggerGeneration();
+      const text = sentText((await writerRequests())[0]);
+      expect(tag(text, 'template')).toBe('au-government');
+      // The writer is not shown the name, contact or work rights it does not write.
+      const current = JSON.parse(tag(text, 'current_version'));
+      for (const k of ['name', 'contact', 'workRights']) expect(current.cv).not.toHaveProperty(k);
+      expect(current.cv.competencies).toEqual(gov.cv.competencies);
+      const [, v2] = await versions(jobId);
+      expect(v2).toMatchObject({ template_id: 'au-government', origin: 'regenerated' });
+      expect(v2.cv).toMatchObject({ name: 'Stub Person', contact: v1.cv.contact, workRights: null });
+    });
+
+    test('a review that leaves out selection_criteria fails the round like any missing item', async () => {
+      const jobId = await govJob();
+      const runId = await queueRun(jobId);
+      await stub.reset();
+      const pass = await canned('review_documents');
+      expect(pass.items.map((i: any) => i.id)).toContain('selection_criteria');
+      await stub.scriptPurpose('write_documents', [await govAnswer(), await govAnswer()]);
+      await stub.scriptPurpose('review_documents', [{ ...pass, items: pass.items.filter((i: any) => i.id !== 'selection_criteria') }]);
+      await triggerGeneration();
+      const run = await runRow(runId);
+      expect(run.rounds[0].passed).toBe(false);
+      expect(run.rounds[0].review.items).toContainEqual({ id: 'selection_criteria', pass: false, note: 'The reviewer did not judge this.' });
+      expect(run.rounds[1].passed).toBe(true);
+      const second = JSON.parse(tag(sentText((await writerRequests())[1]), 'previous_round'));
+      expect(second.failedItems.map((i: any) => i.id)).toEqual(['selection_criteria']);
+    });
+  });
+
   // Checks on the workflow JSON itself, for behaviour the fixed test env cannot reach.
   describe('workflow definition', () => {
     const wf = JSON.parse(readFileSync(join(ROOT, 'n8n', 'workflows', 'generate-documents.json'), 'utf8'));
@@ -1538,9 +1724,9 @@ describe('generate documents', () => {
       expect(nodeByName('Save version')).toMatchObject({ retryOnFail: true, maxTries: 3 });
     });
 
-    const readAnswer = (node: string, state: object, res: object) =>
+    const readAnswer = (node: string, state: object, res: object, nodes: Record<string, object> = {}) =>
       new Function('$json', '$', code(node))(res, (name: string) => ({
-        first: () => (name === 'Look up model prices' ? prices() : { json: state }),
+        first: () => (name === 'Look up model prices' ? prices() : { json: nodes[name] ?? state }),
       })).json;
     const envelope = (a: unknown, extra: object = {}) => ({
       statusCode: 200,
@@ -1559,7 +1745,78 @@ describe('generate documents', () => {
       beforeAll(() => {
         good = CANNED.write_documents;
       });
-      const read = (res: object) => readAnswer("Read the writer's answer", STATE, res);
+      const STD_INPUTS = { template_id: 'standard-ats', base_cv_facts: {}, regenerate: null };
+      const read = (res: object, inputs: object = STD_INPUTS) => readAnswer("Read the writer's answer", STATE, res, { 'Prepare inputs': { inputs } });
+
+      describe('the government template', () => {
+        const BASE = {
+          name: 'Sam Base',
+          workRights: 'Full working rights',
+          contact: { location: 'Brisbane QLD', email: 'sam@example.com', phone: '', links: ['linkedin.com/in/sam-base', 'https://github.com/sambase', 'http://www.sam.example.org/cv', 'mailto:sam@example.com', 'not a link'] },
+        };
+        const GOV_INPUTS = { template_id: 'au-government', base_cv_facts: BASE, regenerate: null };
+        const gov = () => {
+          const { name: _n, contact: _c, workRights: _w, ...cv } = good.cv;
+          return {
+            ...good,
+            templateId: 'au-government',
+            cv: { ...cv, competencies: ['Delivers results: Led a team of 5.'], experience: cv.experience.map((e: any) => ({ ...e, location: '', achievements: ['Built a stub.'] })) },
+            criteriaCoverage: [{ criterion: 'Delivers results', answeredIn: 'cv.competencies[0]', why: '' }],
+          };
+        };
+
+        test('the templateId must be the one given', () => {
+          expect(read(envelope(gov()), GOV_INPUTS).ok).toBe(true);
+          expect(read(envelope(good), GOV_INPUTS).error).toBe("The writer's answer was not in the expected format.");
+          expect(read(envelope(gov()), STD_INPUTS).error).toBe("The writer's answer was not in the expected format.");
+          // No template given: nothing can match it.
+          expect(read(envelope(good), { base_cv_facts: {} }).ok).toBe(false);
+        });
+
+        test('name, contact and work rights come from the base CV facts, in the Standard ATS writer shape', () => {
+          const out = read(envelope(gov()), GOV_INPUTS);
+          expect(out.writer.cv.name).toBe('Sam Base');
+          expect(out.writer.cv.workRights).toBe('Full working rights');
+          expect(out.writer.cv.contact).toEqual({
+            location: 'Brisbane QLD',
+            email: 'sam@example.com',
+            phone: null,
+            links: [
+              { label: 'LinkedIn', url: 'https://linkedin.com/in/sam-base' },
+              { label: 'GitHub', url: 'https://github.com/sambase' },
+              { label: 'sam.example.org', url: 'https://www.sam.example.org/cv' },
+            ],
+          });
+          expect(Object.keys(out.writer.cv).slice(0, 5)).toEqual(['name', 'headline', 'contact', 'summary', 'workRights']);
+          expect(out.writer.cv.experience[0].location).toBeNull();
+          // None in the base CV: null, as the Standard ATS writer's "" becomes; no name: the letter's.
+          const bare = read(envelope(gov()), { ...GOV_INPUTS, base_cv_facts: { name: null, workRights: null, contact: null } });
+          expect(bare.writer.cv).toMatchObject({ name: good.coverLetter.name, workRights: null, contact: { location: null, email: null, phone: null, links: [] } });
+        });
+
+        test('a regenerate keeps the name, contact and work rights of the version it starts from (its locked edits included)', () => {
+          const current = { cv: { name: 'Sam B.', contact: { location: null, email: 'new@example.com', phone: null, links: [{ label: 'Site', url: 'https://a.io' }] }, workRights: null }, coverLetter: {} };
+          const out = read(envelope(gov()), { ...GOV_INPUTS, regenerate: { instruction: 'i', current_version: current, manual_edits: [] } });
+          expect(out.writer.cv).toMatchObject(current.cv);
+        });
+
+        test('coverage, competencies and achievements are required for the government template only', () => {
+          const g = gov();
+          for (const bad of [
+            { ...g, criteriaCoverage: undefined },
+            { ...g, criteriaCoverage: [{ criterion: 'x', answeredIn: 'coverLetter' }] },
+            { ...g, criteriaCoverage: [{ criterion: 'x', answeredIn: 3, why: '' }] },
+            { ...g, cv: { ...g.cv, competencies: undefined } },
+            { ...g, cv: { ...g.cv, competencies: [{ capability: 'x', evidence: 'y' }] } },
+            { ...g, cv: { ...g.cv, experience: [{ ...g.cv.experience[0], achievements: undefined }] } },
+          ]) {
+            expect(read(envelope(bad), GOV_INPUTS).error).toBe("The writer's answer was not in the expected format.");
+          }
+          // Standard ATS: none of them, as today.
+          expect(read(envelope(good)).writer).toEqual(good);
+          expect(read(envelope({ ...good, criteriaCoverage: 'x' })).ok).toBe(false);
+        });
+      });
 
       test('a good answer is read from the text block, costed by the answering model', () => {
         expect(read(envelope(good))).toMatchObject({
@@ -1702,6 +1959,8 @@ describe('generate documents', () => {
 
       test('M3: the checklist ids the reader requires are the reviewer schema ids', () => {
         const ids: string[] = JSON.parse(promptFile('review-documents.schema.json')).properties.items.items.properties.id.enum;
+        expect(ids).toHaveLength(15);
+        expect(ids).toContain('selection_criteria');
         const listed = /const ITEM_IDS = \[([^\]]+)\]/.exec(code("Read the reviewer's answer"))![1];
         expect([...listed.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort()).toEqual([...ids].sort());
       });
@@ -1791,7 +2050,7 @@ describe('generate documents', () => {
     describe('choosing the version to save', () => {
       const choose = (rounds: object[]) =>
         new Function('$json', '$', code('Choose the version to save'))({ run_id: 'r1', claimed_at: 't9', rounds }, (name: string) => ({
-          first: () => ({ json: name === 'Prepare inputs' ? { inputs: { cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null } } : {} }),
+          first: () => ({ json: name === 'Prepare inputs' ? { inputs: { template_id: 'standard-ats', cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null } } : {} }),
         })).json;
       const writer = (tag: string) => ({
         templateId: 'standard-ats',
@@ -1949,6 +2208,7 @@ describe('generate documents', () => {
               return {
                 json: {
                   inputs: {
+                    template_id: 'standard-ats',
                     job_id: 'j1',
                     cv_block: { type: 'text', text: '<document>\nCV\n</document>' },
                     job_ad: 'Ad',
@@ -2072,6 +2332,37 @@ describe('generate documents', () => {
         expect(build({ instruction: 'i', manual_edits: [...edits, 'cv.old.path'] }).manualEdits).toEqual(edits);
         expect(build(null).manualEdits).toEqual([]);
       });
+
+      test("the writer's criteria coverage goes to the worker; none is an empty list", () => {
+        const coverage = [{ criterion: 'C', answeredIn: 'coverLetter', why: '' }];
+        WRITTEN.writer = { ...WRITTEN.writer, criteriaCoverage: coverage } as any;
+        expect(build(null).criteriaCoverage).toEqual(coverage);
+        delete (WRITTEN.writer as any).criteriaCoverage;
+        expect(build(null).criteriaCoverage).toEqual([]);
+      });
+    });
+
+    describe('choosing the version to save: the template', () => {
+      const review = { verdict: 'pass', items: [], objections: [], factRulings: [], spellingRulings: [], stretches: [] };
+      const coverage = [{ criterion: 'C', answeredIn: '', why: 'Not in the base CV.' }];
+      const choose = (template_id: string, writer: object) =>
+        new Function('$json', '$', code('Choose the version to save'))(
+          { run_id: 'r1', claimed_at: 't9', rounds: [{ round: 1, writer, checks: [], review, passed: true }] },
+          (name: string) => ({ first: () => ({ json: name === 'Prepare inputs' ? { inputs: { template_id, cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null } } : {} }) }),
+        ).json;
+      const W = { templateReason: 'r', cv: { headline: 'h' }, coverLetter: {}, keywordCoverage: {}, changes: [], stretches: [] };
+
+      test('a government version keeps its template and the coverage in its reasons', () => {
+        const out = choose('au-government', { ...W, templateId: 'au-government', criteriaCoverage: coverage });
+        expect(out.template_id).toBe('au-government');
+        expect(out.reasons).toMatchObject({ templateReason: 'r', criteriaCoverage: coverage });
+      });
+
+      test('a Standard ATS version has no coverage key', () => {
+        const out = choose('standard-ats', { ...W, templateId: 'standard-ats', criteriaCoverage: [] });
+        expect(out.template_id).toBe('standard-ats');
+        expect(out.reasons).not.toHaveProperty('criteriaCoverage');
+      });
     });
 
     describe('reading the check results', () => {
@@ -2113,7 +2404,7 @@ describe('generate documents', () => {
         });
         const choose = (c: any) =>
           new Function('$json', '$', code('Choose the version to save'))({ run_id: 'r1', claimed_at: 't9', rounds: [asRound(c)] }, (name: string) => ({
-            first: () => ({ json: name === 'Prepare inputs' ? { inputs: { cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null } } : {} }),
+            first: () => ({ json: name === 'Prepare inputs' ? { inputs: { template_id: 'standard-ats', cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null } } : {} }),
           })).json;
         const out = choose(checked);
         expect(out.cv).toEqual(fitted);
@@ -2134,7 +2425,7 @@ describe('generate documents', () => {
         });
         const choose = (rounds: object[], regenerate: object | null = null) =>
           new Function('$json', '$', code('Choose the version to save'))({ run_id: 'r1', claimed_at: 't9', rounds }, (name: string) => ({
-            first: () => ({ json: name === 'Prepare inputs' ? { inputs: { cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null, regenerate } } : {} }),
+            first: () => ({ json: name === 'Prepare inputs' ? { inputs: { template_id: 'standard-ats', cv_id: 'cv1', cv_hash: 'h1', cl_id: null, cl_hash: null, regenerate } } : {} }),
           })).json;
 
         test('a drop in an earlier round is kept when the saved round fits without dropping', () => {
@@ -2225,6 +2516,31 @@ describe('generate documents', () => {
         expect(prepare([rec(1, true)])).toMatchObject({ another: false });
       });
 
+      test("the template: the job's choice, else its suggestion, else Standard ATS", () => {
+        const withJob = (job: object) => prepareWith([], { ...LOADED, ...job }, STORED).inputs;
+        expect(withJob({ template_id: 'au-government', template_choice: null, suggested_template: 'au-government', template_reason: 'A council is hiring.' })).toMatchObject({
+          template_id: 'au-government',
+          template_reason: 'A council is hiring.',
+        });
+        expect(withJob({ template_id: 'standard-ats', template_choice: 'standard-ats', template_reason: 'A council is hiring.' })).toMatchObject({
+          template_id: 'standard-ats',
+          template_reason: 'You chose this template on the job page.',
+        });
+        expect(withJob({ template_id: 'standard-ats', template_choice: null, template_reason: null })).toMatchObject({ template_id: 'standard-ats', template_reason: null });
+        expect(withJob({}).template_id).toBe('standard-ats');
+      });
+
+      test('a retry whose recorded rounds were written for another template ends the run', () => {
+        const job = { ...LOADED, template_id: 'au-government', template_choice: 'au-government' };
+        const written = (templateId: string) => ({ ...rec(1), writer: { templateId } });
+        expect(prepareWith([written('au-government')], job, STORED)).toMatchObject({ ready: true, round: 2 });
+        expect(prepareWith([written('standard-ats')], job, STORED)).toMatchObject({
+          ready: false,
+          final: true,
+          error: 'The template changed while this was being written. Choose Generate again.',
+        });
+      });
+
       test('rounds written from other base documents end the run', () => {
         expect(prepare([{ ...rec(1), base_cv_hash: 'old' }])).toMatchObject({
           ready: false,
@@ -2246,6 +2562,7 @@ describe('generate documents', () => {
         manual_edits: [{ path: 'cv.summary', text: 'Short summary.' }],
       };
       const INPUTS = {
+        template_id: 'standard-ats',
         job_id: 'j1',
         cv_block: { type: 'text', text: '<document>\nCV\n</document>' },
         job_ad: 'Ad',
@@ -2264,7 +2581,7 @@ describe('generate documents', () => {
           (name: string) => ({
             first: () => {
               if (name === 'Look up model prices') return prices();
-              if (name === 'Writer and reviewer prompts') return { json: { writer_prompt: 'W', writer_guidance: 'G', writer_schema: {}, review_prompt: 'R', review_schema: {} } };
+              if (name === 'Writer and reviewer prompts') return { json: { writer_prompt: 'W', writer_guidance: 'G', writer_schema: {}, writer_schema_au_government: { gov: true }, review_prompt: 'R', review_schema: {} } };
               if (name === 'Prepare inputs') return { json: { inputs } };
               return { json: extra[name] ?? {} };
             },
@@ -2312,6 +2629,39 @@ describe('generate documents', () => {
         // A plain Generate has none of them.
         const plain = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't1', round: 1, rounds: [] }, { ...INPUTS, regenerate: null }));
         for (const t of ['current_version', 'manual_edits', 'instruction']) expect(plain).not.toContain(`<${t}>`);
+      });
+
+      test('the government writer: its schema, the template tag, and no name, contact or work rights shown or locked', () => {
+        const gov = { ...INPUTS, template_id: 'au-government' };
+        const heartbeat = { id: 'r1', claimed_at: 't1', round: 1, rounds: [] };
+        const std = nodeWith('Build writer request', heartbeat, { ...INPUTS, regenerate: null });
+        expect(std.request.output_config.format.schema).toEqual({});
+        expect(tagOf(textOf(std), 'template')).toBe('standard-ats');
+        const plain = nodeWith('Build writer request', heartbeat, { ...gov, regenerate: null });
+        expect(plain.request.output_config.format.schema).toEqual({ gov: true });
+        expect(tagOf(textOf(plain), 'template')).toBe('au-government');
+        // An unknown template stops before calling Claude.
+        expect(() => nodeWith('Build writer request', heartbeat, { ...INPUTS, template_id: 'fancy', regenerate: null })).toThrow(/template/);
+        expect(() => nodeWith('Build writer request', heartbeat, { ...INPUTS, template_id: undefined, regenerate: null })).toThrow(/template/);
+        // A regenerate: the current version without the fields the code fills, and only the edits the writer can keep.
+        const edits = [{ path: 'cv.summary', text: 'Short summary.' }, { path: 'cv.contact.email', text: 'x@y.io' }, { path: 'cv.name', text: 'N2' }, { path: 'cv.workRights', text: null }];
+        const regen = { ...REGEN, manual_edits: edits };
+        const first = textOf(nodeWith('Build writer request', heartbeat, { ...gov, regenerate: regen }));
+        expect(JSON.parse(tagOf(first, 'current_version')!)).toEqual({ cv: { experience: [{ location: '' }] }, coverLetter: { name: 'N' } });
+        expect(JSON.parse(tagOf(first, 'manual_edits')!)).toEqual([{ path: 'cv.summary', text: 'Short summary.' }]);
+        // A revision round: the previous documents the same way.
+        const prev = { round: 1, writer: { cv: { name: 'N', contact: {}, workRights: null, summary: 's' }, coverLetter: {} }, checks: [], review: { verdict: 'fail', items: [], objections: [], factRulings: [], spellingRulings: [] }, passed: false };
+        const second = textOf(nodeWith('Build writer request', { id: 'r1', claimed_at: 't2', round: 2, rounds: [prev] }, { ...gov, regenerate: null }));
+        expect(JSON.parse(tagOf(second, 'previous_round')!).documents).toEqual({ cv: { summary: 's' }, coverLetter: {} });
+      });
+
+      test('the reviewer is told the template, right after the job facts', () => {
+        const checked = { run_id: 'r1', round: 1, writer: { cv: {} }, checks: [] };
+        for (const t of ['standard-ats', 'au-government']) {
+          const text = textOf(nodeWith('Build review request', { id: 'r1', claimed_at: 't1', round: 1 }, { ...INPUTS, template_id: t, regenerate: null }, { 'Read check results': checked }));
+          expect(tagOf(text, 'template')).toBe(t);
+          expect(text).toContain(`</job_facts>\n\n<template>\n${t}\n</template>`);
+        }
       });
 
       test('the reviewer gets the instruction and the manual edits, not the current version', () => {
@@ -2384,7 +2734,7 @@ describe('generate documents', () => {
               },
             }),
           ).json;
-        const fv = { id: 'v2', version_no: 2, cv: GOOD_CV, cover_letter: GOOD_LETTER, reasons: { manualEdits: ['cv.summary', 5, { path: 'cv.headline', text: 'Old headline' }, { path: 'cv.experience[0].bullets[3]', text: 'b' }] } };
+        const fv = { id: 'v2', version_no: 2, template_id: 'standard-ats', cv: GOOD_CV, cover_letter: GOOD_LETTER, reasons: { manualEdits: ['cv.summary', 5, { path: 'cv.headline', text: 'Old headline' }, { path: 'cv.experience[0].bullets[3]', text: 'b' }] } };
         expect(prepare({ instruction: null, from_version_id: null }, null)).toMatchObject({ ready: true, inputs: { regenerate: null } });
         expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, fv).inputs.regenerate).toEqual({
           instruction: 'Shorter.',
@@ -2397,6 +2747,9 @@ describe('generate documents', () => {
           previous_dropped: [],
         });
         expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, { ...fv, reasons: { fit: { droppedProjects: ['P5', 7] } } }).inputs.regenerate.previous_dropped).toEqual(['P5']);
+        // A regenerate keeps the template of the version it starts from, whatever the job says now.
+        const gov = prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, { ...fv, template_id: 'au-government', reasons: { templateReason: 'An agency.' } }).inputs;
+        expect(gov).toMatchObject({ template_id: 'au-government', template_reason: 'An agency.' });
         expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, { ...fv, reasons: {} }).inputs.regenerate.manual_edits).toEqual([]);
         const unusable = { ready: false, final: true, error: 'The version to regenerate from could not be used.' };
         expect(prepare({ instruction: 'Shorter.', from_version_id: null }, null)).toMatchObject(unusable);
@@ -2407,6 +2760,8 @@ describe('generate documents', () => {
           { ...fv, cv: { ...GOOD_CV, experience: [{ ...GOOD_CV.experience[0], bullets: [3] }] } },
           { ...fv, cover_letter: { ...GOOD_LETTER, paragraphs: 'p' } },
           { ...fv, cv: null },
+          { ...fv, template_id: 'fancy' },
+          { ...fv, template_id: undefined },
         ]) {
           expect(prepare({ instruction: 'Shorter.', from_version_id: 'v2' }, bad)).toMatchObject(unusable);
         }
@@ -2701,6 +3056,8 @@ describe('generate documents', () => {
       expect(v.writer_guidance).not.toMatch(/^(---|name: |description: )/m);
       expect(normalise(v.review_prompt)).toBe(normalise(REVIEW_PROMPT));
       expect(JSON.parse(v.writer_schema)).toEqual(JSON.parse(promptFile('write-documents.schema.json')));
+      // One schema per template (Plan 5 probe): the government writer gets its own.
+      expect(JSON.parse(v.writer_schema_au_government)).toEqual(JSON.parse(promptFile('write-documents.au-government.schema.json')));
       expect(JSON.parse(v.review_schema)).toEqual(JSON.parse(promptFile('review-documents.schema.json')));
       // Regenerate: the writer and the reviewer are told about the instruction and the manual edits.
       for (const t of ['<current_version>', '<manual_edits>', '<instruction>']) expect(WRITER_PROMPT, t).toContain(t);
