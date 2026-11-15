@@ -348,6 +348,28 @@
 - [ ] **Step 4:** Spot-check that one Standard ATS job still generates as before. Re-download an existing version and compare it with its earlier PDF text.
 - [ ] **Step 5:** Write "As built": the schema outcome, the cost of the real run, its rounds, and any rulings. Commit `docs: plan 5 as built`.
 
-## As built
+## As built (2026-11-15)
 
-(Filled in by Task 7.)
+**Writer schema (Task 1, real API probes).**
+- The shared grown schema was rejected ("compiled grammar is too large"). So were the per-template government schema and both of the spec's cuts. Rejected probes are free.
+- The Standard ATS schema is already at the limit: adding only `achievements` to it is rejected.
+- What fits is a separate `write-documents.au-government.schema.json`:
+  - `templateId` is `au-government` only;
+  - it has **no `cv.name`, `cv.contact` or `cv.workRights`**. The Generate workflow fills them from the base CV facts before the checks, and on a regenerate from the version it starts from;
+  - `cv.competencies` is `string[]` (each "Capability: proof"; the template and preview bold the part before the first ": ");
+  - it has `experience[].achievements` and `criteriaCoverage {criterion, answeredIn, why}`.
+- Object competencies and `why` each fit alone, but not together; `why` was kept.
+- The Standard ATS schema is unchanged.
+
+**Real run.**
+- The job is the Queensland Government Salesforce Developer role via Redwolf + Rosch (job ebeb5db7, version 10).
+- It passed review in 2 rounds, for US$0.9493.
+- The CV is 2 pages, with footers "Page 1 of 2" and "Page 2 of 2" and the headings in order. Responsibilities and Key Achievements appear per role, and the last line is "Referees available on request".
+- All 12 key criteria are in the coverage list: 4 are answered (all in competencies), and 8 are "Not answered", each with an honest reason ("3+ years, not 5+", no certifications, no Experience Cloud, Sydney not Brisbane, and so on).
+- The CV makes no citizenship, clearance or police-check claims. The letter is 266 words.
+
+**Tests.** Unit: worker 245, web 217. Full e2e: 418/418.
+
+**Other changes beyond the plan.**
+- A new run error, "The template changed while this was being written. Choose Generate again.", is shown when a retry finds rounds written for a different template. It is on the job page's list of allowed messages.
+- The template choice is hidden on the job page while a run is in progress.

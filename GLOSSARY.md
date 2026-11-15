@@ -51,7 +51,7 @@ A CV written for one job from the base CV.
 _Avoid_: Custom CV, generated CV, new CV
 
 **Template**:
-The look of a tailored CV or cover letter (font, layout, section order, length and content rules), separate from its words.
+The look of a tailored CV or cover letter (font, layout, section order, length and content rules), separate from its words. There are two: Standard ATS (one page) and Australian Government (up to two pages, with competency statements, Responsibilities and Key Achievements per role, and a Referees line). The app suggests one when it reads a job, and the user's choice on the job page wins.
 _Avoid_: Style, format, theme
 
 **Version**:
@@ -83,6 +83,10 @@ _Avoid_: Fit score, rating
 **Keyword coverage**:
 How many of a job ad's important terms a particular tailored CV contains.
 _Avoid_: Match score (a different thing)
+
+**Selection criteria coverage**:
+For an Australian Government job, the list of the ad's selection criteria, capabilities or targeted questions, each with where the tailored CV or cover letter answers it, or why it is honestly not answered.
+_Avoid_: Statement of claims (a separate document the app does not write)
 
 **Writer**:
 The Claude role that produces a tailored CV, cover letter and reasons.
