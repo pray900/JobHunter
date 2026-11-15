@@ -41,6 +41,9 @@ describe('job intake sync', () => {
       employer: 'Stub Employer',
       advertiser: null,
       short_description: 'Stub description.',
+      suggested_template: 'standard-ats',
+      template_reason: 'The hiring organisation is not a government body.',
+      template_choice: null,
       status: 'new',
       extraction_status: 'done',
       source_removed: false,
@@ -52,6 +55,30 @@ describe('job intake sync', () => {
     expect(await db.query(`select from_status, to_status from job_status_history where job_id=$1`, [job.id])).toEqual([
       { from_status: null, to_status: 'new' },
     ]);
+  });
+
+  test('an unknown or missing suggested template is stored as null; the extraction still succeeds', async () => {
+    await stub.scriptPurpose('extract_job', [
+      { title: 'T1', employer: null, advertiser: null, short_description: 'D1.', suggested_template: 'fancy', template_reason: 'Odd.' },
+      { title: 'T2', employer: null, advertiser: null, short_description: 'D2.' },
+      { title: 'T3', employer: null, advertiser: null, short_description: 'D3.', suggested_template: 'au-government', template_reason: 'A state government department is hiring.' },
+    ]);
+    await writeJobFile('a.docx', [{ text: 'https://x.io/a' }, { text: 'Job A' }]);
+    await triggerSync();
+    await writeJobFile('b.docx', [{ text: 'https://x.io/b' }, { text: 'Job B' }]);
+    await triggerSync();
+    await writeJobFile('c.docx', [{ text: 'https://x.io/c' }, { text: 'Job C' }]);
+    await triggerSync();
+    expect(await jobRow('a.docx')).toMatchObject({
+      title: 'T1', extraction_status: 'done', suggested_template: null, template_reason: null,
+    });
+    expect(await jobRow('b.docx')).toMatchObject({
+      title: 'T2', extraction_status: 'done', suggested_template: null, template_reason: null,
+    });
+    expect(await jobRow('c.docx')).toMatchObject({
+      title: 'T3', extraction_status: 'done', suggested_template: 'au-government',
+      template_reason: 'A state government department is hiring.',
+    });
   });
 
   test('webhook responds with scan and extraction counts', async () => {
@@ -259,7 +286,11 @@ describe('job intake sync', () => {
     expect(req.output_config.format.type).toBe('json_schema');
     const schema = req.output_config.format.schema;
     expect(schema).toMatchObject({ type: 'object', additionalProperties: false });
-    expect([...schema.required].sort()).toEqual(['advertiser', 'employer', 'short_description', 'title']);
+    expect([...schema.required].sort()).toEqual([
+      'advertiser', 'employer', 'short_description', 'suggested_template', 'template_reason', 'title',
+    ]);
+    expect(schema.properties.suggested_template).toEqual({ type: 'string', enum: ['standard-ats', 'au-government'] });
+    expect(schema.properties.template_reason).toEqual({ type: 'string' });
     expect(req).not.toHaveProperty('temperature');
     expect(req.messages).toEqual([{ role: 'user', content: '<job_ad>\nSalesforce Developer at Acme\n</job_ad>' }]);
     const prompt = readFileSync(join(ROOT, 'n8n', 'prompts', 'extract-job.md'), 'utf8');

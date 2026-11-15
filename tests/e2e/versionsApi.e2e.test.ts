@@ -73,6 +73,25 @@ describe('versions API workflow definition', () => {
     expect(code).not.toMatch(/dropProjects\s*:\s*true/);
   });
 
+  test('the edit check request body is unchanged: no criteriaCoverage key', () => {
+    const code = node('Build edit check request').parameters.jsCode as string;
+    const run = new Function('$json', '$', code) as (j: object, d: () => object) => { json: { ok: boolean; body: object } };
+    const out = run(
+      {
+        job_found: true, version_found: true, cv_structured: { name: 'x' }, cl_structured: null, other_jobs: [],
+        src: { template_id: 'au-government', keyword_coverage: { covered: ['a'] } },
+        job: { title: 'T', employer: 'E', advertiser: null, rawText: 'ad' },
+      },
+      () => ({ first: () => ({ json: { cv: {}, coverLetter: {} } }) }),
+    ).json;
+    expect(out.ok).toBe(true);
+    expect(Object.keys(out.body).sort()).toEqual([
+      'baseCoverLetter', 'baseCv', 'coverLetter', 'cv', 'job', 'keywordsCovered', 'otherJobs', 'templateId',
+    ]);
+    expect(out.body).not.toHaveProperty('criteriaCoverage');
+    expect(code).not.toMatch(/criteriaCoverage/);
+  });
+
   test('the edit check allows for the fit measuring (90 s)', () => {
     expect(node('Run code checks (edit)').parameters.options.timeout).toBe(90_000);
   });

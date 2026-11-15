@@ -11,6 +11,8 @@ const CANNED = {
     employer: 'Stub Employer',
     advertiser: null,
     short_description: 'Stub description.',
+    suggested_template: 'standard-ats',
+    template_reason: 'The hiring organisation is not a government body.',
   },
   // workRights is null so the worker's checks report missing_work_rights.
   analyse_cv: {

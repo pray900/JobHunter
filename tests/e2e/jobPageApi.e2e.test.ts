@@ -203,6 +203,7 @@ describe('job page API', () => {
       [`jobs/generate?id=${jobId}`, { instruction: 'Shorter.', fromVersionId: MISSING }],
       [`jobs/status?id=${jobId}`, { status: 'applied' }],
       [`jobs/notes?id=${jobId}`, { notes: 'x' }],
+      [`jobs/template?id=${jobId}`, { templateId: 'au-government' }],
     ] as const) {
       for (const headers of [{}, { 'X-JobHunter': '0' }]) {
         const res = await post(path, body, headers);
@@ -213,13 +214,15 @@ describe('job page API', () => {
       const x = await fetch(`${N8N_URL}/webhook/api/${path}`, {
         method: 'POST',
         headers: { Origin: EVIL, 'Content-Type': 'text/plain' },
-        body: '{"status":"applied","notes":"x"}',
+        body: '{"status":"applied","notes":"x","templateId":"au-government"}',
       });
       expect(x.status).toBe(403);
       await x.arrayBuffer();
     }
     expect(await db.query(`select id from generation_runs`)).toEqual([]);
-    expect(await db.query(`select status, company_notes from jobs`)).toEqual([{ status: 'new', company_notes: null }]);
+    expect(await db.query(`select status, company_notes, template_choice from jobs`)).toEqual([
+      { status: 'new', company_notes: null, template_choice: null },
+    ]);
     expect(await db.query(`select id from job_status_history`)).toEqual([]);
   });
 
@@ -246,11 +249,13 @@ describe('job page API', () => {
     expect(body.baseCv).toBeNull();
     expect(Object.keys(body.job).sort()).toEqual([
       'advertiser', 'companyNotes', 'employer', 'id', 'matchBreakdown', 'matchExplanation', 'matchScore',
-      'rawText', 'status', 'title', 'url', 'warnings',
+      'rawText', 'status', 'suggestedTemplate', 'templateChoice', 'templateReason', 'title', 'url', 'warnings',
     ]);
     expect(body.job).toMatchObject({
       id: jobId, title: 'Engineer', employer: 'Acme', rawText: 'The ad text', status: 'new',
       companyNotes: 'Met them at a meetup', url: 'https://x.io/a',
+      // A job extracted before the template columns existed has none of them.
+      suggestedTemplate: null, templateReason: null, templateChoice: null,
     });
     expect(body.generation).toEqual({ status: 'done', stage: 'saving', round: 2, attempts: 1, error: null, instruction: null, fromVersionId: null });
     expect(Object.keys(body.version).sort()).toEqual([
@@ -407,6 +412,57 @@ describe('job page API', () => {
     expect((await post(`jobs/notes?id=${MISSING}`, { notes: 'x' })).status).toBe(404);
   });
 
+  test('detail returns the suggested template, its reason and the choice', async () => {
+    const jobId = await addJob();
+    await db.query(
+      `update jobs set suggested_template='au-government', template_reason='A state government department is hiring.',
+         template_choice='standard-ats' where id=$1`,
+      [jobId],
+    );
+    const body = (await (await get(`jobs/detail?id=${jobId}`)).json()) as any;
+    expect(body.job).toMatchObject({
+      suggestedTemplate: 'au-government',
+      templateReason: 'A state government department is hiring.',
+      templateChoice: 'standard-ats',
+    });
+  });
+
+  test('template choice is saved, and null clears it; anything else is 400; unknown job is 404', async () => {
+    const jobId = await addJob();
+    const choice = async () => (await db.query(`select template_choice from jobs where id=$1`, [jobId]))[0].template_choice;
+    let res = await post(`jobs/template?id=${jobId}`, { templateId: 'au-government' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ templateChoice: 'au-government' });
+    expect(await choice()).toBe('au-government');
+    expect(((await (await get(`jobs/detail?id=${jobId}`)).json()) as any).job.templateChoice).toBe('au-government');
+    res = await post(`jobs/template?id=${jobId}`, { templateId: 'standard-ats' });
+    expect(await res.json()).toEqual({ templateChoice: 'standard-ats' });
+    expect(await choice()).toBe('standard-ats');
+    res = await post(`jobs/template?id=${jobId}`, { templateId: null });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ templateChoice: null });
+    expect(await choice()).toBeNull();
+    await post(`jobs/template?id=${jobId}`, { templateId: 'au-government' });
+    for (const body of [{}, { templateId: 'fancy' }, { templateId: 5 }, { templateId: '' }, { templateId: 'AU-GOVERNMENT' }, { templateId: ['au-government'] }, undefined]) {
+      res = await post(`jobs/template?id=${jobId}`, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'bad_request' });
+    }
+    expect(await choice()).toBe('au-government');
+    // Another owner's job, an unknown one and a malformed id are all not found.
+    await db.query(`insert into users (id, name) values ('00000000-0000-0000-0000-0000000000aa', 'Other') on conflict do nothing`);
+    const [theirs] = await db.query(
+      `insert into jobs (owner_id, source, source_ref, content_hash, raw_text, extraction_status)
+       values ('00000000-0000-0000-0000-0000000000aa', 'folder', 'theirs.docx', 'h', 'x', 'done') returning id`,
+    );
+    for (const id of [theirs.id, MISSING, 'nope', '%00']) {
+      res = await post(`jobs/template?id=${id}`, { templateId: 'au-government' });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'job_not_found' });
+    }
+    expect((await db.query(`select template_choice from jobs where id=$1`, [theirs.id]))[0].template_choice).toBeNull();
+  });
+
   test('download docx starts with PK, pdf with %PDF, file name sanitised', async () => {
     const jobId = await addJob({ employer: 'Acme/Co "Pty" Ltd é', advertiser: 'Recruiter' });
     await addVersion(jobId);
@@ -550,7 +606,7 @@ describe('job page API', () => {
   test('CORS allows only the web origins', async () => {
     const jobId = await addJob();
     for (const base of [WEB_URL + '/api', N8N_URL + '/webhook/api']) {
-      for (const p of ['jobs/generate', 'jobs/status', 'jobs/notes']) {
+      for (const p of ['jobs/generate', 'jobs/status', 'jobs/notes', 'jobs/template']) {
         const pre = await fetch(`${base}/${p}`, {
           method: 'OPTIONS',
           headers: { Origin: EVIL, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'x-jobhunter' },
