@@ -153,3 +153,25 @@ What each finding means for the app:
 - [ ] **Step 2:** Rebuild the stack (`docker compose up -d --build`, `bash scripts/n8n-bootstrap.sh`). Then click Generate again on "Salesforce Consultant – Early Start Australia" (about US$0.30–1.00). Record the cost.
 - [ ] **Step 3 (the user):** Download the **PDF**, run it through Jobscan against the same ad, and compare with 42. The bar is: the experience heading, bold and paragraph issues are gone; the job title is found; and the match rate is above 42. Hard-skill gaps that the base CV can't support will remain.
 - [ ] **Step 4:** Write "As built" with the Jobscan result and commit `docs: plan 9 as built`.
+
+## As built (2026-11-15)
+
+Commits: ba99c4d (heading and sparse bold), 3358ec3 (`long_paragraph`), ed23364 (prompts and skill), 7954560 and 4f59e6b (keyword cap fixes after review).
+
+- **Template:** "PROFESSIONAL EXPERIENCE" heading. Bold only on the name, job titles and employer names. Plan 10's layout scaling is kept. Old versions re-render with the new styling on download.
+- **`long_paragraph`:** a hard check on headline, summary, bullets and skill-group lines over 40 words. It runs on the fitted CV. Locked edits are covered by the workflow's generic lock-by-`where` rule. The web also needed the code in `CheckCode` and the parser's `CHECK_CODES`.
+- **Prompts (changed after review, user's decisions 2026-11-15):**
+  - The keyword cap counts only the writer's own text (headline, summary, skills, bullets). Copied titles and names don't count.
+  - A repeat from a genuinely different fact is fine.
+  - The job's core platform or tool and the ad's title are exempt from the twice limit; only stuffing is wrong for them.
+  - The ad's title may go in the headline only if the base CV shows the candidate held it. Otherwise it goes in the summary, as the role applied for.
+- **Tests:** unit 213 (worker) + 200 (web), full e2e 395/395.
+- **Real run (Salesforce Consultant – Early Start Australia, version 2):**
+  - Passed in 2 rounds, US$0.74.
+  - One page, all headings as planned, longest bullet about 30 words.
+  - The summary says "Applying for the Salesforce Consultant role". "Salesforce" is used freely and was not objected to.
+  - Round 1 failed only `keyword_not_found` ("configure" was listed, but the CV said "Configured"). The writer fixed it in round 2.
+- **Jobscan result:** pending. The user runs the PDF through Jobscan and compares with 42.
+- **Parked:**
+  - A `long_paragraph`-specific locked-edit e2e case. The generic lock e2e test covers the behaviour.
+  - The `render/fit.ts` comment that names the user. It is a comment only.
