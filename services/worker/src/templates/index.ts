@@ -1,5 +1,6 @@
 import type { DocKind, TailoredCv, TailoredLetter, TemplateId } from '../generation/types.js';
 import { LAYOUT_STEPS, type CvLayout } from './layout.js';
+import { renderAuGovernment } from './auGovernment.js';
 import { renderStandardAts } from './standardAts.js';
 
 export async function renderDocx(
@@ -13,6 +14,6 @@ export async function renderDocx(
     case 'standard-ats':
       return renderStandardAts(kind, cv, letter, layout);
     case 'au-government':
-      return renderStandardAts(kind, cv, letter, layout); // Task 3 replaces this
+      return renderAuGovernment(kind, cv, letter, layout);
   }
 }

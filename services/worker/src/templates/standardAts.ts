@@ -13,23 +13,23 @@ import { LAYOUT_STEPS, shortLink, type CvLayout } from './layout.js';
 import type { DocKind, TailoredCv, TailoredLetter } from '../generation/types.js';
 
 // Standard ATS: A4, one column, no tables, no text boxes, one font. Bullets use Word numbering.
-const FONT = 'Arial';
-const PAGE = { width: 11906, height: 16838 }; // A4 in twips
-const MARGIN = 1020; // about 1.8 cm
-const BULLETS = 'bullets';
+export const FONT = 'Arial';
+export const PAGE = { width: 11906, height: 16838 }; // A4 in twips
+export const MARGIN = 1020; // about 1.8 cm
+export const BULLETS = 'bullets';
 
-const half = (pt: number) => Math.round(pt * 2); // docx sizes are half-points
-const toHalfPt = (pt: number) => Math.round(pt * 2) / 2;
+export const half = (pt: number) => Math.round(pt * 2); // docx sizes are half-points
+export const toHalfPt = (pt: number) => Math.round(pt * 2) / 2;
 
-function run(text: string, size: number, opts: { bold?: boolean } = {}): TextRun {
-  return new TextRun({ text, font: FONT, size: half(size), bold: opts.bold });
+export function run(text: string, size: number, opts: { bold?: boolean; color?: string } = {}): TextRun {
+  return new TextRun({ text, font: FONT, size: half(size), bold: opts.bold, color: opts.color });
 }
 
-function body(text: string, size: number, spacingAfter = 80, k = 1): Paragraph {
+export function body(text: string, size: number, spacingAfter = 80, k = 1): Paragraph {
   return new Paragraph({ children: [run(text, size)], spacing: { after: Math.round(spacingAfter * k) } });
 }
 
-function bullet(text: string, size: number, k = 1): Paragraph {
+export function bullet(text: string, size: number, k = 1): Paragraph {
   return new Paragraph({
     children: [run(text, size)],
     numbering: { reference: BULLETS, level: 0 },
@@ -48,7 +48,7 @@ function heading(text: string, size: number, k: number): Paragraph {
 
 // Title on the left, dates pushed to the right margin by a right tab stop.
 // `parts` are runs in order; bold ones are titles and employers, the rest (commas, location) is plain.
-function titleLine(parts: { text: string; bold?: boolean }[], dates: string, size: number, textWidth: number, k: number): Paragraph {
+export function titleLine(parts: { text: string; bold?: boolean }[], dates: string, size: number, textWidth: number, k: number): Paragraph {
   const children: TextRun[] = parts.filter((p) => p.text !== '').map((p) => run(p.text, size, { bold: p.bold }));
   if (dates) children.push(new TextRun({ children: [new Tab()], font: FONT, size: half(size) }), run(dates, size));
   return new Paragraph({
@@ -62,7 +62,7 @@ function titleLine(parts: { text: string; bold?: boolean }[], dates: string, siz
 const nameLine = (cv: TailoredCv, size = 18, k = 1): Paragraph =>
   new Paragraph({ children: [run(cv.name, size, { bold: true })], spacing: { after: Math.round(40 * k) } });
 
-const contactLine = (cv: TailoredCv, withWorkRights: boolean): string =>
+export const contactLine = (cv: TailoredCv, withWorkRights: boolean): string =>
   [
     cv.contact.location,
     cv.contact.email,
@@ -127,7 +127,7 @@ function cvParagraphs(cv: TailoredCv, layout: CvLayout): Paragraph[] {
   return out;
 }
 
-function letterParagraphs(cv: TailoredCv, letter: TailoredLetter): Paragraph[] {
+export function letterParagraphs(cv: TailoredCv, letter: TailoredLetter): Paragraph[] {
   const size = 11;
   const out: Paragraph[] = [nameLine(cv)];
   const contact = contactLine(cv, false);
