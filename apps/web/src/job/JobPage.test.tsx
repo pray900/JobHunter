@@ -101,6 +101,14 @@ describe('JobPage', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
+  test('a government version names its two-page limit on an unresolved page check', async () => {
+    m.fetchJobDetail.mockResolvedValue({ ...baseDetail, version: { ...baseVersion, templateId: 'au-government' } });
+    renderPage();
+    const region = await screen.findByRole('region', { name: 'Needs your attention' });
+    expect(within(region).getByText('CV is longer than 2 pages')).toBeInTheDocument();
+    expect(within(region).queryByText('CV is longer than 1 page')).not.toBeInTheDocument();
+  });
+
   test('unresolved items are amber with a label', async () => {
     renderPage();
     const region = await screen.findByRole('region', { name: 'Needs your attention' });
@@ -357,6 +365,18 @@ describe('JobPage: projects left out to fit one page', () => {
     expect(items[0]).toHaveTextContent('Left out to fit one page: Handwritten Math Symbol Classification');
     expect(within(items[0]).getByText('ⓘ')).toBeInTheDocument();
     expect(items[0]).toHaveClass('muted');
+  });
+
+  test('a government version says two pages', async () => {
+    m.fetchJobDetail.mockResolvedValue({
+      ...baseDetail,
+      version: { ...baseVersion, templateId: 'au-government', reasons: { ...baseVersion.reasons, fit: { droppedProjects: ['Old Project'] } } },
+    });
+    m.fetchVersions.mockResolvedValue([summary(1)]);
+    renderPage();
+    const region = await screen.findByRole('region', { name: 'Fit to two pages' });
+    expect(within(region).getByText(/Left out to fit two pages: Old Project/)).toBeInTheDocument();
+    expect(screen.queryByText(/one page/)).not.toBeInTheDocument();
   });
 
   test('a version without fit shows no such line', async () => {

@@ -137,6 +137,17 @@ describe('job intake sync', () => {
     expect(rows[0].content_hash).not.toBe(before.content_hash);
     expect(await stub.requests()).toHaveLength(2);
     expect(await db.query(`select id from job_status_history where job_id=$1`, [before.id])).toHaveLength(1);
+
+    // A suggestion from the old ad must not outlive it. Re-extraction fails here, so nothing refills the fields.
+    await db.query(
+      `update jobs set template_choice='au-government', suggested_template='au-government', template_reason='Old reason.' where id=$1`,
+      [before.id],
+    );
+    await writeJobFile('a.docx', [{ text: 'https://x.io/a3' }, { text: 'Third body STUB_FAIL' }]);
+    await triggerSync();
+    expect(await jobRow('a.docx')).toMatchObject({
+      id: before.id, title: null, suggested_template: null, template_reason: null, template_choice: 'au-government',
+    });
   });
 
   test('deleted file marks job removed', async () => {

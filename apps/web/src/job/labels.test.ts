@@ -40,6 +40,12 @@ test('labels the spec calls out', () => {
   expect(checkLabel('manual_edit_changed')).toBe('Your edit was changed');
 });
 
+test('cv_pages names the template page limit', () => {
+  expect(checkLabel('cv_pages', 'standard-ats')).toBe('CV is longer than 1 page');
+  expect(checkLabel('cv_pages', 'au-government')).toBe('CV is longer than 2 pages');
+  expect(checkLabel('letter_pages', 'au-government')).toBe('Cover letter is longer than 2 pages');
+});
+
 test('long_paragraph has a label', () => {
   expect(checkLabel('long_paragraph')).toBe('Paragraph over 40 words');
 });

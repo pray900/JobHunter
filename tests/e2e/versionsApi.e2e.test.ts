@@ -42,12 +42,13 @@ interface SeedOpts {
   baseCvId?: string | null;
   baseCvHash?: string;
   runId?: string | null;
+  templateId?: string;
 }
 async function seed(jobId: string, o: SeedOpts): Promise<string> {
   const [v] = await db.query(
     `insert into document_versions (owner_id, job_id, run_id, version_no, label, base_cv_id, base_cv_hash, template_id, cv, cover_letter,
        reasons, keyword_coverage, review, checks, instruction, manual_edit, origin, parent_version_id)
-     values ($1,$2,$3,$4,$5,$6,$17,'standard-ats',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
+     values ($1,$2,$3,$4,$5,$6,$17,$18,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
     [
       OWNER, jobId, o.runId ?? null, o.versionNo, o.label ?? 'Generated', o.baseCvId ?? null,
       JSON.stringify(o.cv ?? CV), JSON.stringify(LETTER),
@@ -55,7 +56,7 @@ async function seed(jobId: string, o: SeedOpts): Promise<string> {
       JSON.stringify({ covered: [], missing: [] }),
       JSON.stringify(o.review ?? { passed: true, rounds: 1, verdicts: ['pass'], unresolved: [] }),
       JSON.stringify(o.checks ?? []),
-      o.instruction ?? null, o.manualEdit ?? false, o.origin ?? 'generated', o.parent ?? null, o.baseCvHash ?? 'bh',
+      o.instruction ?? null, o.manualEdit ?? false, o.origin ?? 'generated', o.parent ?? null, o.baseCvHash ?? 'bh', o.templateId ?? 'standard-ats',
     ],
   );
   return v.id;
@@ -269,6 +270,32 @@ describe('versions API', () => {
     expect(saved.cv.experience[0]).not.toHaveProperty('extra');
     expect(saved.cv).not.toHaveProperty('evil');
     expect(saved.cover_letter).not.toHaveProperty('junk');
+  });
+
+  test('editing a government version keeps its competencies and achievements; a Standard ATS edit adds neither key', async () => {
+    await withCv();
+    const jobId = await addJob();
+    const competencies = ['Stakeholder engagement: ran weekly reviews with three agencies.', 'Delivery: shipped two releases on time.'];
+    const gov = {
+      ...CV,
+      competencies,
+      experience: CV.experience.map((e, i) => ({ ...e, achievements: [`Led change ${i}, then cut handling time by a third.`] })),
+    };
+    const v1 = await seed(jobId, { versionNo: 1, templateId: 'au-government', cv: gov });
+    const res = await post(`jobs/versions/edit?id=${jobId}`, { fromVersionId: v1, cv: { ...gov, summary: 'Only the summary changed.' }, coverLetter: LETTER });
+    expect(res.status).toBe(201);
+    const [, v2] = await rows(jobId);
+    expect(v2.cv).toEqual({ ...gov, summary: 'Only the summary changed.' });
+    expect(v2.cv.competencies).toEqual(competencies);
+    expect(v2.cv.experience.map((e: any) => e.achievements)).toEqual(gov.experience.map((e: any) => e.achievements));
+
+    const std = await addJob();
+    const s1 = await seed(std, { versionNo: 1 });
+    const res2 = await post(`jobs/versions/edit?id=${std}`, { fromVersionId: s1, cv: { ...CV, summary: 'Changed.' }, coverLetter: LETTER });
+    expect(res2.status).toBe(201);
+    const [, s2] = await rows(std);
+    expect(s2.cv).not.toHaveProperty('competencies');
+    for (const e of s2.cv.experience) expect(e).not.toHaveProperty('achievements');
   });
 
   test('edit with an unknown fact is saved with a hard check', async () => {

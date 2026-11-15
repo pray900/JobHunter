@@ -51,7 +51,11 @@ export const TEMPLATE_NAMES: Record<string, string> = { 'standard-ats': 'Standar
 export const CHECK_CODES = Object.keys(CHECK_LABELS) as CheckCode[];
 export const REVIEW_ITEM_IDS = Object.keys(REVIEW_LABELS) as ReviewItemId[];
 
-export const checkLabel = (code: CheckCode): string => CHECK_LABELS[code];
+// The page limit differs by template: one page for Standard ATS, two for the Australian Government CV.
+export const cvPageLimit = (templateId?: string | null): number => (templateId === 'au-government' ? 2 : 1);
+
+export const checkLabel = (code: CheckCode, templateId?: string | null): string =>
+  code === 'cv_pages' && cvPageLimit(templateId) === 2 ? 'CV is longer than 2 pages' : CHECK_LABELS[code];
 export const reviewItemLabel = (id: ReviewItemId): string => REVIEW_LABELS[id];
 
 export const STAGE_TEXT = {

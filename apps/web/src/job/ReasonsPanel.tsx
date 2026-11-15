@@ -1,5 +1,5 @@
 import type { CheckResult, DocumentVersion, JobDetailJob, UnresolvedItem } from '../api/types';
-import { LOCKED_NOTE, checkLabel, reviewItemLabel } from './labels';
+import { LOCKED_NOTE, checkLabel, cvPageLimit, reviewItemLabel } from './labels';
 
 function Warn({ children }: { children: React.ReactNode }) {
   return (
@@ -75,11 +75,11 @@ function SelectionCriteria({ version }: { version: DocumentVersion }) {
   );
 }
 
-function unresolvedLine(u: UnresolvedItem): { label: string; detail: string } {
+function unresolvedLine(u: UnresolvedItem, templateId?: string): { label: string; detail: string } {
   switch (u.source) {
     case 'check':
-      if (u.locked || u.note === LOCKED_NOTE) return { label: `${LOCKED_NOTE}:`, detail: `${checkLabel(u.code)}. ${u.detail}` };
-      return { label: checkLabel(u.code), detail: u.note ? `${u.detail} ${u.note}` : u.detail };
+      if (u.locked || u.note === LOCKED_NOTE) return { label: `${LOCKED_NOTE}:`, detail: `${checkLabel(u.code, templateId)}. ${u.detail}` };
+      return { label: checkLabel(u.code, templateId), detail: u.note ? `${u.detail} ${u.note}` : u.detail };
     case 'review':
       return { label: reviewItemLabel(u.id), detail: u.note };
     case 'fact':
@@ -89,13 +89,13 @@ function unresolvedLine(u: UnresolvedItem): { label: string; detail: string } {
   }
 }
 
-function CheckList({ checks }: { checks: CheckResult[] }) {
+function CheckList({ checks, templateId }: { checks: CheckResult[]; templateId?: string }) {
   return (
     <ul className="check-list">
       {checks.map((c, i) => (
         <li key={i}>
           <Warn>
-            <strong>{checkLabel(c.code)}</strong> ({c.doc === 'cv' ? 'CV' : 'Cover letter'}) {c.detail}
+            <strong>{checkLabel(c.code, templateId)}</strong> ({c.doc === 'cv' ? 'CV' : 'Cover letter'}) {c.detail}
             {c.locked && <span className="muted"> {LOCKED_NOTE}</span>}
           </Warn>
         </li>
@@ -106,6 +106,7 @@ function CheckList({ checks }: { checks: CheckResult[] }) {
 
 export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: DocumentVersion }) {
   const { reasons, keywordCoverage, review, checks } = version;
+  const fitPages = cvPageLimit(version.templateId) === 2 ? 'two pages' : 'one page';
   const hard = checks.filter((c) => c.severity === 'hard');
   const warnings = checks.filter((c) => c.severity === 'warning');
   // An edited version (or a restored copy of one) carries the review of an earlier version, which did not see
@@ -175,12 +176,12 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
       </section>
 
       {reasons.fit && reasons.fit.droppedProjects.length > 0 && (
-        <section className="panel" aria-label="Fit to one page">
-          <h3>Fit to one page</h3>
+        <section className="panel" aria-label={`Fit to ${fitPages}`}>
+          <h3>Fit to {fitPages}</h3>
           <ul className="plain">
             {reasons.fit.droppedProjects.map((p) => (
               <li key={p} className="muted">
-                <span aria-hidden="true">ⓘ</span> Left out to fit one page: {p}
+                <span aria-hidden="true">ⓘ</span> Left out to fit {fitPages}: {p}
               </li>
             ))}
           </ul>
@@ -256,7 +257,7 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
             <Warn>Needs a look</Warn>
           </h3>
           <p>The reviewer did not see your edit. Check these yourself.</p>
-          <CheckList checks={toLook} />
+          <CheckList checks={toLook} templateId={version.templateId} />
         </section>
       )}
 
@@ -266,7 +267,7 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
           <p className="muted">Written before your edits; some may no longer apply.</p>
           <ul className="plain">
             {review.unresolved.map((u, i) => {
-              const line = unresolvedLine(u);
+              const line = unresolvedLine(u, version.templateId);
               return (
                 <li key={i}>
                   <strong>{line.label}</strong> {line.detail}
@@ -284,7 +285,7 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
           </h3>
           <ul className="check-list">
             {review.unresolved.map((u, i) => {
-              const line = unresolvedLine(u);
+              const line = unresolvedLine(u, version.templateId);
               return (
                 <li key={i}>
                   <Warn>
@@ -300,13 +301,13 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
       {hard.length > 0 && (
         <section className="panel attention" aria-label="Failed checks">
           <h3>Hard checks that failed</h3>
-          <CheckList checks={hard} />
+          <CheckList checks={hard} templateId={version.templateId} />
         </section>
       )}
       {warnings.length > 0 && (
         <section className="panel" aria-label="Check warnings">
           <h3>Warnings</h3>
-          <CheckList checks={warnings} />
+          <CheckList checks={warnings} templateId={version.templateId} />
         </section>
       )}
       {hard.length === 0 && (

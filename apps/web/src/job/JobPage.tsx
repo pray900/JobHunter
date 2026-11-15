@@ -54,12 +54,12 @@ const NEWER_WHILE_EDITING =
 const GENERATE_AGAIN_HINT = 'Writes new documents from your base CV. Your edits are not carried over (they stay in the history).';
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 
-function CheckLines({ checks }: { checks: CheckResult[] }) {
+function CheckLines({ checks, templateId }: { checks: CheckResult[]; templateId?: string }) {
   return (
     <ul className="check-list">
       {checks.map((c, i) => (
         <li key={i}>
-          <strong>{checkLabel(c.code)}</strong> ({c.doc === 'cv' ? 'CV' : 'Cover letter'}) {c.detail}
+          <strong>{checkLabel(c.code, templateId)}</strong> ({c.doc === 'cv' ? 'CV' : 'Cover letter'}) {c.detail}
         </li>
       ))}
     </ul>
@@ -526,12 +526,12 @@ export function JobPage() {
           <p>
             Saved as version {notice.versionNo}. Nothing was lost, but {notice.hard.length > 0 ? 'fix these' : 'check these'} before you apply.
           </p>
-          {notice.hard.length > 0 && <CheckLines checks={notice.hard} />}
+          {notice.hard.length > 0 && <CheckLines checks={notice.hard} templateId={version?.templateId} />}
           {notice.review.length > 0 && (
             <>
               {notice.hard.length > 0 && <h4>Needs a look</h4>}
               <p>The reviewer did not see your edit. Check these yourself.</p>
-              <CheckLines checks={notice.review} />
+              <CheckLines checks={notice.review} templateId={version?.templateId} />
             </>
           )}
           <button type="button" className="btn btn-small" onClick={() => setNotice(null)}>
