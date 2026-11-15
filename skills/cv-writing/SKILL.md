@@ -106,7 +106,7 @@ Australian government panels score each applicant against the capabilities or se
 - Name each capability exactly as the ad words it. If the ad says "Communicates with influence", write that, not "Strong communicator". The panel is matching names.
 - Tell each example as STAR, and keep the action the person's own. "Rebuilt the intake form, cutting incomplete applications from about one in five to one in twenty" shows what they did. "The team improved the intake process" hides it. In the letter, write "I": "When the roster system failed during the Christmas peak, I rebuilt the shift template overnight, and every shift was covered."
 - Keep Responsibilities short: the duty in a few words, in the ad's terms where true. "Processed council rates enquiries by phone and email" is enough.
-- Write Key Achievements outcome-first where the result is strong: "Cut the monthly reconciliation from three days to one by scripting the bank-statement import." One achievement, one result.
+- Write each Key Achievement as the candidate's own action, then its result: "Scripted the bank-statement import, cutting the monthly reconciliation from three days to one." One achievement, one result.
 - A competency statement is the capability, then one line of proof: "Delivers results: Moved 1,200 client records to the new system two weeks ahead of the deadline, with no data loss." The proof is a single real example, not a list of adjectives.
 - An honest "not answered" is better than a stretched answer. Panels notice a claim that does not hold up at interview.
 

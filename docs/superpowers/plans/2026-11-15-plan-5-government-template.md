@@ -259,7 +259,7 @@
   - Add a section `## The Australian Government template`, applied only when `<template>` is `au-government`, carrying the spec's section table, counts, STAR rule, honesty rules, coverage rules (no projects as `answeredIn`; no invented criteria; empty when the ad has none) and letter length (the ad's limit, or about 300 words).
   - Under `standard-ats`, `competencies`, every `achievements` and `criteriaCoverage` are empty lists.
   - The page-limit paragraph says one page for Standard ATS and up to 2 for Australian Government.
-- **SKILL.md:** a short "Government applications" craft section (STAR with "I" actions, capability names as the ad words them, Responsibilities short, Achievements outcome-first). Invented examples only. Re-copy it into `writer_guidance`.
+- **SKILL.md:** a short "Government applications" craft section (STAR with "I" actions, capability names as the ad words them, Responsibilities short, Achievements as action, then result). Invented examples only. Re-copy it into `writer_guidance`.
 
 - [ ] **Step 1: Write failing e2e tests** in `generate.e2e.test.ts`:
   - **The template reaches the writer:**
