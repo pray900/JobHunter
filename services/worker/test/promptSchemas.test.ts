@@ -72,6 +72,17 @@ describe('writer prompt schema and the stub answer', () => {
     expect(Object.keys(p.coverLetter.properties).sort()).toEqual(['addressee', 'date', 'name', 'paragraphs', 'salutation', 'signOff']);
   });
 
+  // Probed on the real API (Plan 5): only this shape fits the grammar limit. The copy-exact name, contact and
+  // work rights are filled in by code from the base CV; competencies are "Capability: proof" strings.
+  test('the government writer schema adds competencies, achievements and criteria coverage, without the copied contact fields', () => {
+    const g = schema('write-documents.au-government.schema.json');
+    expect(g.properties.templateId.enum).toEqual(['au-government']);
+    expect(Object.keys(g.properties.cv.properties).sort()).toEqual(['competencies', 'education', 'experience', 'headline', 'projects', 'skills', 'summary']);
+    expect(g.properties.cv.properties.competencies.items).toEqual({ type: 'string' });
+    expect(Object.keys(g.properties.cv.properties.experience.items.properties).sort()).toEqual(['achievements', 'bullets', 'dates', 'employer', 'location', 'title']);
+    expect(Object.keys(g.properties.criteriaCoverage.items.properties).sort()).toEqual(['answeredIn', 'criterion', 'why']);
+  });
+
   test('every schema object is closed and requires all its properties', () => {
     const walk = (n: any, where: string) => {
       if (n && typeof n === 'object') {
@@ -83,6 +94,7 @@ describe('writer prompt schema and the stub answer', () => {
       }
     };
     walk(schema('write-documents.schema.json'), 'writer');
+    walk(schema('write-documents.au-government.schema.json'), 'writer (au-government)');
     walk(schema('review-documents.schema.json'), 'reviewer');
   });
 
@@ -98,6 +110,7 @@ describe('writer prompt schema and the stub answer', () => {
       for (const [k, v] of Object.entries(n)) walk(v, `${where}.${k}`);
     };
     walk(schema('write-documents.schema.json'), 'writer');
+    walk(schema('write-documents.au-government.schema.json'), 'writer (au-government)');
     walk(schema('review-documents.schema.json'), 'reviewer');
   });
 
