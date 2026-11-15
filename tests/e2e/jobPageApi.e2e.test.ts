@@ -346,6 +346,7 @@ describe('job page API', () => {
       'Claude stopped unexpectedly (pause_turn).',
       "The writer's documents were not in the expected format.",
       'Your base documents changed while this was being written. Choose Generate again.',
+      'The template changed while this was being written. Choose Generate again.',
       'The version to regenerate from could not be used.',
     ];
     const hidden = [
