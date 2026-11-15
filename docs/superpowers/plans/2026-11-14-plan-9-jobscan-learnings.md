@@ -49,10 +49,10 @@ What each finding means for the app:
 - **Heading:** "Professional Experience", one of Jobscan's two suggestions. It's the more common phrase in Australia.
 - **Bold:** only the name, job titles and employer names. Section headings stay distinct through capitals, a larger size and the bottom rule, with no bold. Location, dates, project names and education lines are not bold.
 - **Paragraph limit:** a **hard** check, `long_paragraph`, for any CV paragraph over **40 words**: the summary, each bullet, the headline, and each skill-group line ("Group: a, b, c"). It's easy for the writer to fix, and Jobscan flagged it on all three CVs. Cover letter paragraphs are exempt, since letters are prose.
-- **Job title, honestly:** the ad's exact job title may appear once in the **summary**, framed as the role the candidate is applying for ("…, applying for the Salesforce Consultant role"). It is never presented as a title they held, and never appears in the headline or an experience title. The reviewer fails a version that implies the candidate held it. Plan 4 (stretch-listing of `cv.headline` titles) is unchanged.
+- **Job title, honestly** (changed after review, user's decision 2026-11-15): the ad's exact job title may appear once in the **summary**, framed as the role the candidate is applying for ("…, applying for the Salesforce Consultant role"). It is never presented as a title they held, unless the base CV shows they held it. The headline may use it only in that case, and it never appears in an experience title the base CV does not give. Writer and reviewer say the same. The reviewer fails a version that implies the candidate held it. Plan 4 (stretch-listing of `cv.headline` titles) is unchanged.
 - **Exact terms:**
   - When a base-CV fact supports an ad keyword, write the ad's **exact form** at least once (its word form and phrase), rather than a synonym. For example, the ad says "troubleshoot" and the fact says "debugged" → "troubleshoot".
-  - A keyword the ad uses **2 or more times** may appear up to 2 times in the CV, for example in skills and one bullet. Never more, and never as a keyword list in prose.
+  - Frequency (changed after review, user's decision 2026-11-15) is an anti-stuffing guide, not a hard count, and counts only the writer's own text: headline, summary, skill groups and bullets. Text copied exactly from the base CV (job titles, employer names, project names, qualifications and certifications) does not count. **Any** keyword may appear at most 2 times in the writer's own text; aim for 2 when the ad uses it **2 or more times** (for example skills and one bullet; the headline and summary count toward the two). Never repeat a keyword just to raise its count, never as a keyword list in prose, and never delete or weaken an honest fact to meet the limit. The reviewer does not object to a repeat from copied text or from a genuinely different fact (the same tool in two roles' bullets).
   - `keywordCoverage.covered` uses the ad's exact form, so the existing `keyword_not_found` check proves it's really in the CV text.
 - **Model settings unchanged.** Writer and reviewer stay on Opus 5.5 at `medium` effort with 3 rounds. Changing them adds cost without evidence it helps. Measure after this plan, using Jobscan on the same job.
 
@@ -128,14 +128,14 @@ What each finding means for the app:
 - Test: `tests/e2e/generate.e2e.test.ts` (existing prompt-copy test), plus the worker prompt test if it covers the files
 
 **Interfaces (content, in the writer prompt's "The CV" section):**
-- Summary: at most 40 words. It may name the ad's exact job title once, only as the role they are applying for, never as a title they held.
+- Summary: at most 40 words. It may name the ad's exact job title once, only as the role they are applying for, never as a title they held unless the base CV gives them that title. The headline may use the ad's title only in that case (changed after review, user's decision 2026-11-15).
 - Every bullet and skill-group line: at most 40 words.
-- Exact terms: when a base-CV fact supports an ad keyword, use the ad's exact word form and phrase at least once instead of a synonym. A keyword the ad uses 2 or more times may appear up to twice in the CV (skills and one bullet), never more. List covered keywords in the ad's exact form.
+- Exact terms: when a base-CV fact supports an ad keyword, use the ad's exact word form and phrase at least once instead of a synonym. Any keyword may appear at most twice in the writer's own text (headline, summary, skill groups, bullets), aiming for twice when the ad uses it 2 or more times; text copied exactly from the base CV does not count; never repeat just to raise a count or weaken a fact to meet it (changed after review, user's decision 2026-11-15). List covered keywords in the ad's exact form.
 - Soft skills: use the ad's soft-skill words ("collaboration", "communication", "problem-solving") where a base-CV fact shows them. Never list them bare in skills.
 
 **Reviewer:**
 - Item 6 or 11 also checks that the target title appears only as the role applied for.
-- Item 7 `keyword_stuffing` names the "at most twice" limit.
+- Item 7 `keyword_stuffing` names the "at most twice" limit for the writer's own text only, and does not object to repeats from copied base-CV text or genuinely different facts (changed after review, user's decision 2026-11-15).
 - Item 11 checks that covered keywords use the ad's exact form.
 
 **SKILL.md:** a new section, "How keyword scanners count" (literal phrases, word forms, frequency, title match, 40-word paragraphs, sparse bold is the template's job, PDF upload). Keep the closing line.
