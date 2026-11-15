@@ -155,13 +155,15 @@ Reading the job folder every 30 seconds costs nothing, and the documents sync on
 
 The worker renders tailored CVs and cover letters with the Standard ATS template (A4, one column, Arial, no tables or text boxes) to Word through the `docx` library. PDFs are made by converting that Word file with Gotenberg (`gotenberg/gotenberg:8.21.1`), a fifth container with no host port and `restart: unless-stopped`. The worker finds it through `GOTENBERG_URL` (default `http://gotenberg:3000`). If Gotenberg is down, the PDF request answers `502 pdf_render_failed` and Word output still works.
 
+**Uploading:** upload the PDF download to job sites; keyword scanners such as Jobscan read PDFs most reliably.
+
 **Header:** the CV header is name, headline, then one contact line: location | email | phone | short links (no `https://`, `www.` or labels) | work rights. The cover letter uses the same line without work rights.
 
 **One-page fit:** the worker tries layouts in order (`LAYOUT_STEPS` in `services/worker/src/templates/layout.ts`) and uses the first that fits one page: 10.5pt with wide margins and normal spacing, then tighter spacing, then narrower margins, then 10pt, and finally 9.5pt (the floor). The writer includes every project, most relevant first, one bullet each. If even the floor does not fit, the check step (`/generation/check`) drops projects from the end of the list (the least relevant) and fits again. It never drops a project that holds a locked manual edit, or any project before one. If nothing fits, the original CV goes back to the writer with the page-limit failure. The check returns the fitted CV and `fit: { step, droppedProjects }`; the workflow uses that CV from then on, and the job page reasons panel shows "Left out to fit one page: <name>". Downloads only re-run the layout steps and never drop projects. The check call has a 180 s timeout. When deploying, update the worker before the workflow.
 
 ## CV-writing guidance
 
-`skills/cv-writing/SKILL.md` holds craft advice for the writer: bullets as responsibility plus outcome, keyword placement, ATS-safe wording, result figures and cover letter structure. Its body (without the frontmatter block at the top) is sent with every writer call, after the writer prompt, under the heading "CV-writing guidance". The reviewer never gets it. The writer prompt holds every must-follow rule and says it wins wherever the guidance differs.
+`skills/cv-writing/SKILL.md` holds craft advice for the writer: bullets as responsibility plus outcome, keyword placement, how keyword scanners count, ATS-safe wording, result figures and cover letter structure. Its body (without the frontmatter block at the top) is sent with every writer call, after the writer prompt, under the heading "CV-writing guidance". The reviewer never gets it. The writer prompt holds every must-follow rule and says it wins wherever the guidance differs.
 
 - **Edit it:** change `SKILL.md`, then copy its body into the workflow: the `writer_guidance` value in the "Writer and reviewer prompts" node of `n8n/workflows/generate-documents.json` must be identical to the file without its frontmatter (`npm run e2e -- generate` checks this). From the project folder, this updates it:
 

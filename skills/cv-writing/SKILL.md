@@ -53,6 +53,18 @@ Keywords come from the ad's duties, tools, qualifications, soft skills and years
 - Spell a term the way the ad does (in Australian spelling). If the ad writes the full name and the acronym ("Customer Relationship Management (CRM)"), write the full name and acronym once, then use either. If the ad uses only the acronym, use the acronym.
 - Never stuff. No keyword lists in prose, no repeating a term to raise a count, no hidden or white text. A keyword that the facts cannot support stays out of the CV.
 
+## How keyword scanners count
+
+Keyword scanners (Jobscan, and the ranking inside many ATS) compare the CV's text with the ad's text quite literally. Write for them without writing for a machine.
+
+- Literal phrases: the scanner looks for the ad's phrase as written. "Business requirements" does not match "business needs", and "stakeholder management" does not match "managing stakeholders". Where the facts support it, use the ad's phrase at least once.
+- Word forms: "requirement" and "requirements", or "analyse" and "analysis", can count as different terms. Use the form the ad uses. US and Australian spellings of the same word are fine; write the Australian one.
+- Frequency: a term the ad repeats matters more. It may appear twice in the CV, in skills and in one bullet, never more. A third use gains nothing and reads as stuffing.
+- Title match: scanners check for the ad's job title. The summary may name it once, as the role the person is applying for, never as a title they held unless the facts give it.
+- Short paragraphs: keep the headline, the summary, each bullet and each skill-group line to 40 words or fewer. Long blocks are harder to parse and to skim.
+- Bold: sparse bold on names, role titles and headings is the template's job. Write plain text and never add emphasis to keywords.
+- File type: the person uploads the PDF download to job sites, so the scanner reads exactly the text you write, in the template's layout.
+
 ## Result and scale figures
 
 A number makes a recruiter stop scanning. Where the facts state a figure, use it exactly. Where a bullet has no figure and one would help, a modest estimate is allowed for experience and project bullets, if the writer prompt above allows it.
