@@ -757,3 +757,90 @@ describe('long_paragraph', () => {
     expect(hits[0].where).toBe('cv.experience[0].bullets[0]');
   });
 });
+
+describe('government template', () => {
+  const govCv: TailoredCv = {
+    ...goodCv,
+    competencies: ['Reporting: built weekly reports', 'Delivery: cut processing time by 30%'],
+    experience: [{ ...goodCv.experience[0], achievements: ['Cut processing time by 30%'] }],
+  };
+  const govRender = (pages: number): NonNullable<RunOptions['render']> => async (doc, _d, cv) => ({
+    pages: doc === 'cv' ? pages : 1,
+    text:
+      doc === 'cv'
+        ? `${cv.name}\nPROFESSIONAL SUMMARY\nx\nKEY SKILLS & COMPETENCIES\nx\nPROFESSIONAL EXPERIENCE\nx\nPROJECTS\nx\nQUALIFICATIONS\nx\nREFEREES\nReferees available on request`
+        : `${cv.name}\nDear`,
+  });
+  const gov = (over: Partial<CheckInput> = {}) => input({ templateId: 'au-government', cv: govCv, ...over });
+  const cov = (answeredIn: string, why = '') => ({ criteriaCoverage: [{ criterion: 'Communicates well', answeredIn, why }] });
+
+  test('page limit is 2 for government, 1 for standard', async () => {
+    expect(find(await runChecks(gov(), opts({ render: govRender(2) })), 'cv_pages')).toHaveLength(0);
+    const three = find(await runChecks(gov(), opts({ render: govRender(3) })), 'cv_pages');
+    expect(three).toHaveLength(1);
+    expect(three[0].detail.endsWith('the limit is 2.')).toBe(true);
+    const std = await runChecks(
+      input(),
+      opts({ render: async (doc, d, cv, l) => (doc === 'cv' ? { pages: 2, text: (await okRender(doc, d, cv, l)).text } : okRender(doc, d, cv, l)) }),
+    );
+    expect(find(std, 'cv_pages')[0].detail.endsWith('the limit is 1.')).toBe(true);
+  });
+
+  test('government render_text needs Referees available on request', async () => {
+    const noRef: NonNullable<RunOptions['render']> = async (doc, d, cv, l) => {
+      const r = await govRender(1)(doc, d, cv, l);
+      return { ...r, text: r.text.replace('Referees available on request', '') };
+    };
+    expect(find(await runChecks(gov(), opts({ render: govRender(1) })), 'render_text')).toHaveLength(0);
+    const r = find(await runChecks(gov(), opts({ render: noRef })), 'render_text');
+    expect(r.some((c) => c.detail.includes('Referees available on request'))).toBe(true);
+  });
+
+  describe('criteria coverage', () => {
+    const run = (c: ReturnType<typeof cov>) => runChecks(gov(c), opts({ render: govRender(1) }));
+    test.each(['coverLetter', 'cv.summary', 'cv.competencies[0]', 'cv.experience[0].achievements[0]', 'cv.experience[0].bullets[0]'])(
+      '%s passes',
+      async (p) => {
+        expect(find(await run(cov(p)), 'criteria_coverage')).toHaveLength(0);
+      },
+    );
+    test('a missing path fails', async () => {
+      const r = find(await run(cov('cv.experience[0].achievements[5]')), 'criteria_coverage');
+      expect(r).toHaveLength(1);
+      expect(r[0]).toMatchObject({ severity: 'hard', doc: 'cv', where: 'criteriaCoverage[0]' });
+    });
+    test('a project path fails with the project detail', async () => {
+      const withProject = gov({ ...cov('cv.projects[0].bullets[0]'), cv: { ...govCv, projects: [{ name: 'P', bullets: ['b'] }] } });
+      const r = find(await runChecks(withProject, opts({ render: govRender(1) })), 'criteria_coverage');
+      expect(r[0].detail).toBe('Answer selection criteria in the summary, competencies, experience or the cover letter, not in a project.');
+    });
+    test('empty answeredIn needs a why', async () => {
+      expect(find(await run(cov('', 'Not covered by this role')), 'criteria_coverage')).toHaveLength(0);
+      expect(find(await run(cov('', '')), 'criteria_coverage')).toHaveLength(1);
+    });
+    test('absent criteriaCoverage skips the check', async () => {
+      expect(find(await runChecks(gov(), opts({ render: govRender(1) })), 'criteria_coverage')).toHaveLength(0);
+    });
+  });
+
+  test('new figures are allowed in achievements and competencies but not the summary', async () => {
+    const r = await runChecks(gov(), opts({ render: govRender(1) }));
+    expect(find(r, 'unknown_fact')).toHaveLength(0);
+    const s = await runChecks(gov({ cv: { ...govCv, summary: 'Cut processing time by 30%' } }), opts({ render: govRender(1) }));
+    expect(find(s, 'unknown_fact').some((c) => c.where === 'cv.summary')).toBe(true);
+  });
+
+  test('long_paragraph flags a 41-word achievement and competency', async () => {
+    const long = Array.from({ length: 41 }, () => 'word').join(' ');
+    const cv = { ...govCv, competencies: [long], experience: [{ ...goodCv.experience[0], achievements: [long] }] };
+    const wheres = find(await runChecks(gov({ cv }), opts({ render: govRender(1) })), 'long_paragraph').map((c) => c.where);
+    expect(wheres).toContain('cv.experience[0].achievements[0]');
+    expect(wheres).toContain('cv.competencies[0]');
+  });
+
+  test('a keyword only in an achievement is found', async () => {
+    const cv = { ...goodCv, experience: [{ ...goodCv.experience[0], achievements: ['Led procurement reform'] }] };
+    const r = await runChecks(gov({ cv, keywordsCovered: ['procurement'] }), opts({ render: govRender(1) }));
+    expect(find(r, 'keyword_not_found')).toHaveLength(0);
+  });
+});

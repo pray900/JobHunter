@@ -112,3 +112,19 @@ describe('fitCv', () => {
     expect(calls.length).toBeLessThanOrEqual(LAYOUT_STEPS.length + 3 + LAYOUT_STEPS.length);
   });
 });
+
+describe('maxPages', () => {
+  test('fitLayout with maxPages 2 accepts step 0; the default goes to the floor', async () => {
+    const { measure } = fake(() => 2);
+    expect((await fitLayout(CV, measure, 2)).step).toBe(0);
+    expect((await fitLayout(CV, measure)).step).toBe(FLOOR);
+  });
+  test('fitCv with maxPages 2 drops nothing when 2 pages fit', async () => {
+    const { measure } = fake(() => 2);
+    const cv = cvWith(3);
+    const r = await fitCv(cv, [], measure, 2);
+    expect(r.droppedProjects).toEqual([]);
+    expect(r.cv.projects).toHaveLength(3);
+    expect(r.step).toBe(0);
+  });
+});

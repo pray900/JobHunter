@@ -99,3 +99,15 @@ test('check route rejects a malformed manualEdits like any bad path', async () =
   }
   await a.close();
 });
+
+test('check route accepts au-government and rejects a bad criteriaCoverage', async () => {
+  const a = app(async (url: unknown) =>
+    String(url).startsWith('http://gotenberg.test') ? new Response(new Uint8Array(makePdf(1))) : new Response('', { status: 200 }),
+  );
+  const ok = await a.inject({ method: 'POST', url: '/generation/check', payload: { ...body, templateId: 'au-government' } });
+  expect(ok.statusCode).toBe(200);
+  const bad = await a.inject({ method: 'POST', url: '/generation/check', payload: { ...body, templateId: 'au-government', criteriaCoverage: [{ criterion: 'x' }] } });
+  expect(bad.statusCode).toBe(400);
+  expect(bad.json()).toEqual({ error: 'invalid_document', path: 'criteriaCoverage' });
+  await a.close();
+});

@@ -5,6 +5,7 @@ import { renderDocx } from '../templates/index.js';
 import { LAYOUT_STEPS } from '../templates/layout.js';
 import {
   DOC_KINDS,
+  PAGE_LIMITS,
   RENDER_FORMATS,
   TEMPLATE_IDS,
   type DocKind,
@@ -37,6 +38,7 @@ function badCheckPath(b: Record<string, unknown>): string | null {
   if (b.baseCoverLetter !== null && b.baseCoverLetter !== undefined && (!isObj(b.baseCoverLetter) || !isObj(b.baseCoverLetter.structured))) return 'baseCoverLetter';
   if (!Array.isArray(b.otherJobs) || !b.otherJobs.every((j) => isObj(j) && strOrNull(j.title) && strOrNull(j.employer) && strOrNull(j.advertiser))) return 'otherJobs';
   if (b.manualEdits !== undefined && (!Array.isArray(b.manualEdits) || !b.manualEdits.every((e) => isObj(e) && typeof e.path === 'string' && strOrNull(e.text) && e.text !== undefined))) return 'manualEdits';
+  if (b.criteriaCoverage !== undefined && (!Array.isArray(b.criteriaCoverage) || !b.criteriaCoverage.every((c) => isObj(c) && typeof c.criterion === 'string' && typeof c.answeredIn === 'string' && typeof c.why === 'string'))) return 'criteriaCoverage';
   if (b.dropProjects !== undefined && typeof b.dropProjects !== 'boolean') return 'dropProjects';
   return null;
 }
@@ -62,7 +64,7 @@ export function registerGenerationRoutes(app: FastifyInstance, deps: GenerationD
           try {
             const measure = async (c: typeof validCv, l: typeof layout) =>
               readPdf(await docxToPdf(await renderDocx(templateId, 'cv', c, undefined, l), deps.gotenbergUrl, deps.fetch));
-            layout = (await fitLayout(validCv, measure)).layout;
+            layout = (await fitLayout(validCv, measure, PAGE_LIMITS[templateId])).layout;
           } catch (err) {
             // A DOCX does not need Gotenberg: fall back to the normal layout. A PDF fails below as before.
             if (format === 'pdf') {

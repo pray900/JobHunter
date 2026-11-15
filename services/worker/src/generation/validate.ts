@@ -51,6 +51,7 @@ export function validateTailoredCv(x: unknown): TailoredCv {
       const group = obj(g, `cv.skills[${i}]`);
       return { group: str(group.group, `cv.skills[${i}].group`), items: strings(group.items, `cv.skills[${i}].items`) };
     }),
+    ...(o.competencies !== undefined ? { competencies: strings(o.competencies, 'cv.competencies') } : {}),
     experience: arr(o.experience, 'cv.experience').map((e, i) => {
       const p = `cv.experience[${i}]`;
       const job = obj(e, p);
@@ -60,6 +61,7 @@ export function validateTailoredCv(x: unknown): TailoredCv {
         location: strOrNull(job.location, `${p}.location`),
         dates: str(job.dates, `${p}.dates`, { allowEmpty: true }),
         bullets: strings(job.bullets, `${p}.bullets`),
+        ...(job.achievements !== undefined ? { achievements: strings(job.achievements, `${p}.achievements`) } : {}),
       };
     }),
     education: arr(o.education, 'cv.education').map((e, i) => {

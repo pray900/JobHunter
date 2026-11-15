@@ -14,10 +14,11 @@ import {
   textOfSegments,
   type Segment,
 } from './textOf.js';
-import type { DocKind, TailoredCv, TailoredLetter, TemplateId } from './types.js';
+import { PAGE_LIMITS, type DocKind, type TailoredCv, type TailoredLetter, type TemplateId } from './types.js';
 
 export type CheckCode =
   | 'cv_pages'
+  | 'criteria_coverage'
   | 'letter_pages'
   | 'placeholder'
   | 'company_leakage'
@@ -55,6 +56,13 @@ export interface OtherJob {
   advertiser: string | null;
 }
 
+// How the writer says one selection criterion is answered: a path into the documents, or "" with a reason.
+export interface CriterionCoverage {
+  criterion: string;
+  answeredIn: string;
+  why: string;
+}
+
 export interface CheckInput {
   templateId: TemplateId;
   cv: TailoredCv;
@@ -68,6 +76,8 @@ export interface CheckInput {
   manualEdits?: { path: string; text: string | null }[];
   // Only generation drops projects to fit one page. Anything else (a saved edit) is only shrunk, never cut. Default false.
   dropProjects?: boolean;
+  // Government template: where each selection criterion is answered. Absent means the coverage check is skipped.
+  criteriaCoverage?: CriterionCoverage[];
 }
 
 export interface RunOptions {
@@ -405,7 +415,7 @@ const PROSE_URL = /https?:\/\/[^\s)>\]"']+/gi;
 
 // Numbers and dates a text may use: the base CV's; the letter may also use the job ad's own.
 // Experience and project bullets may carry new result or scale figures (the writer lists them as stretches); their years, years-of-experience terms and month-year dates are still checked.
-const BULLET_WHERE = /^cv\.(?:experience|projects)\[\d+\]\.bullets\[\d+\]$/;
+const BULLET_WHERE = /^cv\.(?:(?:experience|projects)\[\d+\]\.bullets\[\d+\]|experience\[\d+\]\.achievements\[\d+\]|competencies\[\d+\])$/;
 const isBullet = (seg: Segment): boolean => seg.doc === 'cv' && BULLET_WHERE.test(seg.where);
 
 function numberAndDateFacts(seg: Segment, text: string, base: BaseFacts, extra?: { numbers: Set<string>; dates: Set<string> }): CheckResult[] {
@@ -649,7 +659,9 @@ export function longParagraphChecks(cv: TailoredCv): CheckResult[] {
     { where: 'cv.headline', text: cv.headline ?? '' },
     { where: 'cv.summary', text: cv.summary },
     ...cv.skills.map((g, i) => ({ where: `cv.skills[${i}]`, text: `${g.group}: ${g.items.join(', ')}` })),
+    ...(cv.competencies ?? []).map((text, i) => ({ where: `cv.competencies[${i}]`, text })),
     ...cv.experience.flatMap((e, i) => e.bullets.map((b, j) => ({ where: `cv.experience[${i}].bullets[${j}]`, text: b }))),
+    ...cv.experience.flatMap((e, i) => (e.achievements ?? []).map((a, j) => ({ where: `cv.experience[${i}].achievements[${j}]`, text: a }))),
     ...cv.projects.flatMap((p, i) => p.bullets.map((b, j) => ({ where: `cv.projects[${i}].bullets[${j}]`, text: b }))),
   ];
   const out: CheckResult[] = [];
@@ -666,13 +678,55 @@ export function longParagraphChecks(cv: TailoredCv): CheckResult[] {
 
 const HEADINGS: Record<TemplateId, (cv: TailoredCv) => string[]> = {
   'standard-ats': (cv) => [...(cv.summary.trim() !== '' ? ['SUMMARY'] : []), 'SKILLS', 'PROFESSIONAL EXPERIENCE', ...(cv.projects.length > 0 ? ['PROJECTS'] : []), 'EDUCATION'],
+  'au-government': (cv) => [
+    ...(cv.summary.trim() !== '' ? ['PROFESSIONAL SUMMARY'] : []),
+    'KEY SKILLS & COMPETENCIES',
+    'PROFESSIONAL EXPERIENCE',
+    ...(cv.projects.length > 0 ? ['PROJECTS'] : []),
+    'QUALIFICATIONS',
+    'REFEREES',
+  ],
 };
+
+// ---------- selection-criteria coverage ----------
+
+const PROJECT_DETAIL = 'Answer selection criteria in the summary, competencies, experience or the cover letter, not in a project.';
+
+// The text at a path the writer may name in answeredIn, or undefined if the path is not accepted or does not exist.
+function coveredText(answeredIn: string, cv: TailoredCv, letter: TailoredLetter): string | undefined {
+  if (answeredIn === 'coverLetter') return letter.paragraphs.join('\n');
+  if (answeredIn === 'cv.summary') return cv.summary;
+  let m = /^cv\.competencies\[(\d+)\]$/.exec(answeredIn);
+  if (m) return cv.competencies?.[Number(m[1])];
+  m = /^cv\.experience\[(\d+)\]\.(bullets|achievements)\[(\d+)\]$/.exec(answeredIn);
+  if (m) return cv.experience[Number(m[1])]?.[m[2] as 'bullets' | 'achievements']?.[Number(m[3])];
+  return undefined;
+}
+
+function coverageChecks(coverage: CriterionCoverage[], cv: TailoredCv, letter: TailoredLetter): CheckResult[] {
+  const out: CheckResult[] = [];
+  coverage.forEach((c, i) => {
+    const where = `criteriaCoverage[${i}]`;
+    const fail = (detail: string) => out.push({ code: 'criteria_coverage', severity: 'hard', doc: 'cv', where, detail });
+    if (c.answeredIn === '') {
+      if (c.why.trim() === '') fail(`The criterion "${c.criterion}" is not answered and no reason is given.`);
+      return;
+    }
+    if (/^cv\.projects\[/.test(c.answeredIn)) return fail(PROJECT_DETAIL);
+    const text = coveredText(c.answeredIn, cv, letter);
+    if (text === undefined || text.trim() === '') fail(`The criterion "${c.criterion}" points to "${c.answeredIn}", which is missing or empty in the CV.`);
+  });
+  return out;
+}
 
 function renderTextChecks(templateId: TemplateId, cv: TailoredCv, cvText: string, letterText: string): CheckResult[] {
   const out: CheckResult[] = [];
   const squash = (s: string) => s.replace(/\s+/g, ' ').toLowerCase();
   if (!squash(cvText).includes(squash(cv.name))) {
     out.push({ code: 'render_text', severity: 'hard', doc: 'cv', detail: 'The name is missing from the rendered CV text.' });
+  }
+  if (templateId === 'au-government' && !squash(cvText).includes('referees available on request')) {
+    out.push({ code: 'render_text', severity: 'hard', doc: 'cv', detail: 'The line "Referees available on request" is missing from the rendered CV.' });
   }
   let from = 0;
   for (const h of HEADINGS[templateId](cv)) {
@@ -724,9 +778,10 @@ export async function runChecks(
     }
     return defaultRender(rawInput.templateId, 'cv', cv, rawInput.coverLetter, opts, layout);
   };
+  const pageLimit = PAGE_LIMITS[rawInput.templateId];
   const fit = rawInput.dropProjects === true
-    ? await fitCv(rawInput.cv, rawInput.manualEdits ?? [], measureCv)
-    : { ...(await fitLayout(rawInput.cv, measureCv)), cv: rawInput.cv, droppedProjects: [] as string[] };
+    ? await fitCv(rawInput.cv, rawInput.manualEdits ?? [], measureCv, pageLimit)
+    : { ...(await fitLayout(rawInput.cv, measureCv, pageLimit)), cv: rawInput.cv, droppedProjects: [] as string[] };
   // Every other check runs on the fitted CV.
   const input: CheckInput = { ...rawInput, cv: fit.cv };
   const cvRender = { pages: fit.pages, text: fit.text };
@@ -744,12 +799,13 @@ export async function runChecks(
   const all = [...cvSegs, ...letterSegs];
 
   const checks: CheckResult[] = [];
-  if (cvRender.pages > 1) checks.push({ code: 'cv_pages', severity: 'hard', doc: 'cv', detail: `The CV is ${cvRender.pages} pages${fit.step === LAYOUT_STEPS.length - 1 ? ' even at the smallest layout' : ''}; the limit is 1.` });
+  if (cvRender.pages > pageLimit) checks.push({ code: 'cv_pages', severity: 'hard', doc: 'cv', detail: `The CV is ${cvRender.pages} pages${fit.step === LAYOUT_STEPS.length - 1 ? ' even at the smallest layout' : ''}; the limit is ${pageLimit}.` });
   if (letterRender.pages > 2) {
     checks.push({ code: 'letter_pages', severity: 'hard', doc: 'cover_letter', detail: `The cover letter is ${letterRender.pages} pages; the limit is 2.` });
   }
   checks.push(...renderTextChecks(input.templateId, input.cv, cvRender.text, letterRender.text));
   checks.push(...longParagraphChecks(input.cv));
+  if (input.criteriaCoverage) checks.push(...coverageChecks(input.criteriaCoverage, input.cv, input.coverLetter));
   checks.push(...placeholderChecks(all));
   const base = baseFacts(input.baseCv.structured, config.usToAu);
   // Copied own names are exempt from the spelling and banned-phrase checks; everything else is checked.

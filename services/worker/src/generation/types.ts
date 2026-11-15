@@ -10,7 +10,9 @@ export interface TailoredCv {
   summary: string;
   workRights: string | null;
   skills: { group: string; items: string[] }[];
-  experience: { title: string; employer: string; location: string | null; dates: string; bullets: string[] }[];
+  // Government template only: each item is "Capability: proof".
+  competencies?: string[];
+  experience: { title: string; employer: string; location: string | null; dates: string; bullets: string[]; achievements?: string[] }[];
   education: { qualification: string; institution: string; dates: string; statusText: string }[];
   projects: { name: string; bullets: string[] }[];
 }
@@ -25,10 +27,13 @@ export interface TailoredLetter {
   name: string;
 }
 
-export type TemplateId = 'standard-ats';
+export type TemplateId = 'standard-ats' | 'au-government';
 export type DocKind = 'cv' | 'cover_letter';
 export type RenderFormat = 'docx' | 'pdf';
 
-export const TEMPLATE_IDS: readonly TemplateId[] = ['standard-ats'];
+export const TEMPLATE_IDS: readonly TemplateId[] = ['standard-ats', 'au-government'];
+
+// Most pages a CV may run to, per template.
+export const PAGE_LIMITS: Record<TemplateId, number> = { 'standard-ats': 1, 'au-government': 2 };
 export const DOC_KINDS: readonly DocKind[] = ['cv', 'cover_letter'];
 export const RENDER_FORMATS: readonly RenderFormat[] = ['docx', 'pdf'];

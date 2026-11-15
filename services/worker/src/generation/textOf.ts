@@ -28,6 +28,7 @@ export function cvSegments(cv: TailoredCv): Segment[] {
     add(`cv.skills[${i}].group`, g.group);
     g.items.forEach((s, j) => add(`cv.skills[${i}].items[${j}]`, s));
   });
+  (cv.competencies ?? []).forEach((c, i) => add(`cv.competencies[${i}]`, c));
   cv.experience.forEach((e, i) => {
     const p = `cv.experience[${i}]`;
     add(`${p}.title`, e.title, 'body', 'title');
@@ -35,6 +36,7 @@ export function cvSegments(cv: TailoredCv): Segment[] {
     add(`${p}.location`, e.location);
     add(`${p}.dates`, e.dates, 'body', 'dates');
     e.bullets.forEach((b, j) => add(`${p}.bullets[${j}]`, b));
+    (e.achievements ?? []).forEach((a, j) => add(`${p}.achievements[${j}]`, a));
   });
   cv.education.forEach((e, i) => {
     const p = `cv.education[${i}]`;

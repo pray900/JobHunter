@@ -12,5 +12,7 @@ export async function renderDocx(
   switch (templateId) {
     case 'standard-ats':
       return renderStandardAts(kind, cv, letter, layout);
+    case 'au-government':
+      return renderStandardAts(kind, cv, letter, layout); // Task 3 replaces this
   }
 }
