@@ -27,6 +27,7 @@ test('applies 001_init once and seeds the single user', async () => {
     '004_generation.sql',
     '005_versions.sql',
     '006_base_document_edits.sql',
+    '007_job_template.sql',
   ]);
   expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual([]);
   const { rows } = await pool.query('select id, name from users');
@@ -173,7 +174,7 @@ test('applies 006 after 005', async () => {
     `insert into base_documents(owner_id, kind, source_ref, content_hash, media_type) values ($1,'cv','pre.pdf','abc','application/pdf')`,
     [USER_ID],
   );
-  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['006_base_document_edits.sql']);
+  expect(await runMigrations(pool, MIGRATIONS_DIR)).toEqual(['006_base_document_edits.sql', '007_job_template.sql']);
   const { rows } = await pool.query(`select edited_facts, edited_at, facts_hash from base_documents`);
   expect(rows).toEqual([{ edited_facts: null, edited_at: null, facts_hash: 'abc' }]);
 });
