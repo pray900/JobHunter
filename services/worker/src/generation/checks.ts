@@ -38,7 +38,7 @@ export type CheckCode =
   // Not produced by runChecks: the Generate workflow records it when the worker rejects the writer's documents.
   | 'invalid_document'
   // Not produced by runChecks: the Generate workflow records it when a regenerate's writer changed or left out
-  // one of Prayush's locked manual edits.
+  // one of the user's locked manual edits.
   | 'manual_edit_changed';
 
 export interface CheckResult {
@@ -64,7 +64,7 @@ export interface CheckInput {
   baseCv: { structured: object };
   baseCoverLetter: { structured: object } | null;
   otherJobs: OtherJob[];
-  // Prayush's manual edits: a project holding one is never dropped to make the CV fit.
+  // The user's manual edits: a project holding one is never dropped to make the CV fit.
   manualEdits?: { path: string; text: string | null }[];
   // Only generation drops projects to fit one page. Anything else (a saved edit) is only shrunk, never cut. Default false.
   dropProjects?: boolean;
@@ -277,7 +277,7 @@ function placeholderChecks(segments: Segment[]): CheckResult[] {
 // Only text equal to the base value (after norm(): case, spaces, dashes and quotes; brackets and other
 // punctuation count) is exempt.
 // A field the writer must copy exactly from the base CV (role title, employer, institution, qualification,
-// statusText, the work-rights line) and did: its own words are his, so US spelling and banned words in it
+// statusText, the work-rights line) and did: its own words are the user's, so US spelling and banned words in it
 // ("Data Visualization Analyst", "Dynamic Solutions Pty Ltd") are not the writer's to fix.
 const COPIED_FIELD = /^(?:cv\.experience\[\d+\]\.(title|employer)|cv\.education\[\d+\]\.(institution|qualification|statusText)|cv\.(workRights))$/;
 
@@ -643,7 +643,7 @@ async function linkChecks(cv: TailoredCv, base: BaseFacts, f: FetchLike): Promis
 const MAX_PARAGRAPH_WORDS = 40;
 
 // CV prose a reader scans: headline, summary, bullets and each skills line. Words are runs of non-space characters.
-// A field inside one of Prayush's locked edits is reported like any other; the Generate workflow marks it locked.
+// A field inside one of the user's locked edits is reported like any other; the Generate workflow marks it locked.
 export function longParagraphChecks(cv: TailoredCv): CheckResult[] {
   const fields: { where: string; text: string }[] = [
     { where: 'cv.headline', text: cv.headline ?? '' },
