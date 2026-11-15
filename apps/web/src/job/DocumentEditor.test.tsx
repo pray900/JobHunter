@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
 import { DocumentEditor } from './DocumentEditor';
-import { baseVersion } from './detailFixtures';
+import { baseVersion, govVersion } from './detailFixtures';
 
 function setup(over: Partial<React.ComponentProps<typeof DocumentEditor>> = {}) {
   const onSave = vi.fn();
@@ -122,5 +122,32 @@ describe('DocumentEditor', () => {
     expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
     expect(screen.getByRole('alert')).toHaveTextContent('Could not save.');
     expect(screen.getByRole('alert')).toHaveClass('attention');
+  });
+});
+
+describe('DocumentEditor government fields', () => {
+  test('competencies and achievements can be edited, added and removed', async () => {
+    const { onSave } = setup({ cv: govVersion.cv });
+    await userEvent.type(screen.getByLabelText('Competency 2'), ' and briefing');
+    await userEvent.click(screen.getByRole('button', { name: 'Add Competency' }));
+    await userEvent.type(screen.getByLabelText('Competency 3'), 'Budgets: managed $2m');
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Competency 1' }));
+    const ach = screen.getByLabelText('Developer achievement 1');
+    await userEvent.clear(ach);
+    await userEvent.type(ach, 'Cut handling time by 40%.');
+    await userEvent.click(screen.getByRole('button', { name: 'Add Developer achievement' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const [cv] = onSave.mock.calls[0];
+    expect(cv.competencies).toEqual(['Policy writing and briefing', 'Budgets: managed $2m']);
+    expect(cv.experience[0].achievements).toEqual(['Cut handling time by 40%.']);
+  });
+
+  test('a standard CV keeps absent keys absent when saved', async () => {
+    const { onSave } = setup();
+    await userEvent.type(screen.getByLabelText('Headline'), '!');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const [cv] = onSave.mock.calls[0];
+    expect('competencies' in cv).toBe(false);
+    expect('achievements' in cv.experience[0]).toBe(false);
   });
 });

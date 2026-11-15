@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
-import { CHECK_CODES, REVIEW_ITEM_IDS, checkLabel, reviewItemLabel } from './labels';
+import { TEMPLATE_NAMES, CHECK_CODES, REVIEW_ITEM_IDS, checkLabel, reviewItemLabel } from './labels';
 
 function read(rel: string): string {
   return readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -42,4 +42,10 @@ test('labels the spec calls out', () => {
 
 test('long_paragraph has a label', () => {
   expect(checkLabel('long_paragraph')).toBe('Paragraph over 40 words');
+});
+
+test('government labels', () => {
+  expect(checkLabel('criteria_coverage')).toBe('Selection criteria answer not found');
+  expect(reviewItemLabel('selection_criteria')).toBe('Selection criteria');
+  expect(TEMPLATE_NAMES['au-government']).toBe('Australian Government');
 });

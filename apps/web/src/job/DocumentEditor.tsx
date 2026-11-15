@@ -34,7 +34,12 @@ function cleanCv(cv: TailoredCv): TailoredCv {
       links: cv.contact.links.filter((l) => l.label.trim() !== '' || l.url.trim() !== ''),
     },
     skills: cv.skills.map((g) => ({ ...g, items: keep(g.items) })).filter((g) => g.group.trim() !== '' || g.items.length > 0),
-    experience: cv.experience.map((e) => ({ ...e, bullets: keep(e.bullets) })),
+    ...(cv.competencies === undefined ? {} : { competencies: keep(cv.competencies) }),
+    experience: cv.experience.map((e) => ({
+      ...e,
+      bullets: keep(e.bullets),
+      ...(e.achievements === undefined ? {} : { achievements: keep(e.achievements) }),
+    })),
     projects: cv.projects.map((p) => ({ ...p, bullets: keep(p.bullets) })),
   };
 }
@@ -138,6 +143,13 @@ export function DocumentEditor(props: {
           Add skill group
         </button>
 
+        {cv.competencies !== undefined && (
+          <>
+            <h4>Key Skills &amp; Competencies</h4>
+            <StringList noun="Competency" items={cv.competencies} onChange={(competencies) => patchCv({ competencies })} />
+          </>
+        )}
+
         <h4>Experience</h4>
         <p className="muted copied-note">{COPIED_NOTE}</p>
         {cv.experience.map((job, i) => (
@@ -153,6 +165,13 @@ export function DocumentEditor(props: {
               items={job.bullets}
               onChange={(bullets) => patchCv({ experience: replaceAt(cv.experience, i, { ...job, bullets }) })}
             />
+            {job.achievements !== undefined && (
+              <StringList
+                noun={`${job.title} achievement`}
+                items={job.achievements}
+                onChange={(achievements) => patchCv({ experience: replaceAt(cv.experience, i, { ...job, achievements }) })}
+              />
+            )}
           </div>
         ))}
 

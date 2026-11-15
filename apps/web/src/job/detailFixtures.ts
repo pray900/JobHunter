@@ -74,9 +74,37 @@ export const baseDetail: JobDetail = {
     matchBreakdown: { matched: ['Apex'], missing: ['CPQ'], notes: [] },
     warnings: [],
     companyNotes: null,
+    suggestedTemplate: null,
+    templateReason: null,
+    templateChoice: null,
   },
   generation: { status: 'done', stage: 'saving', round: 2, attempts: 1, error: null },
   version: baseVersion,
   versions: 1,
   baseCv: null,
+};
+
+// A version made with the Australian Government template.
+export const govVersion: DocumentVersion = {
+  ...baseVersion,
+  templateId: 'au-government',
+  cv: {
+    ...baseVersion.cv,
+    competencies: ['Stakeholder engagement: led a 12-agency working group', 'Policy writing'],
+    experience: [
+      {
+        ...baseVersion.cv.experience[0]!,
+        bullets: ['Built LWC components.'],
+        achievements: ['Cut case handling time by 30%.'],
+      },
+    ],
+  },
+  reasons: {
+    ...baseVersion.reasons,
+    criteriaCoverage: [
+      { criterion: 'Demonstrated stakeholder engagement', answeredIn: 'cv.experience[0].achievements[0]', why: 'Shown by the case-time result.' },
+      { criterion: 'Strong written communication', answeredIn: 'coverLetter', why: 'Argued in the letter.' },
+      { criterion: 'Budget management', answeredIn: '', why: 'Not in your base CV.' },
+    ],
+  },
 };

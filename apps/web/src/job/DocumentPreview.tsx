@@ -21,7 +21,133 @@ function contactLine(cv: TailoredCv): string {
     .join(' | ');
 }
 
-export function CvPreview({ cv, edited = NONE }: { cv: TailoredCv; edited?: ReadonlySet<string> }) {
+// "Capability: proof": the text before the first ": " in bold, the rest plain.
+function Competency({ text }: { text: string }) {
+  const at = text.indexOf(': ');
+  return at < 0 ? (
+    <>{text}</>
+  ) : (
+    <>
+      <strong>{text.slice(0, at)}</strong>
+      {`: ${text.slice(at + 2)}`}
+    </>
+  );
+}
+
+// The Australian Government template: its own headings, competencies, Responsibilities / Key Achievements, Referees.
+function GovCvPreview({ cv, edited }: { cv: TailoredCv; edited: ReadonlySet<string> }) {
+  const contact = contactLine(cv);
+  return (
+    <div className="paper" data-doc="cv" data-template="au-government">
+      <h2 className="paper-name">{cv.name}</h2>
+      {cv.headline && (
+        <p>
+          {cv.headline} <Mark on={edited.has('cv.headline')} />
+        </p>
+      )}
+      {contact && (
+        <p className="paper-contact">
+          {contact} <Mark on={under(edited, 'cv.contact')} />
+        </p>
+      )}
+      {cv.workRights && <p>{cv.workRights}</p>}
+
+      {cv.summary.trim() !== '' && (
+        <>
+          <h3>Professional Summary</h3>
+          <p>
+            {cv.summary} <Mark on={edited.has('cv.summary')} />
+          </p>
+        </>
+      )}
+
+      <h3>Key Skills &amp; Competencies</h3>
+      {(cv.competencies ?? []).map((c, i) => (
+        <p key={i}>
+          <Competency text={c} /> <Mark on={edited.has(`cv.competencies[${i}]`)} />
+        </p>
+      ))}
+      {cv.skills.map((g, i) => (
+        <p key={i}>
+          {g.group}: {g.items.join(', ')} <Mark on={under(edited, `cv.skills[${i}]`)} />
+        </p>
+      ))}
+
+      <h3>Professional Experience</h3>
+      {cv.experience.map((job, i) => (
+        <div key={i} className="paper-entry">
+          <p className="paper-line">
+            <strong>{[job.title, job.employer, job.location].filter(Boolean).join(', ')}</strong>
+            <span>{job.dates}</span>
+          </p>
+          {job.bullets.length > 0 && (
+            <>
+              <p>
+                <strong>Responsibilities</strong>
+              </p>
+              <ul>
+                {job.bullets.map((b, j) => (
+                  <li key={j}>
+                    {b} <Mark on={edited.has(`cv.experience[${i}].bullets[${j}]`)} />
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {(job.achievements ?? []).length > 0 && (
+            <>
+              <p>
+                <strong>Key Achievements</strong>
+              </p>
+              <ul>
+                {(job.achievements ?? []).map((a, j) => (
+                  <li key={j}>
+                    {a} <Mark on={edited.has(`cv.experience[${i}].achievements[${j}]`)} />
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      ))}
+
+      {cv.projects.length > 0 && (
+        <>
+          <h3>Projects</h3>
+          {cv.projects.map((p, i) => (
+            <div key={i} className="paper-entry">
+              <p>{p.name}</p>
+              <ul>
+                {p.bullets.map((b, j) => (
+                  <li key={j}>
+                    {b} <Mark on={edited.has(`cv.projects[${i}].bullets[${j}]`)} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </>
+      )}
+
+      <h3>Qualifications</h3>
+      {cv.education.map((e, i) => (
+        <div key={i} className="paper-entry">
+          <p className="paper-line">
+            <strong>{[e.qualification, e.institution].filter((p) => p.trim() !== '').join(', ')}</strong>
+            <span>{e.dates}</span>
+          </p>
+          {e.statusText && <p>{e.statusText}</p>}
+        </div>
+      ))}
+
+      <h3>Referees</h3>
+      <p>Referees available on request</p>
+    </div>
+  );
+}
+
+export function CvPreview({ cv, edited = NONE, templateId }: { cv: TailoredCv; edited?: ReadonlySet<string>; templateId?: string }) {
+  if (templateId === 'au-government') return <GovCvPreview cv={cv} edited={edited} />;
   const contact = contactLine(cv);
   return (
     <div className="paper" data-doc="cv">

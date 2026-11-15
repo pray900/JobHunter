@@ -128,6 +128,10 @@ export interface JobDetailJob {
   matchBreakdown: MatchBreakdown | null;
   warnings: WarningCode[];
   companyNotes: string | null;
+  // Template ids are strings: an id this build does not know still shows.
+  suggestedTemplate: string | null;
+  templateReason: string | null;
+  templateChoice: string | null;
 }
 
 export interface TailoredCv {
@@ -142,7 +146,9 @@ export interface TailoredCv {
   summary: string;
   workRights: string | null;
   skills: { group: string; items: string[] }[];
-  experience: { title: string; employer: string; location: string | null; dates: string; bullets: string[] }[];
+  // Government template only: each "Capability: proof".
+  competencies?: string[];
+  experience: { title: string; employer: string; location: string | null; dates: string; bullets: string[]; achievements?: string[] }[];
   education: { qualification: string; institution: string; dates: string; statusText: string }[];
   projects: { name: string; bullets: string[] }[];
 }
@@ -176,7 +182,8 @@ export type CheckCode =
   | 'link_unreachable'
   | 'long_paragraph'
   | 'invalid_document'
-  | 'manual_edit_changed';
+  | 'manual_edit_changed'
+  | 'criteria_coverage';
 
 export type ReviewItemId =
   | 'relevance'
@@ -192,7 +199,8 @@ export type ReviewItemId =
   | 'keyword_coverage_honest'
   | 'reasons_hold_up'
   | 'cover_letter_sources'
-  | 'addressee';
+  | 'addressee'
+  | 'selection_criteria';
 
 export interface CheckResult {
   code: CheckCode;
@@ -216,6 +224,8 @@ export interface VersionReasons {
   stretches: Stretch[];
   factRulings: { text: string; ruling: 'honest_rephrase' | 'invented'; why: string }[];
   fit?: { droppedProjects: string[] };
+  // Government versions only: where each selection criterion is answered ("" = nowhere).
+  criteriaCoverage?: { criterion: string; answeredIn: string; why: string }[];
 }
 
 export interface KeywordCoverage {

@@ -9,6 +9,7 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 const isStr = (v: unknown): v is string => typeof v === 'string';
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const strOrNull = (v: unknown) => v === null || isStr(v);
+const strOrNullOrMissing = (v: unknown) => v === undefined || v === null || isStr(v);
 const arrOf = <T>(v: unknown, f: (x: unknown) => x is T): v is T[] => Array.isArray(v) && v.every(f);
 const isStrArr = (v: unknown): v is string[] => arrOf(v, isStr);
 const oneOf = (list: readonly string[]) => (v: unknown): v is string => isStr(v) && list.includes(v);
@@ -20,14 +21,14 @@ const CHECK_CODES = [
   'cv_pages', 'letter_pages', 'placeholder', 'company_leakage', 'title_leakage', 'banned_phrase', 'us_spelling',
   'tech_casing', 'unknown_fact', 'keyword_not_found', 'link_invalid', 'render_text', 'unmatched_skill',
   'possible_misspelling', 'missing_work_rights', 'work_rights_dropped', 'link_unreachable', 'long_paragraph', 'invalid_document',
-  'manual_edit_changed',
+  'manual_edit_changed', 'criteria_coverage',
 ];
 const ORIGINS = ['generated', 'regenerated', 'edited', 'restored'];
 const isOrigin = oneOf(ORIGINS);
 const REVIEW_IDS = [
   'relevance', 'over_tailoring', 'strongest_match_top_third', 'inflated_scope', 'ai_sounding', 'paraphrased_job_ad',
   'keyword_stuffing', 'bullet_rhythm', 'star_form', 'tidiness', 'keyword_coverage_honest', 'reasons_hold_up',
-  'cover_letter_sources', 'addressee',
+  'cover_letter_sources', 'addressee', 'selection_criteria',
 ];
 
 function isJob(j: unknown): boolean {
@@ -45,7 +46,10 @@ function isJob(j: unknown): boolean {
     (j.matchBreakdown === null ||
       (isObj(j.matchBreakdown) && isStrArr(j.matchBreakdown.matched) && isStrArr(j.matchBreakdown.missing) && isStrArr(j.matchBreakdown.notes))) &&
     isStrArr(j.warnings) &&
-    strOrNull(j.companyNotes)
+    strOrNull(j.companyNotes) &&
+    strOrNullOrMissing(j.suggestedTemplate) &&
+    strOrNullOrMissing(j.templateReason) &&
+    strOrNullOrMissing(j.templateChoice)
   );
 }
 
@@ -95,10 +99,11 @@ function isCv(cv: unknown): boolean {
   const c = cv.contact;
   if (!isObj(c) || !strOrNull(c.location) || !strOrNull(c.email) || !strOrNull(c.phone) || !isLinks(c.links)) return false;
   return (
+    (cv.competencies === undefined || isStrArr(cv.competencies)) &&
     arrOf(cv.skills, (s): s is Obj => isObj(s) && isStr(s.group) && isStrArr(s.items)) &&
     arrOf(
       cv.experience,
-      (e): e is Obj => isObj(e) && isStr(e.title) && isStr(e.employer) && strOrNull(e.location) && isStr(e.dates) && isStrArr(e.bullets),
+      (e): e is Obj => isObj(e) && isStr(e.title) && isStr(e.employer) && strOrNull(e.location) && isStr(e.dates) && isStrArr(e.bullets) && (e.achievements === undefined || isStrArr(e.achievements)),
     ) &&
     arrOf(
       cv.education,
@@ -127,7 +132,9 @@ function isReasons(r: unknown): boolean {
       r.factRulings,
       (f): f is Obj => isObj(f) && isStr(f.text) && oneOf(['honest_rephrase', 'invented'])(f.ruling) && isStr(f.why),
     ) &&
-    (r.fit === undefined || (isObj(r.fit) && isStrArr(r.fit.droppedProjects)))
+    (r.fit === undefined || (isObj(r.fit) && isStrArr(r.fit.droppedProjects))) &&
+    (r.criteriaCoverage === undefined ||
+      arrOf(r.criteriaCoverage, (c): c is Obj => isObj(c) && isStr(c.criterion) && isStr(c.answeredIn) && isStr(c.why)))
   );
 }
 
@@ -198,6 +205,7 @@ export function parseJobDetail(body: unknown): JobDetail | null {
     return null;
   }
   const detail = body as unknown as JobDetail;
+  for (const k of ['suggestedTemplate', 'templateReason', 'templateChoice'] as const) detail.job[k] = detail.job[k] ?? null;
   if (detail.version) detail.version.manualEdits = readManualEdits(detail.version.manualEdits as unknown[], detail.version);
   return detail;
 }

@@ -21,6 +21,7 @@ const CHECK_LABELS: Record<CheckCode, string> = {
   long_paragraph: 'Paragraph over 40 words',
   invalid_document: 'A required part of the document was missing or empty',
   manual_edit_changed: 'Your edit was changed',
+  criteria_coverage: 'Selection criteria answer not found',
 };
 
 // The note a regenerate puts on a check inside one of Prayush's locked edits (generate-documents).
@@ -41,7 +42,11 @@ const REVIEW_LABELS: Record<ReviewItemId, string> = {
   reasons_hold_up: 'Reasons given hold up',
   cover_letter_sources: 'Cover letter claims come from your documents',
   addressee: 'Letter addressed correctly',
+  selection_criteria: 'Selection criteria',
 };
+
+// Template ids are strings; an id not listed here shows as itself.
+export const TEMPLATE_NAMES: Record<string, string> = { 'standard-ats': 'Standard ATS', 'au-government': 'Australian Government' };
 
 export const CHECK_CODES = Object.keys(CHECK_LABELS) as CheckCode[];
 export const REVIEW_ITEM_IDS = Object.keys(REVIEW_LABELS) as ReviewItemId[];

@@ -15,6 +15,7 @@ import {
   saveBaseFacts,
   baseFileUrl,
   setStatus,
+  setTemplate,
   uploadDocument,
 } from './client';
 import { baseDetail, baseVersion } from '../job/detailFixtures';
@@ -322,4 +323,27 @@ test('fetchBaseFile returns a PDF blob and fails on errors', async () => {
   expect(blob.size).toBe(8);
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('no', { status: 404 })));
   await expect(client.fetchBaseFile('cv')).rejects.toMatchObject({ status: 404 });
+});
+
+test('setTemplate posts the id (or null) with the header and returns the stored choice', async () => {
+  const f = vi.fn().mockResolvedValueOnce(ok({ templateChoice: 'au-government' })).mockResolvedValueOnce(ok({ templateChoice: null }));
+  vi.stubGlobal('fetch', f);
+  expect(await setTemplate('j1', 'au-government')).toEqual({ templateChoice: 'au-government' });
+  expect(await setTemplate('j1', null)).toEqual({ templateChoice: null });
+  expect(f.mock.calls[0][0]).toBe('/api/jobs/template?id=j1');
+  expect(f.mock.calls[0][1].method).toBe('POST');
+  expect(f.mock.calls[0][1].headers['X-JobHunter']).toBe('1');
+  expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ templateId: 'au-government' });
+  expect(JSON.parse(f.mock.calls[1][1].body)).toEqual({ templateId: null });
+});
+
+test('fetchJobDetail keeps an unknown template id and reads missing template fields as null', async () => {
+  const withId = { ...baseDetail, job: { ...baseDetail.job, suggestedTemplate: 'future-template', templateChoice: 'future-template' } };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok(withId)));
+  const d = await fetchJobDetail('j1');
+  expect(d.job.suggestedTemplate).toBe('future-template');
+  const { suggestedTemplate: _a, templateReason: _b, templateChoice: _c, ...oldJob } = baseDetail.job;
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok({ ...baseDetail, job: oldJob })));
+  const old = await fetchJobDetail('j1');
+  expect([old.job.suggestedTemplate, old.job.templateReason, old.job.templateChoice]).toEqual([null, null, null]);
 });

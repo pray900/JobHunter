@@ -237,3 +237,8 @@ kbd { display: inline-block; min-width: 22px; padding: 0 6px; text-align: center
 .edit-list.invalid, .list-box.invalid { border-radius: 6px; outline: 2px solid var(--warn-border); outline-offset: 4px; }
 .not-valid { display: block; font-size: 0.85rem; margin-top: 4px; }
 .edit-field label { display: block; }
+
+/* Template control beside Generate */
+.template-pick { display: inline-flex; align-items: center; gap: 8px; }
+.template-select { display: inline-flex; align-items: center; gap: 6px; }
+.template-select .label { margin: 0; }

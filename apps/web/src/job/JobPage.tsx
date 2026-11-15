@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ApiError, downloadUrl, fetchJobDetail, fetchVersions, generate, restoreVersion, saveCompanyNotes, saveEdit, setStatus } from '../api/client';
+import { ApiError, downloadUrl, fetchJobDetail, fetchVersions, generate, restoreVersion, saveCompanyNotes, saveEdit, setStatus, setTemplate } from '../api/client';
 import type { CheckResult, JobDetail, JobStatus, TailoredCv, TailoredLetter, VersionSummary } from '../api/types';
 import { STATUSES, statusLabel } from '../jobs/labels';
 import { safeHref } from '../jobs/safeHref';
@@ -10,7 +10,7 @@ import { DocumentEditor } from './DocumentEditor';
 import { CvPreview, LetterPreview } from './DocumentPreview';
 import { BaseDiff } from './BaseDiff';
 import { highlightKeywords } from './highlightKeywords';
-import { checkLabel, progressText } from './labels';
+import { TEMPLATE_NAMES, checkLabel, progressText } from './labels';
 import { editedPaths } from './manualEdits';
 import { ReasonsPanel } from './ReasonsPanel';
 import { RegeneratePanel } from './RegeneratePanel';
@@ -19,7 +19,7 @@ import { VersionHistory } from './VersionHistory';
 
 const POLL_MS = 5000;
 
-const TEMPLATE_NAMES: Record<string, string> = { 'standard-ats': 'Standard ATS' };
+const TEMPLATE_NOTE = "Applies to the next Generate. Regenerate keeps the current version's template.";
 
 function generateErrorText(err: unknown): string {
   if (err instanceof ApiError) {
@@ -87,6 +87,8 @@ export function JobPage() {
   const [statusError, setStatusError] = useState(false);
   const [notes, setNotes] = useState('');
   const [savedNotes, setSavedNotes] = useState('');
+  const [templateError, setTemplateError] = useState(false);
+  const [templateSaving, setTemplateSaving] = useState(false);
   const [notesState, setNotesState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [editBase, setEditBase] = useState<EditBase | null>(null);
   const editing = editBase !== null;
@@ -314,6 +316,18 @@ export function JobPage() {
     }
   }
 
+  async function onTemplate(next: 'standard-ats' | 'au-government' | null) {
+    setTemplateError(false);
+    setTemplateSaving(true);
+    try {
+      const out = await setTemplate(id, next);
+      if (mounted.current) setDetail((d) => (d ? { ...d, job: { ...d.job, templateChoice: out.templateChoice } } : d));
+    } catch {
+      if (mounted.current) setTemplateError(true);
+    }
+    if (mounted.current) setTemplateSaving(false);
+  }
+
   async function onNotesBlur() {
     if (notes === savedNotes) return;
     setNotesState('saving');
@@ -348,6 +362,8 @@ export function JobPage() {
   }
 
   const { job, generation, version } = detail;
+  const { templateChoice, suggestedTemplate } = job;
+  const shownTemplate = templateChoice ?? suggestedTemplate ?? 'standard-ats';
   const href = safeHref(job.url);
   const company = job.employer && job.advertiser ? `${job.employer} via ${job.advertiser}` : (job.employer ?? job.advertiser);
   const failed = generation?.status === 'failed' && !running;
@@ -432,6 +448,39 @@ export function JobPage() {
             >
               {version ? 'Generate again' : 'Generate'}
             </button>
+            <div className="template-pick">
+              <label className="template-select">
+                <span className="label">Template</span>
+                <select
+                  value={shownTemplate}
+                  disabled={templateSaving}
+                  onChange={(e) => void onTemplate(e.target.value as 'standard-ats' | 'au-government')}
+                >
+                  {Object.entries(TEMPLATE_NAMES).map(([tid, name]) => (
+                    <option key={tid} value={tid}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {templateChoice !== null && suggestedTemplate !== null && templateChoice !== suggestedTemplate && (
+                <button type="button" className="btn btn-small" disabled={templateSaving} onClick={() => void onTemplate(null)}>
+                  Use suggestion
+                </button>
+              )}
+            </div>
+            {templateChoice === null && suggestedTemplate !== null && (
+              <p className="muted gen-hint">
+                Suggested: {TEMPLATE_NAMES[suggestedTemplate] ?? suggestedTemplate}
+                {job.templateReason ? ` — ${job.templateReason}` : ''}
+              </p>
+            )}
+            <p className="muted gen-hint">{TEMPLATE_NOTE}</p>
+            {templateError && (
+              <p className="attention-text" role="alert">
+                <span aria-hidden="true">⚠ </span>Couldn't save the template. Try again.
+              </p>
+            )}
             {version && (
               <p id="generate-again-hint" className="muted gen-hint">
                 {GENERATE_AGAIN_HINT}
@@ -627,7 +676,7 @@ export function JobPage() {
             </div>
             <div role="tabpanel" id="panel-doc" aria-labelledby={`tab-${tab}`}>
               {tab === 'cv' ? (
-                <CvPreview cv={version.cv} edited={editedSet} />
+                <CvPreview cv={version.cv} edited={editedSet} templateId={version.templateId} />
               ) : tab === 'letter' ? (
                 <LetterPreview cv={version.cv} letter={version.coverLetter} edited={editedSet} />
               ) : (

@@ -12,6 +12,69 @@ function Warn({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Where a selection criterion is answered, in the words of the document's headings; null for a path it does not know.
+function describeAnswer(path: string): string | null {
+  if (path === 'coverLetter') return 'Cover letter';
+  if (path === 'cv.summary') return 'Professional summary';
+  let m = /^cv\.competencies\[(\d+)\]$/.exec(path);
+  if (m) return `Key Skills & Competencies — competency ${Number(m[1]) + 1}`;
+  m = /^cv\.experience\[(\d+)\]\.bullets\[\d+\]$/.exec(path);
+  if (m) return `Responsibilities — role ${Number(m[1]) + 1}`;
+  m = /^cv\.experience\[(\d+)\]\.achievements\[\d+\]$/.exec(path);
+  if (m) return `Key Achievements — role ${Number(m[1]) + 1}`;
+  return null;
+}
+
+// True when the text at the path is gone or blank in this version (an edit of his removed it).
+function answerGone(path: string, v: DocumentVersion): boolean {
+  const { cv, coverLetter } = v;
+  let text: string | undefined;
+  let m: RegExpExecArray | null;
+  if (path === 'coverLetter') text = coverLetter.paragraphs.join(' ');
+  else if (path === 'cv.summary') text = cv.summary;
+  else if ((m = /^cv\.competencies\[(\d+)\]$/.exec(path))) text = cv.competencies?.[Number(m[1])];
+  else if ((m = /^cv\.experience\[(\d+)\]\.(bullets|achievements)\[(\d+)\]$/.exec(path)))
+    text = cv.experience[Number(m[1])]?.[m[2] as 'bullets' | 'achievements']?.[Number(m[3])];
+  else return false;
+  return text === undefined || text.trim() === '';
+}
+
+function SelectionCriteria({ version }: { version: DocumentVersion }) {
+  const list = version.reasons.criteriaCoverage;
+  if (!list || list.length === 0) return null;
+  return (
+    <section className="panel" aria-label="Selection criteria">
+      <h3>Selection criteria</h3>
+      <ul className="plain">
+        {list.map((c, i) => {
+          const unanswered = c.answeredIn === '';
+          const gone = !unanswered && answerGone(c.answeredIn, version);
+          return (
+            <li key={i} className={unanswered || gone ? 'attention-text' : undefined}>
+              <strong>{c.criterion}</strong>
+              <br />
+              {unanswered ? (
+                <Warn>
+                  Not answered — {c.why}
+                </Warn>
+              ) : gone ? (
+                <Warn>
+                  Not answered (removed by your edit)
+                </Warn>
+              ) : (
+                <span className="muted">
+                  <span aria-hidden="true">✓ </span>
+                  {describeAnswer(c.answeredIn) ?? c.answeredIn}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function unresolvedLine(u: UnresolvedItem): { label: string; detail: string } {
   switch (u.source) {
     case 'check':
@@ -89,6 +152,8 @@ export function ReasonsPanel({ job, version }: { job: JobDetailJob; version: Doc
           </ul>
         )}
       </section>
+
+      <SelectionCriteria version={version} />
 
       <section className="panel" aria-label="Changes">
         <h3>What changed and why</h3>

@@ -156,6 +156,17 @@ export function saveCompanyNotes(id: string, notes: string): Promise<{ notes: st
   });
 }
 
+// The template for the next Generate; null clears the choice (the suggestion applies again).
+export function setTemplate(
+  id: string,
+  templateId: 'standard-ats' | 'au-government' | null,
+): Promise<{ templateChoice: string | null }> {
+  return postJson(`/api/jobs/template?id=${encodeURIComponent(id)}`, { templateId }, (b) => {
+    const t = field(b, 'templateChoice');
+    return t === null || typeof t === 'string' ? { templateChoice: t } : null;
+  });
+}
+
 // Newest first.
 export async function fetchVersions(id: string): Promise<VersionSummary[]> {
   const path = `/api/jobs/versions?id=${encodeURIComponent(id)}`;

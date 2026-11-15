@@ -15,6 +15,7 @@ vi.mock('../api/client', async () => {
     generate: vi.fn(),
     setStatus: vi.fn(),
     saveCompanyNotes: vi.fn(),
+    setTemplate: vi.fn(),
     fetchVersions: vi.fn(),
     saveEdit: vi.fn(),
     restoreVersion: vi.fn(),
@@ -363,5 +364,55 @@ describe('JobPage: projects left out to fit one page', () => {
     await screen.findByText('Strong Apex fit.');
     expect(screen.queryByText(/Left out to fit one page/)).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Fit to one page' })).not.toBeInTheDocument();
+  });
+});
+
+describe('JobPage template choice', () => {
+  const withJob = (over: Partial<JobDetail['job']>): JobDetail => ({ ...baseDetail, job: { ...baseDetail.job, ...over } });
+  const NOTE = "Applies to the next Generate. Regenerate keeps the current version's template.";
+
+  test('a Template select with both names and the note; Standard ATS with no suggestion', async () => {
+    renderPage();
+    const select = await screen.findByLabelText('Template');
+    expect(within(select).getByRole('option', { name: 'Standard ATS' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Australian Government' })).toBeInTheDocument();
+    expect(select).toHaveValue('standard-ats');
+    expect(screen.getByText(NOTE)).toBeInTheDocument();
+    expect(screen.queryByText(/^Suggested:/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Use suggestion' })).toBeNull();
+  });
+
+  test('a suggestion with no choice is shown and selected', async () => {
+    m.fetchJobDetail.mockResolvedValue(withJob({ suggestedTemplate: 'au-government', templateReason: 'APS ad with selection criteria.' }));
+    renderPage();
+    expect(await screen.findByText('Suggested: Australian Government — APS ad with selection criteria.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Template')).toHaveValue('au-government');
+    expect(screen.queryByRole('button', { name: 'Use suggestion' })).toBeNull();
+  });
+
+  test('changing the select saves the choice', async () => {
+    m.setTemplate.mockResolvedValue({ templateChoice: 'au-government' });
+    renderPage();
+    await userEvent.selectOptions(await screen.findByLabelText('Template'), 'au-government');
+    expect(m.setTemplate).toHaveBeenCalledWith('j1', 'au-government');
+    await waitFor(() => expect(screen.getByLabelText('Template')).toHaveValue('au-government'));
+  });
+
+  test('Use suggestion appears only when the choice differs and clears it', async () => {
+    m.fetchJobDetail.mockResolvedValue(withJob({ suggestedTemplate: 'au-government', templateReason: 'r', templateChoice: 'standard-ats' }));
+    m.setTemplate.mockResolvedValue({ templateChoice: null });
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Use suggestion' }));
+    expect(m.setTemplate).toHaveBeenCalledWith('j1', null);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Use suggestion' })).toBeNull());
+    expect(screen.getByLabelText('Template')).toHaveValue('au-government');
+  });
+
+  test('a failed save shows a warning and keeps the old choice', async () => {
+    m.setTemplate.mockRejectedValue(new Error('x'));
+    renderPage();
+    await userEvent.selectOptions(await screen.findByLabelText('Template'), 'au-government');
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save the template");
+    expect(screen.getByLabelText('Template')).toHaveValue('standard-ats');
   });
 });
