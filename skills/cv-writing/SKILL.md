@@ -48,7 +48,7 @@ Habits that help:
 Keywords come from the ad's duties, tools, qualifications, soft skills and years-of-experience terms.
 
 - Place a keyword where it belongs in a true sentence: the headline, the summary, the skills group, or a bullet that actually did that work. One honest use in context counts for more than five in a list.
-- Soft skills are keywords too ("stakeholder management", "mentoring", "communication"). Show them through a bullet ("Mentored two new starters through their first quarter") instead of writing the label alone. Use the label where it fits naturally.
+- Soft skills are keywords too ("stakeholder management", "mentoring", "communication"). Show them through a bullet ("Mentored two new starters through their first quarter") instead of writing the label alone. Use the label where it fits naturally. The ad's exact soft-skill phrase ("cross-functional team", "customer-facing", "mentorship") is what keyword scanners look for, so write that phrase once where a role makes it plausible, even if the base CV words it differently.
 - Years terms ("3+ years") only appear when the facts support them, in the same words the facts use.
 - Spell a term the way the ad does (in Australian spelling). If the ad writes the full name and the acronym ("Customer Relationship Management (CRM)"), write the full name and acronym once, then use either. If the ad uses only the acronym, use the acronym.
 - Never stuff. No keyword lists in prose, no repeating a term to raise a count, no hidden or white text. A keyword that the facts cannot support stays out of the CV.

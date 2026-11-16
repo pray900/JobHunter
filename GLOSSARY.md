@@ -104,5 +104,5 @@ Making a tailored CV fit one page: first shrink the template layout step by step
 _Avoid_: Trim, compress
 
 **Stretch**:
-A claim that is supported by the base CV but framed close to the line, shown to Prayush to decide. Also an estimated result or scale figure the writer added to a bullet that the base CV does not state.
+A claim that is supported by the base CV but framed close to the line, shown to Prayush to decide. Also an estimated result or scale figure the writer added to a bullet that the base CV does not state, or a soft-skill keyword from the ad (for example "cross-functional team") inferred from a role where the base CV does not state it.
 _Avoid_: Exaggeration, lie
