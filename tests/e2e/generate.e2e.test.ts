@@ -1794,10 +1794,18 @@ describe('generate documents', () => {
           expect(bare.writer.cv).toMatchObject({ name: good.coverLetter.name, workRights: null, contact: { location: null, email: null, phone: null, links: [] } });
         });
 
-        test('a regenerate keeps the name, contact and work rights of the version it starts from (its locked edits included)', () => {
+        // The checks judge these fields against the base CV, so a regenerate takes them from the base CV too: a version
+        // made before the base CV gained a work-rights line must not carry the old empty one (an unfixable hard check).
+        test('a regenerate takes the name, contact and work rights from the base CV, keeping only locked edits to them', () => {
           const current = { cv: { name: 'Sam B.', contact: { location: null, email: 'new@example.com', phone: null, links: [{ label: 'Site', url: 'https://a.io' }] }, workRights: null }, coverLetter: {} };
-          const out = read(envelope(gov()), { ...GOV_INPUTS, regenerate: { instruction: 'i', current_version: current, manual_edits: [] } });
-          expect(out.writer.cv).toMatchObject(current.cv);
+          const fresh = read(envelope(gov()), GOV_INPUTS).writer.cv;
+          const unlocked = read(envelope(gov()), { ...GOV_INPUTS, regenerate: { instruction: 'i', current_version: current, manual_edits: [] } });
+          expect(unlocked.writer.cv).toMatchObject({ name: fresh.name, contact: fresh.contact, workRights: 'Full working rights' });
+          const locked = read(envelope(gov()), {
+            ...GOV_INPUTS,
+            regenerate: { instruction: 'i', current_version: current, manual_edits: [{ path: 'cv.name', text: 'Sam B.' }, { path: 'cv.contact.email', text: 'new@example.com' }] },
+          });
+          expect(locked.writer.cv).toMatchObject({ name: 'Sam B.', contact: current.cv.contact, workRights: 'Full working rights' });
         });
 
         test('coverage, competencies and achievements are required for the government template only', () => {

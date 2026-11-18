@@ -286,6 +286,15 @@ describe('runChecks', () => {
       expect(find(headline, 'unknown_fact').map((c) => [c.where, c.severity])).toEqual([['cv.headline', 'hard']]);
     });
 
+    // The summary names the job title once; a title like "Clerk Grade 7/8" must not count as new numbers there.
+    test("numbers in the job title pass where the text names the title, and nowhere else", async () => {
+      const job = { ...input().job, title: 'Clerk Grade 7/8' };
+      const named = await runChecks(input({ job, cv: { ...goodCv, summary: 'Engineer applying for the Clerk Grade 7/8 role.' } }), opts());
+      expect(find(named, 'unknown_fact')).toEqual([]);
+      const loose = await runChecks(input({ job, cv: { ...goodCv, summary: 'Engineer who led 7 teams.' } }), opts());
+      expect(find(loose, 'unknown_fact').map((c) => [c.where, c.severity])).toEqual([['cv.summary', 'hard']]);
+    });
+
     test('a new month-year date in a bullet is still a hard fail', async () => {
       const r = await runChecks(input({ cv: withBullets(['Built an invoicing service in Jun 2023.']) }), opts());
       const hits = find(r, 'unknown_fact');

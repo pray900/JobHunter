@@ -508,12 +508,17 @@ function factChecks(input: CheckInput, cvSegs: Segment[], letterSegs: Segment[],
     numbers: new Set([...jobAllowed.numbers, ...cvSegs.filter(isBullet).flatMap((b) => numbers(stripLinks(b.text)).filter((n) => !n.dateLike).map((n) => n.key))]),
     dates: jobAllowed.dates,
   };
+  // The summary names the job title; its numbers ("Clerk Grade 7/8") pass in a CV text that names the title.
+  const title = (input.job.title ?? '').trim();
+  const titleAllowed = { numbers: new Set(numbers(title).map((n) => n.key)), dates: new Set<string>() };
+  const namesTitle = (text: string): boolean => titleAllowed.numbers.size > 0 && norm(text).includes(norm(title));
   const jobLinkKeys = new Set(linkKeysIn(jobText));
   for (const seg of [...cvSegs, ...letterSegs]) {
     if (seg.kind !== 'body') continue;
     // Role and education dates are compared with their own base entry in roleFacts.
     const text = stripLinks(seg.text);
-    if (!seg.field) out.push(...numberAndDateFacts(seg, text, base, seg.doc === 'cover_letter' ? letterAllowed : undefined));
+    const extra = seg.doc === 'cover_letter' ? letterAllowed : namesTitle(text) ? titleAllowed : undefined;
+    if (!seg.field) out.push(...numberAndDateFacts(seg, text, base, extra));
     for (const url of seg.text.match(PROSE_URL) ?? []) {
       const clean = url.replace(/[.,;:]+$/, '');
       const key = linkKey(clean);
