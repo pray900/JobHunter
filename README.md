@@ -1,8 +1,105 @@
 # JobHunter
 
-A local app that turns Word job ads into job cards and scores each one against your base CV. Five parts run in Docker: Postgres (data), a TypeScript worker (reads the `.docx` files), Gotenberg (makes PDFs), n8n (the workflows that glue it together and call Claude) and a React web page.
+**A personal job-hunting assistant.** Drop in job ads; JobHunter scores each one against your CV, then writes a tailored, ATS-friendly CV and cover letter for the jobs you pick. A second AI reviewer and a set of code checks review every draft before you see it, and nothing is ever invented: every fact comes from your own base CV.
 
-Everything runs on your machine. The only things that leave it are the job ad text, your CV and your cover letter, which are sent to Claude (see Cost for when).
+**Live demo:** https://prayush.tailf0cd99.ts.net. It runs on my own PC, so it is only online while that PC is on.
+
+## Why I built it
+
+Tailoring a CV for every application takes a long time, and a plain AI chat gets it subtly wrong. It invents results, overstates your role, misses the ad's exact keywords and forgets the rules for Australian Government applications. JobHunter turns that one-off chat into a repeatable pipeline with guard rails:
+
+- **Honesty first.** Your base CV is the only source of facts. Code checks catch numbers, skills, dates or employers that aren't in it, and anything close to the line (an estimated result figure, an inferred soft skill) is listed as a *stretch* for you to decide on.
+- **A writer and a separate reviewer.** One Claude call writes the documents. Another judges them like a strict recruiter against 15 criteria: relevance, inflated claims, AI-sounding text, keyword stuffing, STAR bullets, selection criteria and more. Failed drafts go back with specific objections, for up to 3 rounds.
+- **Keywords the way scanners count them.** It uses the ad's exact wording for hard and soft skills and states the job title once, which is what tools like Jobscan look for.
+- **You stay in control.** You can edit any version, lock your own wording so the AI copies it word for word, and regenerate with an instruction ("make the summary shorter"). Every version is kept.
+
+## What it does
+
+| | |
+| --- | --- |
+| **Job board** | Put one Word file per job ad in a folder. Each becomes a card with its title, employer and a short summary, found automatically every 30 seconds. |
+| **Match score** | Every job gets a 0–100 fit score against your CV, with a "Why this score?" explanation, sorted best match first. |
+| **My documents** | Upload your base CV and cover letter (PDF or Word). Claude reads them into structured facts, which you can view and correct. |
+| **Generate** | Tailored CV and cover letter, as Word and PDF. There are two templates: **Standard ATS** (one page) and **Australian Government** (two pages, with selection-criteria coverage, competency statements and key achievements). |
+| **Review screen** | The job ad sits next to the tailored documents, with the reasons for every change, the reviewer's verdict, the stretches and a diff against your base CV. |
+| **Versions** | Edit, regenerate with an instruction, restore and download any version. Nothing is overwritten. |
+| **Tracking** | Statuses New → CV ready → Applied → Interviewing → Closed, with keyboard shortcuts (A = applied, S = skip, E = edit, G = regenerate). |
+| **Cost log** | Every Claude call is priced and logged per job and per run. |
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Job ad .docx files] -->|every 30 s| B[Worker: read files]
+    B --> C[n8n: Job intake<br/>Claude Haiku extracts details]
+    D[Your base CV and letter] --> E[n8n: Base documents<br/>Claude Opus reads facts]
+    C --> F[n8n: Match scoring<br/>Claude Sonnet]
+    E --> F
+    F --> G[Web app: job board]
+    G -->|Generate click| H[Writer: Claude Opus]
+    H --> I[Code checks<br/>facts, keywords, page fit, spelling]
+    I --> J[Reviewer: Claude<br/>15-point checklist]
+    J -->|fail: objections| H
+    J -->|pass| K[Word and PDF<br/>via Gotenberg]
+    K --> G
+```
+
+Five services run in Docker Compose:
+
+- **n8n**: the workflows that glue everything together and call Claude. There are 8 workflows, each laid out in stages with sticky notes so they are easy to read in the editor.
+- **Worker**: Node and TypeScript. It reads `.docx` and PDF files, runs the code checks on generated documents, fits the CV to the page limit and renders Word files.
+- **Postgres**: jobs, statuses, base documents, every generated version, review results and the cost log.
+- **Gotenberg**: converts Word to PDF.
+- **Web**: React and TypeScript, served by nginx. It has light and dark mode, dense job lists and keyboard shortcuts.
+
+### Claude models
+
+| Task | Model |
+| --- | --- |
+| Reading job files | Claude Haiku 5.5 |
+| Reading your CV and cover letter | Claude Opus 5.5 |
+| Match scoring | Claude Sonnet 5.5 |
+| Writing the CV and cover letter | Claude Opus 5.5 |
+| Reviewing them | Claude Opus 5.5 (configurable; Sonnet works well) |
+
+Every model is set in `.env`. Answers use structured JSON output, so each response has a fixed shape.
+
+## Tech stack
+
+n8n 2.46 · Node 24 · TypeScript · React · Vite · PostgreSQL 17 · Docker Compose · Gotenberg · `docx` · Anthropic Claude API · Vitest
+
+## Quality
+
+- **Test-driven.** About 460 unit tests (worker and web) and about 420 end-to-end tests. The end-to-end tests run against a separate Docker stack with a fake Anthropic API, so they never use real data or a real key.
+- **Prompts are versioned files** (`n8n/prompts/`, `skills/cv-writing/`). The tests check that the copies inside the workflows match them exactly.
+- **Security:**
+  - every port is bound to `127.0.0.1`;
+  - nginx guards against DNS rebinding;
+  - webhooks only accept their own origins and a custom header;
+  - secrets stay in a git-ignored `.env`;
+  - personal files are never committed.
+- **Design decisions** are recorded in `docs/superpowers/specs`, the step-by-step build plans in `docs/superpowers/plans`, and the domain words in `GLOSSARY.md`.
+
+## Running it yourself
+
+You need Docker Desktop, Git Bash and an Anthropic API key. The short version:
+
+```bash
+cp .env.example .env          # then set ANTHROPIC_API_KEY, POSTGRES_PASSWORD, N8N_ENCRYPTION_KEY
+mkdir -p Joblisting           # one .docx per job ad goes here; the first line is the posting link
+docker compose up -d --build
+bash scripts/n8n-bootstrap.sh # loads credentials and workflows into n8n
+```
+
+Open http://localhost:8080 and upload your CV on **My documents**. The full details are below.
+
+A typical Generate costs about US$0.30–0.90, and everything else is cheap or free (see [Cost](#cost)).
+
+---
+
+# Full documentation
+
+JobHunter is a local app. Everything runs on your machine, and the only things that leave it are the job ad text, your CV and your cover letter, which are sent to Claude (see Cost for when).
 
 ## Pinned versions
 
