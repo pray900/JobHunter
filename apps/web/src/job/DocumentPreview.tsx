@@ -34,7 +34,7 @@ function Competency({ text }: { text: string }) {
   );
 }
 
-// The Australian Government template: its own headings, competencies, Responsibilities / Key Achievements, Referees.
+// The Australian Government template: its own headings, competencies, Responsibilities / Key Achievements.
 function GovCvPreview({ cv, edited }: { cv: TailoredCv; edited: ReadonlySet<string> }) {
   const contact = contactLine(cv);
   return (
@@ -139,9 +139,6 @@ function GovCvPreview({ cv, edited }: { cv: TailoredCv; edited: ReadonlySet<stri
           {e.statusText && <p>{e.statusText}</p>}
         </div>
       ))}
-
-      <h3>Referees</h3>
-      <p>Referees available on request</p>
     </div>
   );
 }

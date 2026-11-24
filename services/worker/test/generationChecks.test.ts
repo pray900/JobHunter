@@ -777,7 +777,7 @@ describe('government template', () => {
     pages: doc === 'cv' ? pages : 1,
     text:
       doc === 'cv'
-        ? `${cv.name}\nPROFESSIONAL SUMMARY\nx\nKEY SKILLS & COMPETENCIES\nx\nPROFESSIONAL EXPERIENCE\nx\nPROJECTS\nx\nQUALIFICATIONS\nx\nREFEREES\nReferees available on request`
+        ? `${cv.name}\nPROFESSIONAL SUMMARY\nx\nKEY SKILLS & COMPETENCIES\nx\nPROFESSIONAL EXPERIENCE\nx\nPROJECTS\nx\nQUALIFICATIONS\nx`
         : `${cv.name}\nDear`,
   });
   const gov = (over: Partial<CheckInput> = {}) => input({ templateId: 'au-government', cv: govCv, ...over });
@@ -795,14 +795,8 @@ describe('government template', () => {
     expect(find(std, 'cv_pages')[0].detail.endsWith('the limit is 1.')).toBe(true);
   });
 
-  test('government render_text needs Referees available on request', async () => {
-    const noRef: NonNullable<RunOptions['render']> = async (doc, d, cv, l) => {
-      const r = await govRender(1)(doc, d, cv, l);
-      return { ...r, text: r.text.replace('Referees available on request', '') };
-    };
+  test('government render_text needs no referees line', async () => {
     expect(find(await runChecks(gov(), opts({ render: govRender(1) })), 'render_text')).toHaveLength(0);
-    const r = find(await runChecks(gov(), opts({ render: noRef })), 'render_text');
-    expect(r.some((c) => c.detail.includes('Referees available on request'))).toBe(true);
   });
 
   describe('criteria coverage', () => {

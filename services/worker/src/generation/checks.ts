@@ -689,7 +689,6 @@ const HEADINGS: Record<TemplateId, (cv: TailoredCv) => string[]> = {
     'PROFESSIONAL EXPERIENCE',
     ...(cv.projects.length > 0 ? ['PROJECTS'] : []),
     'QUALIFICATIONS',
-    'REFEREES',
   ],
 };
 
@@ -729,9 +728,6 @@ function renderTextChecks(templateId: TemplateId, cv: TailoredCv, cvText: string
   const squash = (s: string) => s.replace(/\s+/g, ' ').toLowerCase();
   if (!squash(cvText).includes(squash(cv.name))) {
     out.push({ code: 'render_text', severity: 'hard', doc: 'cv', detail: 'The name is missing from the rendered CV text.' });
-  }
-  if (templateId === 'au-government' && !squash(cvText).includes('referees available on request')) {
-    out.push({ code: 'render_text', severity: 'hard', doc: 'cv', detail: 'The line "Referees available on request" is missing from the rendered CV.' });
   }
   let from = 0;
   for (const h of HEADINGS[templateId](cv)) {

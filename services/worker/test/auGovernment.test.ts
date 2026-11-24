@@ -25,7 +25,7 @@ const render = (cv: TailoredCv = GOV) => renderDocx('au-government', 'cv', cv);
 test('headings appear in order, upper case, with navy colour and a bottom border', async () => {
   const xml = await docXml(await render());
   const texts = paras(xml).map(text);
-  const order = ['PROFESSIONAL SUMMARY', 'KEY SKILLS & COMPETENCIES', 'PROFESSIONAL EXPERIENCE', 'PROJECTS', 'QUALIFICATIONS', 'REFEREES'];
+  const order = ['PROFESSIONAL SUMMARY', 'KEY SKILLS & COMPETENCIES', 'PROFESSIONAL EXPERIENCE', 'PROJECTS', 'QUALIFICATIONS'];
   const idx = order.map((h) => texts.indexOf(h.replace('&', '&amp;')));
   for (const i of idx) expect(i).toBeGreaterThanOrEqual(0);
   expect([...idx].sort((a, b) => a - b)).toEqual(idx);
@@ -76,9 +76,10 @@ test('an old CV with no achievements key renders', async () => {
   expect(xml).not.toContain('Key Achievements');
 });
 
-test('the last paragraph is the referees line', async () => {
-  const ps = paras(await docXml(await render())).map(text).filter((t) => t !== '');
-  expect(ps[ps.length - 1]).toBe('Referees available on request');
+test('there is no referees section', async () => {
+  const texts = paras(await docXml(await render())).map(text);
+  expect(texts).not.toContain('REFEREES');
+  expect(texts.join(' ')).not.toMatch(/referees/i);
 });
 
 test('CV footer has Page N of M fields; the letter has none', async () => {

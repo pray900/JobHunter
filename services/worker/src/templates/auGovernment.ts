@@ -118,7 +118,6 @@ function cvParagraphs(cv: TailoredCv, layout: CvLayout): Paragraph[] {
     if (e.statusText) out.push(body(e.statusText, size, 40, k));
   }
 
-  out.push(heading('Referees', headSize, k), body('Referees available on request', size, 0, k));
   return out;
 }
 

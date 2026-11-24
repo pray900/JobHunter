@@ -51,7 +51,7 @@ A CV written for one job from the base CV.
 _Avoid_: Custom CV, generated CV, new CV
 
 **Template**:
-The look of a tailored CV or cover letter (font, layout, section order, length and content rules), separate from its words. There are two: Standard ATS (one page) and Australian Government (up to two pages, with competency statements, Responsibilities and Key Achievements per role, and a Referees line). The app suggests one when it reads a job, and the user's choice on the job page wins.
+The look of a tailored CV or cover letter (font, layout, section order, length and content rules), separate from its words. There are two: Standard ATS (one page) and Australian Government (up to two pages, with competency statements, and Responsibilities and Key Achievements per role). The app suggests one when it reads a job, and the user's choice on the job page wins.
 _Avoid_: Style, format, theme
 
 **Version**:
@@ -104,5 +104,5 @@ Making a tailored CV fit one page: first shrink the template layout step by step
 _Avoid_: Trim, compress
 
 **Stretch**:
-A claim that is supported by the base CV but framed close to the line, shown to Prayush to decide. Also an estimated result or scale figure the writer added to a bullet that the base CV does not state, or a soft-skill keyword from the ad (for example "cross-functional team") inferred from a role where the base CV does not state it.
+A claim that is supported by the base CV but framed close to the line, shown to Prayush to decide. Also an estimated result or scale figure the writer added to a bullet that the base CV does not state, or a soft-skill keyword from the ad (for example "cross-functional team") inferred from a role where the base CV does not state it, or inferred experience: work the base CV does not state but that someone in that role would normally have done (for example a Salesforce developer writing test classes), which Prayush must confirm is true before applying.
 _Avoid_: Exaggeration, lie

@@ -17,7 +17,7 @@ The CV must fit one A4 page (an Australian Government CV may run to two; the sam
 
 - Every project goes in, most relevant first, one bullet each. The code leaves out the last projects if the page overflows, so put the strongest first.
 - Keep most bullets to one line and none longer than two (about 25 words).
-- Work an outcome, a duty phrase or a soft skill into a bullet you already have. Never add a bullet just to fit one in.
+- Work an outcome, a duty phrase or a soft skill into a bullet you already have. Never add a bullet just to fit one in (inferred experience, as the writer prompt allows it, is the exception).
 - When something has to go, cut the weakest whole bullet, or a project's second bullet, before shortening the good ones. Trimming a few words from every bullet rarely saves a line.
 - If you are told the CV runs over one page, remove whole bullets until it fits, and keep the strongest ones.
 
@@ -93,7 +93,7 @@ A bullet with a good scale but no outcome can still be strong: "Triaged 25 to 30
 The letter is short, specific and human. It is not the CV in paragraphs.
 
 1. Open on the employer's need. Say what the role needs, from the ad, and why that fits the person. For example: "Your team is looking for someone to keep the month-end close on time while the entity count grows. That is the work I do every month at my current employer." Do not open with "I am writing to apply" or a line about being excited.
-2. One proof paragraph. Pick the one or two facts that matter most for this job and tell them as a small story: the situation, what the person did, what came of it. Use a figure only from the facts, the ad or the CV just written.
+2. One or two proof paragraphs. Pick the ad's questions or main requirements that matter most and answer each with a STAR example: the situation or task, what the person did ("I…"), and the result, ideally with a figure. Use a figure only from the facts, the ad or the CV just written.
 3. If the facts and the ad support it, a short paragraph on fit with the employer. Only say what the ad or notes say about the company. Do not guess at its products, values or news.
 4. A plain close. Say the person would welcome a conversation, and thank the reader for their time. No pressure, no flattery, no summary of what was just said.
 
@@ -108,10 +108,10 @@ Australian government panels score each applicant against the capabilities or se
 - Keep Responsibilities short: the duty in a few words, in the ad's terms where true. "Processed council rates enquiries by phone and email" is enough.
 - Write each Key Achievement as the candidate's own action, then its result: "Scripted the bank-statement import, cutting the monthly reconciliation from three days to one." One achievement, one result.
 - A competency statement is the capability, then one line of proof: "Delivers results: Moved 1,200 client records to the new system two weeks ahead of the deadline, with no data loss." The proof is a single real example, not a list of adjectives.
-- An honest "not answered" is better than a stretched answer. Panels notice a claim that does not hold up at interview.
+- Answer every targeted question in the letter with a STAR example that ends in a result. Where the facts are thin, an example of work the person would normally have done in that role (testing their own code, training a new starter) is better than leaving the question unanswered. Keep it something they could talk through at interview: panels probe every example.
 
 ## Before you finish
 
-Read it once as a recruiter with a few seconds, and once as a text parser. Does it fit one page with room to spare? Does the top third say why this person suits the role? Does every bullet say what was done and, where honest, what came of it? Do the ad's own terms appear where they are true? Does anything claim more than the facts? If so, cut it.
+Read it once as a recruiter with a few seconds, and once as a text parser. Does it fit one page with room to spare? Does the top third say why this person suits the role? Does every bullet say what was done and, where honest, what came of it? Do the ad's own terms appear where they are true? Does anything claim more than the person could stand behind at interview? If so, cut it.
 
 The writer prompt's rules above win over anything here.

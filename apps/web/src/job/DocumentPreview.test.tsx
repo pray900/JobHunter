@@ -3,9 +3,10 @@ import { expect, test } from 'vitest';
 import { baseVersion, govVersion } from './detailFixtures';
 import { CvPreview } from './DocumentPreview';
 
-test('government preview has its headings, labels, competency lines and referees', () => {
+test('government preview has its headings, labels and competency lines, and no referees', () => {
   render(<CvPreview cv={govVersion.cv} templateId="au-government" />);
-  for (const h of ['Professional Summary', 'Key Skills & Competencies', 'Professional Experience', 'Qualifications', 'Referees']) {
+  expect(screen.queryByRole('heading', { name: 'Referees' })).toBeNull();
+  for (const h of ['Professional Summary', 'Key Skills & Competencies', 'Professional Experience', 'Qualifications']) {
     expect(screen.getByRole('heading', { name: h })).toBeInTheDocument();
   }
   expect(screen.getByText('Responsibilities')).toBeInTheDocument();
@@ -14,7 +15,7 @@ test('government preview has its headings, labels, competency lines and referees
   expect(screen.getByText('Stakeholder engagement').tagName).toBe('STRONG');
   expect(screen.getByText(/led a 12-agency working group/)).toBeInTheDocument();
   expect(screen.getByText('Policy writing').tagName).toBe('P');
-  expect(screen.getByText('Referees available on request')).toBeInTheDocument();
+  expect(screen.queryByText('Referees available on request')).toBeNull();
 });
 
 test('standard preview is unchanged', () => {
