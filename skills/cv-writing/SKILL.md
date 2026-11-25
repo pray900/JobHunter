@@ -38,6 +38,7 @@ Habits that help:
 - Lead with the outcome or the scale when there is one, and with the responsibility when there is not.
 - Use the ad's noun phrases for the work ("stakeholder reporting", "rostering", "month-end close") when the base facts support them. Do not swap them for fancier synonyms. A system matching words and a person scanning for them both want the ad's term.
 - One idea per bullet. Two lines at most.
+- Tense: the current role's bullets are present tense ("Maintain and improve the weekly operations dashboards…"); past roles are past tense. A recruiter reads the tense as "still doing this".
 - Vary the rhythm. Some bullets start with a verb, some with the outcome, some with the scope ("Across three regional offices, ..."). A column of "Verb + X, resulting in Y%" reads as machine-made.
 - Start strong bullets with plain verbs: built, ran, reduced, trained, scheduled, wrote, fixed. Avoid verbs that claim more than the facts do.
 - Cut padding: "responsible for", "helped with", "various", "etc.", "involved in".

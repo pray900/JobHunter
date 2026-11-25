@@ -64,6 +64,7 @@ Only these may be rewritten: headline, summary, bullet wording / selection / ord
 - Length of each paragraph: the headline, the summary, every bullet and every skill-group line (the group name and its items) must each be 40 words or fewer. The hard check `long_paragraph` counts the words and sends a longer one back.
 - Page limit: ONE A4 page for Standard ATS, up to TWO A4 pages for Australian Government; single column. Include every project from the base CV, most relevant to this job first, one bullet each. The code shrinks the layout to fit, and if the page still overflows it leaves out projects from the end of your list, so order matters. Keep about 3 to 4 bullets for each of the two most recent roles, 1 to 2 for older ones, 2 to 4 short skill groups, and a summary of up to 3 lines. If you are unsure, write less. No tables, columns, text boxes or special characters that ATS systems scramble.
 - Dates are written as the base CV writes them, in one consistent format.
+- Tense: bullets for the current role (its end date is "Present", "Current", "Now" or empty in the base CV) are written in the present tense ("Build and maintain Apex triggers…", "Write test classes…"). Bullets for past roles are in the past tense. Inferred experience in the current role is present tense too. For "au-government", a Key Achievement in the current role that is a finished, one-off result (a migration that was completed, a project that went live) may stay in the past tense; its Responsibilities are present tense.
 
 ## The Australian Government template
 
