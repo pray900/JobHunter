@@ -93,7 +93,7 @@ There is no Referees section: never write a referees line anywhere.
 
 ### Selection criteria coverage
 
-`criteriaCoverage` lists every selection criterion, capability and targeted question the ad names, each once, worded as the ad words it (`criterion`). For each:
+`criteriaCoverage` lists every selection criterion, capability, targeted question and "To be successful in this role, you will demonstrate" item the ad names, each once, worded as the ad words it (`criterion`). For each:
 
 - `answeredIn` is where the documents answer it: "coverLetter", "cv.summary", "cv.competencies[i]", "cv.experience[i].bullets[j]" or "cv.experience[i].achievements[j]". It must point at text that exists and is not empty, and that really answers the criterion. Only these path forms are allowed: never a project, a skill group or any other field. Prefer an achievement or bullet with a result, or the cover letter when it answers the criterion with a STAR example. When the base CV states no result for that work, give it an estimated result figure or use inferred experience (see "Facts"), listed in `stretches`. `why` is "" for an answered criterion.
 - A criterion that neither the base CV nor inferred experience can answer within the limits (a clearance, citizenship, a qualification, years of experience): `answeredIn` is "" and `why` says why in one sentence (for example "The base CV states no security clearance."). Never leave a criterion out to hide it.
@@ -102,7 +102,7 @@ There is no Referees section: never write a referees line anywhere.
 
 ### The government cover letter
 
-- The same fields and rules as the Standard ATS letter, with these differences. Open with the role and the agency. The letter's main job is to answer the ad's targeted questions and selection criteria. Answer each one directly, in its own short paragraph that names it in the ad's words, as a STAR example in the candidate's own voice ("I…"): the situation or task, what I did, and the result. When the ad asks more questions or criteria than fit (more than four), answer the most important in the letter and the rest in the CV. Close briefly. No "Referees" line.
+- The same fields and rules as the Standard ATS letter, with these differences. The opening paragraph names the role and the agency and gives the candidate's general skills only (see "Opening paragraph" under "The cover letter"). The letter's main job is to answer the ad's targeted questions, selection criteria and "To be successful" items (see "The cover letter"; every "To be successful" item is covered, grouping related items). Answer each one directly, in its own short paragraph that names it in the ad's words, as a STAR example in the candidate's own voice ("I…"): the situation or task, what I did, and the result. When the ad asks more targeted questions or selection criteria than fit (more than four), answer the most important in the letter and the rest in the CV; "To be successful" items are still all covered in the letter, grouped where related. Close briefly. No "Referees" line.
 - Length: if the ad states a length or word limit for the letter, follow it. Otherwise aim for about 350 to 420 words; it must fit one page.
 
 ## The cover letter
@@ -113,7 +113,9 @@ There is no Referees section: never write a referees line anywhere.
 - Use the target job's own title and employer. If the ad does not name the employer, do not make one up.
 - Length: it must fit one page (about 250 to 350 words in 3 or 4 short paragraphs). The hard limit is 2 pages.
 - Plain, specific and human. No filler openings, no re-telling of the CV line by line.
-- STAR examples: the letter's middle answers the ad's targeted questions, or else its two or three most important requirements, each as a short STAR example in the candidate's own voice ("I…"): the situation or task, what I did, and the result. End each with a result, ideally a figure. A figure in the letter must also appear in a CV bullet or achievement you wrote (the code allows only those numbers, the base CV's and the ad's). Inferred experience may be used in the letter only if it is also in the CV.
+- Opening paragraph: name the role the candidate is applying for and the employer, then sum up the candidate's general skills and background in two or three sentences. Keep it general: no STAR example, figure or single achievement here; those belong in the middle paragraphs.
+- "To be successful" requirements: when the ad lists what the candidate must demonstrate (under "To be successful in this role, you will demonstrate" or similar wording such as "you will need to demonstrate" or "the ideal candidate will have"), the letter must cover every item in that list. Answer the most important ones as STAR examples, and group closely related items in one paragraph so the letter still fits its length. An item the base CV and allowed inferred experience cannot honestly support is left out of the letter, never claimed.
+- STAR examples: the letter's middle answers the ad's targeted questions and "To be successful" items, or else its two or three most important requirements, each as a short STAR example in the candidate's own voice ("I…"): the situation or task, what I did, and the result. End each with a result, ideally a figure. A figure in the letter must also appear in a CV bullet or achievement you wrote (the code allows only those numbers, the base CV's and the ad's). Inferred experience may be used in the letter only if it is also in the CV.
 - `date` is today's date in the form "7 November 2026"; `name` is their name exactly as on the CV.
 
 ## Style rules for both documents

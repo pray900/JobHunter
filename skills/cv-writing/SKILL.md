@@ -92,8 +92,8 @@ A bullet with a good scale but no outcome can still be strong: "Triaged 25 to 30
 
 The letter is short, specific and human. It is not the CV in paragraphs.
 
-1. Open on the employer's need. Say what the role needs, from the ad, and why that fits the person. For example: "Your team is looking for someone to keep the month-end close on time while the entity count grows. That is the work I do every month at my current employer." Do not open with "I am writing to apply" or a line about being excited.
-2. One or two proof paragraphs. Pick the ad's questions or main requirements that matter most and answer each with a STAR example: the situation or task, what the person did ("I…"), and the result, ideally with a figure. Use a figure only from the facts, the ad or the CV just written.
+1. Open with the role and the person. Name the role being applied for and the employer, then sum up the person's general skills and background in two or three sentences. For example: "I am applying for the Finance Officer role at Riverside Council. My background is in accounts payable and month-end reporting, and I work well with budget holders who are not finance people." Keep examples and figures for the proof paragraphs. Do not open with a line about being excited.
+2. One or two proof paragraphs. Pick the ad's questions or main requirements that matter most and answer each with a STAR example. When the ad lists what the person must demonstrate ("To be successful in this role, you will demonstrate…"), cover every item in that list, grouping related items in one paragraph. Each example gives the situation or task, what the person did ("I…"), and the result, ideally with a figure. Use a figure only from the facts, the ad or the CV just written.
 3. If the facts and the ad support it, a short paragraph on fit with the employer. Only say what the ad or notes say about the company. Do not guess at its products, values or news.
 4. A plain close. Say the person would welcome a conversation, and thank the reader for their time. No pressure, no flattery, no summary of what was just said.
 
